@@ -1,7 +1,7 @@
 ---
 id: LLMM-016
 title: Diagnostics (redacted config-entry diagnostics)
-status: todo
+status: done
 phase: 4
 depends_on: [LLMM-006, LLMM-007]
 ---
@@ -98,13 +98,13 @@ integration shows a "Download diagnostics" button on the entry.
 
 ## Acceptance criteria
 
-- [ ] `diagnostics.py` exists and exports `async_get_config_entry_diagnostics`.
-- [ ] The dump includes parent metadata, redacted parent `data`/`options`, every
+- [x] `diagnostics.py` exists and exports `async_get_config_entry_diagnostics`.
+- [x] The dump includes parent metadata, redacted parent `data`/`options`, every
       subentry's redacted `data`, and the entry's entities.
-- [ ] `TO_REDACT` covers every auth field, every URL/webhook field, and the system prompt
+- [x] `TO_REDACT` covers every auth field, every URL/webhook field, and the system prompt
       across all five presets; a diagnostics dump for each preset shows `**REDACTED**` in
       place of those values and never a raw token/URL/prompt.
-- [ ] Gates green: `just check` + `just typecheck`.
+- [x] Gates green: `just check` + `just typecheck`.
 
 ## Verification
 
@@ -120,8 +120,33 @@ core's own diagnostics tests) or a direct call:
 3. Assert non-sensitive fields (`backend_type`, `entry_id`, subentry `title`) are present
    and unredacted.
 
+**Executed (2026-07-04, branch `llmm-016-diagnostics`):**
+
+`tests/test_diagnostics.py` implements exactly this: a parametrized
+`test_diagnostics_redacts_every_secret_per_preset` builds a v2 parent entry + one
+conversation subentry for **each** of the five presets with dummy secrets
+(`api_key="SECRET_API_KEY"`, `token="SECRET_TOKEN"`, `password="SECRET_PASSWORD"`,
+`header_value="SECRET_HEADER_VALUE"`, `username="secret-user"`,
+`base_url`/`webhook_url`/legacy `url`, and both `prompt`/`system_prompt`); it asserts every
+sensitive parent key and both subentry prompt keys equal `**REDACTED**`, that no raw secret
+literal survives in `json.dumps(result)`, and that non-sensitive fields (`backend_type`,
+`entry_id`, `title`, subentry `title`/`name`/`model`) are present and unredacted.
+`test_diagnostics_includes_entities` confirms a loaded entry's conversation entity appears
+in the `entities` map, and `test_diagnostics_http_download_path` drives the real
+`/api/diagnostics/config_entry/<id>` HTTP endpoint via the HA diagnostics helper, proving
+HA auto-discovers `diagnostics.py` (no manifest change) and returns a redacted dump.
+
+Gate results in this session:
+
+- `just typecheck` → `0 errors, 0 warnings, 0 notes` (strict basedpyright).
+- `just check` (lock-check + lint + fmt-check + test) → `196 passed, 2 warnings in 5.38s`
+  (189 baseline + 7 new; the 2 warnings are the pre-existing aiohttp `BasicAuth`
+  deprecation in the unrelated n8n test).
+
 Manual (owner, optional): on the live HA instance, open the integration entry → overflow
-menu → Download diagnostics; confirm the JSON has no plaintext token/URL/prompt.
+menu → Download diagnostics; confirm the JSON has no plaintext token/URL/prompt. NOT run
+(no live HA instance in this environment); the HTTP-path unit test above covers the same
+download endpoint programmatically.
 
 ## Risks / open questions
 
