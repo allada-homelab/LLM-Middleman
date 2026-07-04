@@ -1,7 +1,7 @@
 ---
 id: LLMM-016
 title: Diagnostics (redacted config-entry diagnostics)
-status: in-review
+status: done
 phase: 4
 depends_on: [LLMM-006, LLMM-007]
 ---
