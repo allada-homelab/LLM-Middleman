@@ -1,0 +1,89 @@
+name: render-test
+
+# CI for the template repo itself: render representative answer cells and run the
+# full quality gate inside each rendered project. Defaults to ubuntu-latest (not
+# homelab-runners) so it runs anywhere without self-hosted setup; service cells
+# need a Docker daemon, which GitHub-hosted runners provide.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ${{ vars.CI_RUNNER || 'homelab-runners' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: [lib-on, lib-off, svc-on, svc-off, lib-variations, svc-variations]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Render ${{ matrix.cell }}
+        run: |
+          uvx copier copy --trust --vcs-ref HEAD --defaults \
+            --data-file ".github/render-test/answers/${{ matrix.cell }}.yml" \
+            . /tmp/out
+
+      - name: Quality gate
+        working-directory: /tmp/out
+        run: |
+          uv sync --all-extras --all-groups
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run basedpyright
+          uv run pytest -q
+          uv run coverage run -m pytest
+          uv run coverage report
+
+      - name: Compose config (service cells)
+        if: startsWith(matrix.cell, 'svc')
+        working-directory: /tmp/out
+        run: docker compose config >/dev/null
+
+  no-dead-vars:
+    runs-on: ${{ vars.CI_RUNNER || 'homelab-runners' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Every copier question must be consumed
+        run: bash .github/render-test/no-dead-vars.sh
+
+  update-test:
+    runs-on: ${{ vars.CI_RUNNER || 'homelab-runners' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # need tags: the test renders the latest release tag → HEAD
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: copier update (latest tag → HEAD) merges cleanly
+        run: uv run --script .github/render-test/test_update.py
+
+  pre-commit:
+    runs-on: ${{ vars.CI_RUNNER || 'homelab-runners' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: pre-commit (repo's own hooks)
+        run: uvx pre-commit run --all-files --show-diff-on-failure

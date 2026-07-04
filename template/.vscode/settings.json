@@ -1,0 +1,48 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "python.languageServer": "None",
+  "python.testing.pytestEnabled": true,
+
+  "basedpyright.analysis.diagnosticMode": "openFilesOnly",
+  "ruff.configurationPreference": "filesystemFirst",
+
+  "editor.formatOnSave": true,
+  "editor.formatOnSaveMode": "modificationsIfAvailable",
+  "editor.codeActionsOnSave": [
+    "source.organizeImports",
+    "source.fixAll"
+  ],
+  "files.insertFinalNewline": true,
+  "files.trimFinalNewlines": true,
+  "files.trimTrailingWhitespace": true,
+
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": [
+      "source.fixAll.ruff",
+      "source.organizeImports.ruff"
+    ]
+  },
+  "[toml]": { "editor.defaultFormatter": "tamasfe.even-better-toml" },
+  "[yaml]": { "editor.tabSize": 2 },
+  "[json]": { "editor.tabSize": 2 },
+  "[jsonc]": { "editor.tabSize": 2 },
+
+  "files.associations": { "*.env*": "dotenv" },
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/.ruff_cache": true,
+    "**/.mypy_cache": true,
+    "**/*.pyc": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/.git": true,
+    "**/dist": true,
+    "**/build": true,
+    "**/__pycache__": true
+  }
+}

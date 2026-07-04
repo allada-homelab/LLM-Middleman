@@ -1,0 +1,28 @@
+# Dependabot for THIS repo (the template itself) — keeps the root workflow
+# actions current. The rendered project gets its own dependabot.yml from
+# template/.github/dependabot.yml. Dependabot can't parse the *.jinja workflow
+# templates, so only the root .github/workflows/ are covered here.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies
+  # Keep the root .devcontainer/ feature pins current (uv/docker/gh) — the same
+  # ref-drift that shipped a bad feature ref during this repo's own dev.
+  - package-ecosystem: devcontainers
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    labels:
+      - dependencies

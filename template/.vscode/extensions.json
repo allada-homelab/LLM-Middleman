@@ -1,0 +1,11 @@
+{
+  "recommendations": [
+    "charliermarsh.ruff",
+    "detachhead.basedpyright",
+    "ms-python.python",
+    "tamasfe.even-better-toml",
+    "mikestead.dotenv",
+    "ms-azuretools.vscode-docker",
+    "eamodio.gitlens"
+  ]
+}

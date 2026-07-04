@@ -1,0 +1,11 @@
+project_name: "Render Svc Variations"
+project_type: service
+license: "BSD-3-Clause"
+python_min: "3.12"
+python_default: "3.13"
+ci_runner_default: "ubuntu-latest"
+include_mcp_server: true
+include_docs_site: false
+include_hadolint: false
+include_image_scan: false
+include_devcontainer: false

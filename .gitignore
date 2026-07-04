@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# Node (bun workspace hoists node_modules to the repo root)
+node_modules/
+
+# Local render output (`just render`/`matrix` write rendered cells here)
+.render/
+
+# Logs
+*.log
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+
+# Secrets
+.env
+
+# Claude / tooling state
+.remember/
+.superpowers/

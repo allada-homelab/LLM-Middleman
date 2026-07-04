@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Runs on the HOST before the container is created. Ensures the files the
+# read-only mounts bind to exist, so Docker doesn't materialize .gitconfig as a
+# directory. POSIX hosts execute this script; on Windows, cmd.exe resolves
+# `.devcontainer/initialize` to initialize.cmd via PATHEXT.
+mkdir -p "$HOME/.ssh"
+[ -f "$HOME/.gitconfig" ] || : > "$HOME/.gitconfig"

@@ -1,0 +1,54 @@
+# Pre-commit for developing the TEMPLATE repo itself — gives you locally what
+# only CI had (shellcheck, no-dead-vars). The rendered output ships its own
+# template/.pre-commit-config.yaml; this one never renders.
+#
+# Hooks are scoped to the repo's OWN surface: template/ and repos/ are excluded
+# from formatting/lint (jinja whitespace is significant; repos/ is read-only
+# vendored prior-art). The no-dead-vars hook is the exception — it must fire when
+# either copier.yml OR template/ changes, so it carries no exclude.
+#
+# `just render-dirty` commits with --no-verify, so wip renders don't trip these.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '^(template|repos)/'
+      - id: end-of-file-fixer
+        exclude: '^(template|repos)/'
+      - id: check-yaml
+        exclude: '^(template|repos)/'
+      - id: mixed-line-ending
+        exclude: '^(template|repos)/'
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        exclude: '^(template|repos)/'
+
+  # Validate our own GitHub Actions + Dependabot against their official schemas.
+  # Anchored `files:` already skip template/*.jinja (wrong path), so no exclude needed.
+  - repo: https://github.com/python-jsonschema/check-jsonschema
+    rev: 0.37.4
+    hooks:
+      - id: check-github-workflows
+      - id: check-dependabot
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.2
+    hooks:
+      - id: codespell
+        additional_dependencies: ["tomli"]
+        exclude: '^(template|repos|\.render)/'
+
+  - repo: local
+    hooks:
+      - id: no-dead-vars
+        name: every copier question is consumed
+        entry: bash .github/render-test/no-dead-vars.sh
+        language: system
+        pass_filenames: false
+        files: '^(copier\.yml|template/)'

@@ -1,0 +1,44 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+        args: [--unsafe]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        additional_dependencies: ["tomli"]
+
+  # Local hooks invoke the project's pinned ruff via uv, so the hook, CI, and
+  # editor all run the exact same ruff version.
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --force-exclude --fix --exit-non-zero-on-fix
+        require_serial: true
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        require_serial: true
+        language: system
+        types: [python]
+
+      # Keep the venv current after branch switches / merges.
+      - id: uv-sync
+        name: uv sync
+        entry: uv sync --all-groups
+        pass_filenames: false
+        language: system
+        always_run: true
+        stages: [post-checkout, post-merge]

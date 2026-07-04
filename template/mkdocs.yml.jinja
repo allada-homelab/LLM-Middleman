@@ -1,0 +1,35 @@
+site_name: {{ project_name }}
+repo_url: https://github.com/{{ repo_owner }}/{{ repo_name }}
+repo_name: {{ repo_owner }}/{{ repo_name }}
+docs_dir: docs
+
+# ADRs live in docs/ (always present) but aren't part of the rendered site nav.
+exclude_docs: |
+  adr/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_root_heading: true
+            show_signature_annotations: true
+            separate_signature: true
+            merge_init_into_class: true
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - API Reference: api-reference.md

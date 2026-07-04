@@ -1,0 +1,245 @@
+name: release
+
+# Single trigger: tag push.
+#
+# ``git tag vX.Y.Z && git push origin vX.Y.Z`` is the documented release path.
+# ``gh release create vX.Y.Z`` also works — it creates the tag (fires this
+# trigger) *and* a GitHub Release; the ``github-release`` job detects the
+# pre-existing release and attaches wheels without clobbering its notes.
+#
+# ``workflow_dispatch`` is the recovery hatch: if a release run gets wedged
+# (stuck runners, transient infra), dispatch this workflow from main with the
+# tag name as input. That path uses the current workflow file on main instead
+# of the file at the tagged commit, so a workflow bug in the tag's commit can
+# still be recovered from.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)release, e.g. v0.9.6"
+        required: true
+
+# Serialise runs that target the same tag (normal push-triggered runs and
+# ``workflow_dispatch`` replays for the same tag collapse into one group).
+# ``cancel-in-progress: false`` so a replay waits for the original to finish
+# rather than aborting it mid-publish.
+concurrency:
+  group: {% raw %}release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}{% endraw %}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ '{{' }} vars.CI_RUNNER || '{{ ci_runner_default }}' {{ '}}' }}
+    outputs:
+      version: {% raw %}${{ steps.v.outputs.version }}{% endraw %}
+      tag: {% raw %}${{ steps.v.outputs.tag }}{% endraw %}
+    steps:
+      - name: Resolve tag
+        id: v
+        env:
+          TAG_INPUT: {% raw %}${{ inputs.tag }}{% endraw %}
+        run: |
+          {% raw %}if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="$TAG_INPUT"{% endraw %}
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::tag '$TAG' does not parse as vX.Y.Z"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved TAG=$TAG VERSION=$VERSION"
+      - uses: actions/checkout@v7
+        with:
+          # Check out the tag's commit regardless of how we were triggered. On
+          # ``push: tags`` this is already GITHUB_REF; on ``workflow_dispatch``
+          # we override so the build reflects the tag's source tree, not main's.
+          ref: {% raw %}${{ steps.v.outputs.tag }}{% endraw %}
+          fetch-depth: 0
+      - name: Log in to Docker Hub
+        # Authenticated pulls lift the anonymous rate limit (100 pulls / 6h
+        # per IP, trivially exhausted by a self-hosted runner pool) to 10k/6h.
+        # Skipped when secrets are unavailable — falls back to anonymous pulls.
+        env:
+          DOCKERHUB_USERNAME: {% raw %}${{ secrets.DOCKERHUB_USERNAME }}{% endraw %}
+          DOCKERHUB_TOKEN: {% raw %}${{ secrets.DOCKERHUB_TOKEN }}{% endraw %}
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v4
+        with:
+          username: {% raw %}${{ secrets.DOCKERHUB_USERNAME }}{% endraw %}
+          password: {% raw %}${{ secrets.DOCKERHUB_TOKEN }}{% endraw %}
+      - name: Sync __version__.py to tag version
+        # Idempotent: overwrites so the wheel metadata always matches the
+        # release label — prevents the "tag says 0.7.0, wheel says 0.6.1, PyPI
+        # 400s on duplicate" failure mode.
+        run: |
+          VERSION="{% raw %}${{ steps.v.outputs.version }}{% endraw %}"
+          echo "__version__ = \"$VERSION\"" > src/{{ package_name }}/__version__.py
+          cat src/{{ package_name }}/__version__.py
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "{{ python_default }}"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    # Gated on ``push`` trigger because the PyPI environment's branch policy
+    # only permits tag refs matching ``v*``. A ``workflow_dispatch`` run's
+    # ``github.ref`` is the dispatch branch (main), not a tag, so it would be
+    # rejected by the environment gate before reaching Trusted Publishing.
+    # Recovery for a genuinely-failed publish is to bump the version and push a
+    # fresh tag (the tag-pinned version sync + ``skip-existing: true`` make
+    # reruns of the *same* tag safe via ``gh run rerun``).
+    if: github.event_name == 'push'
+    runs-on: ${{ '{{' }} vars.CI_RUNNER || '{{ ci_runner_default }}' {{ '}}' }}
+    needs: build
+    permissions:
+      id-token: write  # Trusted Publishing (OIDC)
+      attestations: write  # PEP 740 build-provenance attestations
+    environment:
+      name: pypi
+      url: https://pypi.org/p/{{ pkg_dist_name }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Makes reruns safe: if the wheel/sdist are already on PyPI from a
+          # prior attempt, skip rather than 400. The version in
+          # ``__version__.py`` is tag-pinned, so we can't silently "succeed"
+          # while publishing a stale build.
+          skip-existing: true
+
+  github-release:
+    runs-on: ${{ '{{' }} vars.CI_RUNNER || '{{ ci_runner_default }}' {{ '}}' }}
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: {% raw %}${{ needs.build.outputs.tag }}{% endraw %}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: Detect existing GitHub Release
+        # ``gh release create`` (or a release drafted in the UI) may already
+        # have created a release for this tag. If so, we attach files to it
+        # without touching its notes. If not, we create a fresh release with
+        # CHANGELOG notes (or auto-generated as fallback). The retry loop
+        # tolerates the few seconds where ``gh release view`` 404s while a
+        # freshly-created release propagates.
+        id: exists
+        env:
+          GH_TOKEN: {% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}
+          TAG: {% raw %}${{ needs.build.outputs.tag }}{% endraw %}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              echo "Release $TAG already exists — will attach wheels without overwriting notes."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          echo "Release $TAG does not exist after 15s — will create with CHANGELOG notes."
+      - name: Extract release notes from CHANGELOG.md
+        id: changelog
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          VERSION="{% raw %}${{ needs.build.outputs.version }}{% endraw %}"
+          # Pull just the section for this version — lines between
+          # ``## [X.Y.Z]`` and the next ``## [`` header, heading excluded.
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\["v"\\]" { flag=1; next }
+            /^## \[/ { flag=0 }
+            flag { print }
+          ' CHANGELOG.md \
+            | awk 'NF || seen; NF { seen=1 } END { print "" }' \
+            | sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}' \
+            > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ]; then
+            echo "No CHANGELOG entry for $VERSION — falling back to auto-generated notes." >&2
+            echo "use_auto=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "use_auto=false" >> "$GITHUB_OUTPUT"
+            echo "Extracted $(wc -l < /tmp/notes.md) lines of notes for v$VERSION."
+          fi
+      - name: Attach artifacts to existing release
+        if: steps.exists.outputs.exists == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: {% raw %}${{ needs.build.outputs.tag }}{% endraw %}
+          files: dist/*
+      - name: Create release with CHANGELOG notes
+        if: steps.exists.outputs.exists == 'false' && steps.changelog.outputs.use_auto == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: {% raw %}${{ needs.build.outputs.tag }}{% endraw %}
+          body_path: /tmp/notes.md
+          files: dist/*
+      - name: Create release with auto-generated notes
+        if: steps.exists.outputs.exists == 'false' && steps.changelog.outputs.use_auto == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: {% raw %}${{ needs.build.outputs.tag }}{% endraw %}
+          generate_release_notes: true
+          files: dist/*
+
+  bump-main:
+    # After a successful publish, sync main's ``__version__.py`` to the
+    # released version so future development starts from the right number.
+    # Idempotent: if main already matches, no commit is made. The ``if`` gate
+    # lets this run on both triggers: on ``push`` it waits for ``publish``; on
+    # ``workflow_dispatch`` ``publish`` is skipped (environment gate) but
+    # bump-main is still useful, so the gate treats "skipped" as OK.
+    if: always() && needs.build.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    runs-on: ${{ '{{' }} vars.CI_RUNNER || '{{ ci_runner_default }}' {{ '}}' }}
+    needs: [build, publish]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: {% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}
+      - name: Apply version bump to main
+        run: |
+          VERSION="{% raw %}${{ needs.build.outputs.version }}{% endraw %}"
+          CURRENT=$(grep -oE '"[0-9]+\.[0-9]+\.[0-9]+"' src/{{ package_name }}/__version__.py | tr -d '"')
+          if [ "$CURRENT" = "$VERSION" ]; then
+            echo "main already at $VERSION — nothing to commit."
+            exit 0
+          fi
+          # Never downgrade: only bump when this release is newer than what's
+          # on main. Matters for ``workflow_dispatch`` replays of older tags.
+          NEWER=$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | tail -1)
+          if [ "$NEWER" = "$CURRENT" ]; then
+            echo "main at $CURRENT is ahead of released $VERSION — skipping bump."
+            exit 0
+          fi
+          echo "__version__ = \"$VERSION\"" > src/{{ package_name }}/__version__.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/{{ package_name }}/__version__.py
+          git commit -m "chore: bump __version__ to $VERSION [skip ci]"
+          git push origin main

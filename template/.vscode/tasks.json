@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Type Check: basedpyright",
+      "type": "shell",
+      "command": "uv run basedpyright",
+      "group": "test",
+      "problemMatcher": "$basedpyright",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      "label": "Test: just test",
+      "type": "shell",
+      "command": "just test",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    }
+  ]
+}

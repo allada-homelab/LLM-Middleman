@@ -1,0 +1,11 @@
+project_name: "Render Variations"
+project_type: library
+license: "Apache-2.0"
+python_min: "3.12"
+python_default: "3.13"
+ci_runner_default: "ubuntu-latest"
+include_extras_example: false
+include_pr_labeler: false
+include_discussions: false
+include_devcontainer: false
+include_renovate: false

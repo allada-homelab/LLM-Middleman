@@ -1,0 +1,54 @@
+# pyright: reportUnknownMemberType=false, reportUntypedFunctionDecorator=false, reportUnknownVariableType=false
+"""MCP server (FastMCP) — mounted at ``/mcp`` by the app, or run standalone via stdio.
+
+Three mounting gotchas are baked in here; each one bites the naive setup:
+
+* ``streamable_http_path="/"`` so mounting at ``/mcp`` yields the client URL
+  ``/mcp`` rather than the doubled ``/mcp/mcp``.
+* The app's lifespan must run ``mcp.session_manager.run()`` (see ``app.py``) — a
+  mounted sub-app's own lifespan is never invoked by Starlette, so without it
+  ``/mcp`` requests hang.
+* DNS-rebinding protection rejects unknown ``Host`` headers (421); it's off by
+  default here and enabled by setting an allowlist via
+  ``{{ package_name | upper }}_MCP_ALLOWED_HOSTS``.
+
+``main()`` runs the same server standalone over stdio.
+"""
+
+from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+
+from {{ package_name }}.config import get_settings
+
+
+def _transport_security() -> TransportSecuritySettings:
+    """DNS-rebinding protection, enabled only when an allowlist is configured."""
+    hosts = [h.strip() for h in get_settings().mcp_allowed_hosts.split(",") if h.strip()]
+    if not hosts:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    origins = [f"http://{h}" for h in hosts] + [f"https://{h}" for h in hosts]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins
+    )
+
+
+mcp = FastMCP(
+    "{{ project_name }}",
+    stateless_http=True,
+    streamable_http_path="/",
+    transport_security=_transport_security(),
+)
+
+
+@mcp.tool()
+def ping() -> str:
+    """Return a liveness response."""
+    return "pong"
+
+
+def main() -> None:
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()

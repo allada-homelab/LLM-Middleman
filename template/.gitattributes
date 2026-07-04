@@ -1,0 +1,13 @@
+# Default: let Git auto-detect text vs binary; the contributor's core.autocrlf
+# decides working-tree EOL. Per GitHub's line-endings guidance:
+# https://docs.github.com/en/get-started/git-basics/configuring-git-to-handle-line-endings
+* text=auto
+
+# Shell scripts must stay LF — they run inside Linux containers (or via Git Bash
+# on Windows hosts), where CRLF breaks the shebang.
+*.sh text eol=lf
+
+# Windows batch/command/PowerShell files require CRLF or cmd.exe rejects them.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf

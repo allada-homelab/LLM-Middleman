@@ -1,0 +1,264 @@
+# Copier template for new Python projects (library + backend service).
+#
+# Renders from `template/` (see _subdirectory). Only *.jinja files are rendered
+# (suffix stripped); everything else is copied verbatim so files that legitimately
+# contain `{{ }}` (CI workflows, etc.) are not mangled.
+#
+# VARIABLE CONTRACT — frozen. Authoring agents reference these names and never
+# add new ones without reporting back.
+
+_min_copier_version: "9.3"
+_subdirectory: template
+_templates_suffix: .jinja
+
+# Caches/artifacts never copied into a render, plus conditional whole-file drops.
+# NOTE: _exclude patterns match the POST-suffix-strip DESTINATION path
+# (e.g. `mkdocs.yml`, not `mkdocs.yml.jinja`), evaluated as Jinja at render time.
+_exclude:
+  - "**/__pycache__"
+  - "**/.ruff_cache"
+  - "**/.pytest_cache"
+  - "**/.mypy_cache"
+  - "**/.venv"
+  - "**/node_modules"
+  - "**/.DS_Store"
+  - "copier.yml"
+  - "*.pyc"
+  # ── Service-only files (dropped for library renders) ──────────────────────
+  - "{% if project_type != 'service' %}Dockerfile{% endif %}"
+  - "{% if project_type != 'service' %}.dockerignore{% endif %}"
+  - "{% if project_type != 'service' %}compose.yml{% endif %}"
+  - "{% if project_type != 'service' %}compose.override.yml{% endif %}"
+  - "{% if project_type != 'service' %}.env.example{% endif %}"
+  - "{% if project_type != 'service' %}secrets{% endif %}"
+  - "{% if project_type != 'service' %}src/{{ package_name }}/app.py{% endif %}"
+  - "{% if project_type != 'service' %}src/{{ package_name }}/config.py{% endif %}"
+  - "{% if project_type != 'service' %}src/{{ package_name }}/__main__.py{% endif %}"
+  - "{% if project_type != 'service' %}tests/test_app.py{% endif %}"
+  # ── Optional feature drops ────────────────────────────────────────────────
+  - "{% if not include_devcontainer %}.devcontainer{% endif %}"
+  - "{% if not include_devcontainer %}host_setup_scripts{% endif %}"
+  - "{% if not include_docs_site %}mkdocs.yml{% endif %}"
+  - "{% if not include_docs_site %}docs/index.md{% endif %}"
+  - "{% if not include_docs_site %}docs/quickstart.md{% endif %}"
+  - "{% if not include_docs_site %}docs/api-reference.md{% endif %}"
+  - "{% if not include_docs_site %}.github/workflows/docs.yml{% endif %}"
+  - "{% if not include_pr_title_check %}.github/workflows/pr-title.yml{% endif %}"
+  - "{% if not include_integration_tests %}tests/integration{% endif %}"
+  - "{% if not include_integration_tests %}.github/workflows/integration.yml{% endif %}"
+  - "{% if not include_contract_tests %}tests/contract{% endif %}"
+  - "{% if not include_test_helpers %}src/{{ package_name }}/testing{% endif %}"
+  - "{% if not include_test_helpers %}tests/test_testing_helpers.py{% endif %}"
+  - "{% if not include_extras_example %}src/{{ package_name }}/pretty.py{% endif %}"
+  - "{% if not include_extras_example %}tests/test_pretty.py{% endif %}"
+  - "{% if not include_pr_labeler %}.github/workflows/labeler.yml{% endif %}"
+  - "{% if not include_pr_labeler %}.github/labeler.yml{% endif %}"
+  - "{% if not include_discussions %}.github/DISCUSSION_TEMPLATE/questions.yml{% endif %}"
+  - "{% if not include_renovate %}.github/renovate.json{% endif %}"
+  - "{% if not (project_type == 'library' and include_pypi_publish) %}.github/workflows/release.yml{% endif %}"
+  - "{% if not (project_type == 'service' and include_docker_publish) %}.github/workflows/docker-publish.yml{% endif %}"
+  - "{% if not (project_type == 'service' and include_hadolint) %}.github/workflows/hadolint.yml{% endif %}"
+  - "{% if not (project_type == 'service' and include_image_scan) %}.github/workflows/image-scan.yml{% endif %}"
+  - "{% if not (project_type == 'service' and include_mcp_server) %}src/{{ package_name }}/mcp_server.py{% endif %}"
+
+# Files Copier never overwrites on `copier update`.
+_skip_if_exists:
+  - "uv.lock"
+  - "README.md"
+  - "CHANGELOG.md"
+
+# Post-generation tasks (run as the rendering user → `copier copy --trust`).
+_tasks:
+  - command: "cp -n .env.example .env || true"
+    when: "{{ _copier_operation == 'copy' and project_type == 'service' }}"
+  - command: "cp -n secrets/app_secret.txt.example secrets/app_secret.txt || true"
+    when: "{{ _copier_operation == 'copy' and project_type == 'service' }}"
+  - command: "uv sync --all-groups"
+    when: "{{ _copier_operation == 'copy' }}"
+  - command: "uv run ruff format . >/dev/null 2>&1 || true"
+    when: "{{ _copier_operation == 'copy' }}"
+
+# Cross-version migrations run during `copier update` when stepping across the
+# version that introduces them. None yet — add an entry here when a breaking
+# rename/move needs an automated fixup in already-generated projects. Shape:
+# _migrations:
+#   - version: "v0.3.0"
+#     command: "python scripts/migrate_v0_3.py"
+#     when: "{{ _copier_operation == 'update' }}"
+
+# ─── Project identity ───────────────────────────────────────────────────────
+
+project_name:
+  type: str
+  help: "Human-readable project name (e.g. My Library)."
+
+pkg_dist_name:
+  type: str
+  default: "{{ project_name | lower | replace(' ', '-') | replace('_', '-') }}"
+  help: "PyPI distribution name (kebab-case, e.g. my-library)."
+
+description:
+  type: str
+  default: "A Python project."
+  help: "One-line description for pyproject / README."
+
+author_name:
+  type: str
+  default: "David Allada"
+  help: "Package author name."
+
+author_email:
+  type: str
+  default: "davidanilallada@gmail.com"
+  help: "Package author email."
+
+repo_owner:
+  type: str
+  default: "allada-homelab"
+  help: "GitHub org or username hosting the rendered project."
+
+repo_name:
+  type: str
+  default: "{{ pkg_dist_name }}"
+  help: "GitHub repository name."
+
+license:
+  type: str
+  default: "MIT"
+  choices:
+    - "MIT"
+    - "Apache-2.0"
+    - "BSD-3-Clause"
+    - "Proprietary"
+  help: "SPDX license identifier."
+
+# ─── Structural axis ────────────────────────────────────────────────────────
+
+project_type:
+  type: str
+  default: "library"
+  choices:
+    "Python library / package": "library"
+    "Backend service (FastAPI / MCP)": "service"
+  help: "library = package only; service = package + FastAPI app shell + Docker/compose."
+
+# ─── Toolchain ──────────────────────────────────────────────────────────────
+
+python_min:
+  type: str
+  default: "3.11"
+  choices:
+    - "3.11"
+    - "3.12"
+    - "3.13"
+  help: "Minimum supported Python (support floor; drives requires-python + tool analysis floors)."
+
+python_default:
+  type: str
+  default: "3.13"
+  choices:
+    - "3.12"
+    - "3.13"
+    - "3.14"
+  validator: >-
+    {% if python_default < python_min %}python_default ({{ python_default }}) must be >= python_min ({{ python_min }}){% endif %}
+  help: "Primary interpreter for dev/CI coverage + .python-version (must be >= python_min)."
+
+ci_runner_default:
+  type: str
+  default: "homelab-runners"
+  choices:
+    "Self-hosted homelab runners": "homelab-runners"
+    "GitHub-hosted (ubuntu-latest)": "ubuntu-latest"
+  help: >-
+    Default runner label baked into generated workflows as
+    `${{ '{{' }} vars.CI_RUNNER || '<this>' {{ '}}' }}`. Override per-repo at any
+    time via the CI_RUNNER repository/organization variable.
+
+# ─── Optional feature toggles (all default ON; archetype-gated where relevant) ─
+
+include_devcontainer:
+  type: bool
+  default: true
+  help: "Dev Container (uv feature, DooD, per-worktree agentic-CLI volumes) + host ssh-agent scripts."
+
+include_docs_site:
+  type: bool
+  default: true
+  help: "MkDocs Material + mkdocstrings site + GitHub Pages deploy workflow."
+
+include_pr_title_check:
+  type: bool
+  default: true
+  help: "Conventional-Commits PR title validation workflow."
+
+include_integration_tests:
+  type: bool
+  default: true
+  help: "tests/integration (testcontainers) + nightly integration workflow."
+
+include_contract_tests:
+  type: bool
+  default: true
+  help: "tests/contract tier scaffold."
+
+include_test_helpers:
+  type: bool
+  default: true
+  help: "Shipped public testing helpers module (fakes / record-replay)."
+
+include_renovate:
+  type: bool
+  default: true
+  help: "Renovate config (digest-pin manager) alongside Dependabot."
+
+include_extras_example:
+  type: bool
+  default: true
+  help: "Ship a worked optional-dependency extra + lazy-import / clear-ImportError example."
+
+include_pr_labeler:
+  type: bool
+  default: true
+  help: "PR auto-labeler workflow (actions/labeler) + .github/labeler.yml config."
+
+include_discussions:
+  type: bool
+  default: true
+  help: "GitHub Discussions question-form template."
+
+include_pypi_publish:
+  type: bool
+  default: true
+  when: "{{ project_type == 'library' }}"
+  help: "PyPI Trusted-Publishing release pipeline (library)."
+
+include_docker_publish:
+  type: bool
+  default: true
+  when: "{{ project_type == 'service' }}"
+  help: "GHCR image publish (provenance + SBOM) (service)."
+
+include_hadolint:
+  type: bool
+  default: true
+  when: "{{ project_type == 'service' }}"
+  help: "Hadolint Dockerfile lint in CI (service)."
+
+include_mcp_server:
+  type: bool
+  default: false
+  when: "{{ project_type == 'service' }}"
+  help: "Minimal FastMCP server scaffold (service)."
+
+include_image_scan:
+  type: bool
+  default: true
+  when: "{{ project_type == 'service' }}"
+  help: "Trivy image-vulnerability scan of the built container in CI (service)."
+
+# ─── Computed (hidden) ──────────────────────────────────────────────────────
+
+package_name:
+  default: "{{ pkg_dist_name | replace('-', '_') }}"
+  when: false

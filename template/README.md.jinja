@@ -1,0 +1,43 @@
+# {{ project_name }}
+
+[![CI](https://github.com/{{ repo_owner }}/{{ repo_name }}/actions/workflows/ci.yml/badge.svg)](https://github.com/{{ repo_owner }}/{{ repo_name }}/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-{{ python_min }}%2B-blue)
+{% if license != "Proprietary" %}![License](https://img.shields.io/badge/license-{{ license }}-green)
+{% endif %}
+{{ description }}
+
+## Development
+
+This project uses [uv](https://docs.astral.sh/uv/) and [just](https://just.systems/).
+
+```bash
+just install     # uv sync --all-groups + pre-commit install
+just test        # run unit tests
+just lint        # ruff check
+just fmt         # ruff format
+just typecheck   # basedpyright
+```
+
+> Generated from [{{ repo_owner }}/python-template](https://github.com/{{ repo_owner }}/python-template).
+> Re-render with `copier update`.
+
+## GitHub setup after generation
+
+Some features need a one-time GitHub setting before their workflows go green:
+
+- **CI runner** — workflows run on `${{ '{{' }} vars.CI_RUNNER || '{{ ci_runner_default }}' {{ '}}' }}`. If this repo has no self-hosted runners, set a `CI_RUNNER` repository/organization variable (e.g. `ubuntu-latest`) or CI won't start.
+{%- if include_docs_site %}
+- **Docs (Pages)** — Settings → Pages → Source: **GitHub Actions** (the `docs` workflow deploys there).
+{%- endif %}
+{%- if include_discussions %}
+- **Discussions** — Settings → General → Features → enable **Discussions** (for the question-form template).
+{%- endif %}
+{%- if include_pr_labeler %}
+- **PR labeler** — the labels referenced in `.github/labeler.yml` must exist (create them under Issues → Labels).
+{%- endif %}
+{%- if project_type == "library" and include_pypi_publish %}
+- **PyPI publishing** — configure a [Trusted Publisher](https://docs.pypi.org/trusted-publishers/) for this repo on PyPI before the first `release` run.
+{%- endif %}
+{%- if project_type == "service" and include_docker_publish %}
+- **GHCR image** — `docker-publish` pushes to GHCR via `GITHUB_TOKEN`; make the package public in the repo's Packages settings if you want anonymous pulls.
+{%- endif %}

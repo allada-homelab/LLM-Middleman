@@ -1,0 +1,3 @@
+project_name: "Render Svc On"
+project_type: service
+include_mcp_server: true

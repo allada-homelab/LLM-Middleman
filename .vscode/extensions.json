@@ -1,0 +1,13 @@
+{
+  // Recommended extensions for developing the template on the host (the Dev
+  // Container installs these itself). Mirrors .devcontainer/devcontainer.json.
+  "recommendations": [
+    "anthropic.claude-code",
+    "samuelcolvin.jinjahtml",
+    "redhat.vscode-yaml",
+    "timonwong.shellcheck",
+    "nefrob.vscode-just-syntax",
+    "ms-azuretools.vscode-docker",
+    "eamodio.gitlens"
+  ]
+}

@@ -1,0 +1,30 @@
+name: integration
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  integration:
+    runs-on: ${{ '{{' }} vars.CI_RUNNER || '{{ ci_runner_default }}' {{ '}}' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Log in to Docker Hub
+        # Authenticated pulls lift the anonymous rate limit (100 pulls / 6h
+        # per IP, trivially exhausted by a self-hosted runner pool) to 10k/6h.
+        # Skipped when secrets are unavailable — falls back to anonymous pulls.
+        env:
+          DOCKERHUB_USERNAME: {% raw %}${{ secrets.DOCKERHUB_USERNAME }}{% endraw %}
+          DOCKERHUB_TOKEN: {% raw %}${{ secrets.DOCKERHUB_TOKEN }}{% endraw %}
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v4
+        with:
+          username: {% raw %}${{ secrets.DOCKERHUB_USERNAME }}{% endraw %}
+          password: {% raw %}${{ secrets.DOCKERHUB_TOKEN }}{% endraw %}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "{{ python_default }}"
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked --all-extras --all-groups
+      - run: uv run pytest tests/integration -m integration --maxfail=1 -q

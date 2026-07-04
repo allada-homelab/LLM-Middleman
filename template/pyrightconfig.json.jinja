@@ -1,0 +1,20 @@
+{
+  "typeCheckingMode": "strict",
+  "pythonVersion": "{{ python_min }}",
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": ["src"],
+  "include": ["src/{{ package_name }}", "tests"],
+  "exclude": ["**/__pycache__", "**/.venv", "**/node_modules"],
+  "reportMissingTypeStubs": "none",
+  "reportUnnecessaryTypeIgnoreComment": "error",
+  "reportUnusedCallResult": "none",
+  "reportImplicitStringConcatenation": "warning",
+  "executionEnvironments": [
+    {
+      "root": "tests",
+      "reportPrivateUsage": "none",
+      "reportUnusedFunction": "none"
+    }
+  ]
+}
