@@ -1,7 +1,7 @@
 ---
 id: LLMM-002
 title: Spec-compliant SSE reader (`backends/_sse.py`) + raw-byte test harness
-status: in-review
+status: done
 phase: 1
 depends_on: []
 ---
