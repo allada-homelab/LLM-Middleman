@@ -1,7 +1,7 @@
 ---
 id: LLMM-005
 title: Backend-agnostic conversation entity (never-hangs guard, timeouts, continue_conversation, memory_scope)
-status: todo
+status: in-review
 phase: 1
 depends_on: [LLMM-003, LLMM-004]
 ---
@@ -186,36 +186,49 @@ Core openai_conversation registers via the platform and does NOT call `async_set
 prefer that if confirmed, else keep the v0 calls keyed on the subentry.
 
 ## Acceptance criteria
-- [ ] `async_setup_entry` builds the adapter via `BACKEND_TO_CLS[entry.data[CONF_BACKEND_TYPE]]
+- [x] `async_setup_entry` builds the adapter via `BACKEND_TO_CLS[entry.data[CONF_BACKEND_TYPE]]
       (hass, async_create_clientsession(hass), entry.data)`, stores it in `entry.runtime_data`,
       and forwards the `CONVERSATION` platform; `async_unload_entry` unloads it. A config entry
       with a (fake) registered backend type sets up and unloads cleanly.
-- [ ] One conversation entity is created per `conversation` subentry (unique_id =
+      (Uses the `get_backend_cls()` factory accessor — the LLMM-003 public wrapper over
+      `BACKEND_TO_CLS` — so an unknown type raises a clear `ValueError` instead of a bare
+      `KeyError`. `test_setup_builds_adapter_and_forwards`, `test_setup_and_unload_end_to_end`,
+      `test_setup_unknown_backend_raises`, `test_unload_delegates`.)
+- [x] One conversation entity is created per `conversation` subentry (unique_id =
       `subentry.subentry_id`); zero subentries ⇒ zero entities.
-- [ ] `_async_handle_message` calls `async_provide_llm_data` with `llm_api=None`, the
+      (`test_one_entity_per_subentry`, `test_zero_subentries_zero_entities`.)
+- [x] `_async_handle_message` calls `async_provide_llm_data` with `llm_api=None`, the
       subentry system prompt, and `extra_system_prompt`; `ConverseError` returns
       `err.as_conversation_result()`.
-- [ ] A successful turn streams the adapter's deltas into `chat_log` and returns a result
-      whose response text equals the concatenated deltas.
-- [ ] The guard guarantees ≥1 `AssistantContent` for: (a) adapter yields nothing,
+      (`test_provides_llm_data_without_ha_tools`, `test_converse_error_is_returned`.)
+- [x] A successful turn streams the adapter's deltas into `chat_log` and returns a result
+      whose response text equals the concatenated deltas. (`test_streams_deltas_and_builds_result`.)
+- [x] The guard guarantees ≥1 `AssistantContent` for: (a) adapter yields nothing,
       (b) adapter raises `ValueError`/`UnicodeDecodeError`/`TimeoutError` before any delta,
       (c) adapter raises after ≥1 delta. No exception escapes `_async_handle_message`.
-- [ ] The single-turn drive is factored into a method LLMM-014 can wrap in a loop (no
-      inline `range(MAX_TOOL_ITERATIONS)` here).
-- [ ] `build_client_timeout(options)` returns `total=CONF_TIMEOUT`, `sock_read=IDLE_TIMEOUT`.
-- [ ] `result.continue_conversation` is `True` when either HA's `?`-detection OR
+      (`test_guard_silent_end`, `test_guard_exception_before_content` [parametrized],
+      `test_guard_exception_after_content`.)
+- [x] The single-turn drive is factored into a method LLMM-014 can wrap in a loop (no
+      inline `range(MAX_TOOL_ITERATIONS)` here). (`_async_run_turn`.)
+- [x] `build_client_timeout(options)` returns `total=CONF_TIMEOUT`, `sock_read=IDLE_TIMEOUT`.
+      (Lives in `backends/base.py`, not the entity module, so future adapters import it
+      without a cycle back through `conversation`. `test_build_client_timeout_defaults`,
+      `test_build_client_timeout_per_agent`.)
+- [x] `result.continue_conversation` is `True` when either HA's `?`-detection OR
       `ctx.continue_conversation` (set by the adapter during `stream_turn`) is set.
-- [ ] `_derive_memory_key` returns `conversation_id` for `conversation` scope,
+      (`test_continue_conversation_override`, `test_continue_conversation_default_false`.)
+- [x] `_derive_memory_key` returns `conversation_id` for `conversation` scope,
       device-derived key for `device` scope (falling back to `conversation_id` with no
-      device), and `subentry_id` for `agent` scope.
-- [ ] gates green: `just check` + `just typecheck`.
+      device), and `subentry_id` for `agent` scope. (`test_memory_key_scopes` [parametrized].)
+- [x] gates green: `just check` + `just typecheck`.
 
 ## Verification
 Unit tests in `tests/` using the ported MockChatLog harness (LLMM-004) and a **fake
 adapter** whose `stream_turn` yields scripted deltas / raises scripted exceptions (do not
 touch a real backend here — that is the adapter tickets' job):
 - `test_streams_deltas_and_builds_result` — fake yields `{"role":"assistant"}`,
-  `{"content":"hel"}`, `{"content":"lo"}`; assert chat log + result text == "hello".
+  `{"content":"Hello "}`, `{"content":"world"}`; assert chat log + result text ==
+  "Hello world".
 - `test_guard_silent_end` — fake yields nothing; assert one assistant message ==
   `ERROR_MESSAGE`, no raise.
 - `test_guard_exception_before_content` — parametrize fake raising `ValueError`,
@@ -241,6 +254,37 @@ Run `just test` (or `just check`) + `just typecheck`; record the baseline failin
 report the delta.
 
 ## Risks / open questions
-- **Agent-registration checkpoint:** whether `async_set_agent`/`AbstractConversationAgent`
-  are still required alongside `ConversationEntity` for a subentry-scoped entity — verify
-  against the installed HA source before finalizing (plan §Implementation-time checkpoints).
+- **Agent-registration checkpoint — RESOLVED:** verified against the installed HA
+  source (`.venv/.../components/openai_conversation/conversation.py`, HA 2026.7). Core
+  `openai_conversation` — the plan's cited template — STILL subclasses
+  `AbstractConversationAgent` and STILL calls
+  `conversation.async_set_agent(self.hass, self.entry, self)` /
+  `async_unset_agent(self.hass, self.entry)` in `async_added_to_hass` /
+  `async_will_remove_from_hass`, keyed on the **parent entry** (not the subentry —
+  `async_set_agent` takes a `ConfigEntry` and uses `config_entry.entry_id`). The ticket's
+  guess that core "does NOT call `async_set_agent`" was wrong per the installed source, so
+  this entity mirrors core verbatim: keeps the base class (with the one
+  `reportPrivateImportUsage` pyright-ignore that core's shape forces — `AbstractConversationAgent`
+  is namespace-visible but absent from `conversation.__all__`) and the two lifecycle calls
+  keyed on `self.entry`. With multiple subentries the legacy agent-manager map is
+  last-writer-wins, but that map is only a fallback — routing is per-`entity_id` via the
+  entity platform — which is exactly how core behaves; `test_one_entity_per_subentry` and
+  `test_setup_and_unload_end_to_end` exercise the full add/remove cycle cleanly.
+
+## Implementation notes (delta from brief — for the reviewer)
+- **`const.py` additions** (grouped under a `# --- v1 re-architecture (LLMM-005) ---`
+  header, existing v0 constants untouched): `CONF_BACKEND_TYPE`, `CONF_TIMEOUT`,
+  `CONF_MEMORY_SCOPE`, `MEMORY_SCOPE_{CONVERSATION,DEVICE,AGENT}`,
+  `SUBENTRY_TYPE_CONVERSATION`, `IDLE_TIMEOUT = 30`. `DEFAULT_TIMEOUT = 60` and
+  `ERROR_MESSAGE` already existed.
+- **`CONF_PROMPT`** is imported from `homeassistant.const` (value `"prompt"`, exactly as
+  core openai/ollama do) rather than duplicated in our `const.py` — it is a core HA
+  constant, not a name "missing" from HA; the subentry flow (LLMM-007) uses the same core
+  key, so there is a single source of truth. (Deviates from the brief's "import from
+  const.py" list for this one symbol; noted here per the brief's "note it in the PR" rule.)
+- **`build_client_timeout`** placed in `backends/base.py` (the brief's sanctioned "if
+  base.py exposes a home, put it there" path) instead of the entity module, because a
+  future adapter importing it from `conversation.py` would create an
+  adapter→conversation→backends cycle. base.py reaches `const` via an **absolute** import
+  (`from custom_components.llm_middleman.const import ...`) — a parent-relative `..const`
+  trips ruff `TID252`.
