@@ -1,7 +1,7 @@
 ---
 id: LLMM-012
 title: n8n adapter (Chat Trigger/plain webhook, dual streaming/blocking)
-status: todo
+status: in-review
 phase: 2
 depends_on: [LLMM-003, LLMM-004]
 ---
@@ -88,21 +88,21 @@ reach the backend; multiple begin/end blocks per run).
   `CONF_SESSION_FIELD` (`sessionId`), `BACKEND_N8N = "n8n"`.
 
 ## Acceptance criteria
-- [ ] `N8nAdapter(BackendAdapter)` with `backend_type = "n8n"`,
+- [x] `N8nAdapter(BackendAdapter)` with `backend_type = "n8n"`,
       `supports_ha_tools = False`, registered in `BACKEND_TO_CLS`.
-- [ ] Request POSTs `{webhook_url}` with `{<session_field>, <input_field>}` (+ `action`
+- [x] Request POSTs `{webhook_url}` with `{<session_field>, <input_field>}` (+ `action`
       only for Chat Trigger) and optional system-prompt field.
-- [ ] The adapter branches on the **actual response content-type/first bytes**, not the
+- [x] The adapter branches on the **actual response content-type/first bytes**, not the
       `streaming` toggle; a blocking body from a "streaming" config is handled correctly.
-- [ ] NDJSON path accumulates `item.content`, streams deltas immediately, and treats **EOF
+- [x] NDJSON path accumulates `item.content`, streams deltas immediately, and treats **EOF
       (not `end`) as done**, tolerating multiple begin/end cycles.
-- [ ] `error` chunks and HTML bodies → `BackendStreamError` (guard fallback).
-- [ ] Blocking path reads `output_field` → `text` fallback chain; missing output field →
+- [x] `error` chunks and HTML bodies → `BackendStreamError` (guard fallback).
+- [x] Blocking path reads `output_field` → `text` fallback chain; missing output field →
       surfaced error, never raw JSON spoken.
-- [ ] Auth `none`/`basic`/`header` all work; credentials redacted from logs.
-- [ ] `sessionId` = `ctx.memory_key`; a truthy `continueConversation` output field sets
+- [x] Auth `none`/`basic`/`header` all work; credentials redacted from logs.
+- [x] `sessionId` = `ctx.memory_key`; a truthy `continueConversation` output field sets
       `ctx.continue_conversation`; timeout defaults to 30 s.
-- [ ] Gates green: `just check` + `just typecheck`.
+- [x] Gates green: `just check` + `just typecheck`.
 
 ## Verification
 Write `tests/backends/test_n8n.py` driving **raw bytes** through the real parsers (split
@@ -126,6 +126,26 @@ blocking-response path and the wrong-mode mismatch"):
   logged output.
 Run `just check` + `just typecheck`; record delta vs baseline.
 
+### Verification evidence (executed)
+`tests/backends/test_n8n.py` (23 tests) drives raw bytes through the real parser via the
+conftest harness and covers every case above (streaming happy path split mid-object,
+multiple begin/end cycles, whitespace-preserved content, wrong-mode mismatch, blocking
+output→text fallback + custom field + pretty-printed body, missing output field surfaced,
+`continueConversation`, error chunk, HTML body, malformed line skipped, silent stream end,
+action gating, basic/header auth + redaction, 30 s default timeout, factory registration,
+URL-shape validation).
+
+- `just check` → `78 passed, 2 warnings` (baseline 55 → +23 new; no existing test
+  regressed). The 2 warnings are aiohttp's `BasicAuth` deprecation (see Risks).
+- `just typecheck` (basedpyright strict) → `0 errors, 0 warnings, 0 notes`.
+- lint (`ruff check`) → `All checks passed!`; `ruff format --check` → clean;
+  `uv lock --check` → up to date.
+
+Note: `tests/test_backends_base.py::test_factory_empty_registry_raises` (LLMM-003) asserted
+the registry was empty "until the first adapter"; since LLMM-012 is that first adapter, it
+was renamed to `test_factory_unknown_type_raises` and now asserts an *unregistered* type
+still raises while n8n resolves.
+
 ## Risks / open questions
 - **No connection probe** is a deliberate trade — the webhook is opaque and POSTing during
   config would fire the live workflow. E2E (LLMM-018) is the real validation. Document this
@@ -136,3 +156,8 @@ Run `just check` + `just typecheck`; record delta vs baseline.
 - **`continueConversation` output field** sets `ctx.continue_conversation` via the
   `TurnContext` channel (LLMM-003) — the same seam converse uses; no cross-ticket
   coordination is outstanding.
+- **`aiohttp.BasicAuth` is deprecated** in the installed aiohttp (removal in 4.0; warning
+  emitted at test time). This ticket keeps `BasicAuth` as the plan/base.py convention
+  prescribes; migrating basic auth to `aiohttp.encode_basic_auth()` + an `Authorization`
+  header is a small, mechanical follow-up to do repo-wide (not just here) so the
+  convention stays consistent across adapters.

@@ -14,7 +14,8 @@ repos:
     hooks:
       - id: codespell
         # hass = Home Assistant object/domain term (not "hash").
-        args: ["-L", "hass"]
+        # hel = deliberate mid-object split of "Hello" in n8n stream-parser test data.
+        args: ["-L", "hass,hel"]
         additional_dependencies: ["tomli"]
 
   # Local hooks invoke the project's pinned ruff via uv, so the hook, CI, and
