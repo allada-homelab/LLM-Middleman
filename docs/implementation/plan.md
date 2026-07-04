@@ -317,7 +317,7 @@ Full sweep of HA 2026.7.1's AI/LLM surface performed against the installed sourc
   support; `announce`/`ask_question` never invoke the agent — nothing to do).
 - `continue_conversation` derived + explicit `ConversationResult` override.
 - README/docs note: sentence triggers and `prefer_local_intents` intercept turns BEFORE
-  any agent — pre-empts "my agent never got the message" reports.
+  any agent — preempts "my agent never got the message" reports.
 - `diagnostics.py` (anthropic-style: redact API keys, prompts, URLs) in Phase 4 — tiny,
   HACS-quality win.
 

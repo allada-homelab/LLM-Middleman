@@ -1,25 +1,30 @@
 # 01 — Home Assistant 2026.7 Reference (Conversation · LLM · Voice · AI Task · MCP)
 
-> **What this is.** The full synthesized research report from a 12-agent study of
-> Home Assistant 2026.7 (developer docs + `home-assistant/core` source + the official
-> `ollama` / `openai_conversation` / `anthropic` / `google_generative_ai` integrations).
-> It was originally written to guide a rewrite of the sibling `LLM-Home-Controller`
-> integration, and is **retained here verbatim** because it is the authoritative HA
-> knowledge base for anything built on the Assist / Conversation / LLM stack — the
-> passthrough shim included.
+> **⚠ QUARANTINED — EXTERNAL REFERENCE, NOT A DESCRIPTION OF THIS REPO.**
+> This is a research report written for the **sibling `LLM-Home-Controller` repo** and
+> **retained here verbatim** for its generic HA 2026.7 API knowledge. It is *not* a
+> description of `LLM-Middleman`. **Do not read any component-level, present-tense claim
+> here as describing this repo's code.** In particular, everything it describes as
+> existing — a provider `Protocol` + adapters, `ai_task.py`, a usage `sensor.py`, memory
+> tools / `CONF_MEMORY_ENABLED`, `entity.py` line references, a ~3.2k-LOC integration —
+> belongs to the **sibling repo**, and much of it does **not exist in `LLM-Middleman`**
+> (e.g. this repo has no `ai_task.py`, no `sensor.py`, no registered `llm.API`, and a
+> `backends/`-adapter shape). This repo's actual architecture is
+> [`03-the-shim.md`](03-the-shim.md) and [`../implementation/plan.md`](../implementation/plan.md);
+> ground every claim against the code — **the code wins**.
 >
-> **How to read it for the shim project:**
-> - **§1–§6 and §10** = pure HA best-practice / API / LLM / voice / AI-Task / MCP /
->   testing / distribution knowledge. Directly applicable. Read these first.
-> - **§7–§9** review the *prior* `LLM-Home-Controller` implementation (an agent that
->   embeds the LLM *inside* HA). Kept as **lessons learned**. The passthrough shim is
->   architecturally different — it *forwards* the turn to an external service instead
->   of running the model in-process — **but the HA plumbing it touches
->   (ConversationEntity, ChatLog, streaming deltas, Assist exposure, conversation_id)
->   is identical**, so every API fact here still applies to the shim.
+> **What is still safe to use here:**
+> - **§1–§6 and §10** — generic HA best-practice / API / LLM / voice / AI-Task / MCP /
+>   testing / distribution knowledge (the `ConversationEntity` / `ChatLog` / streaming-delta
+>   signatures HA itself defines). These apply to any HA integration, this one included —
+>   but verify each signature against the installed HA source before depending on it.
+> - **§7–§9** — a review of the *prior* `LLM-Home-Controller` implementation, kept only as
+>   **lessons learned**. It embeds the LLM *inside* HA; `LLM-Middleman` instead forwards the
+>   turn to an external backend, so its concrete components differ entirely.
 >
-> **Cross-refs:** `03-the-shim.md` maps these primitives onto the passthrough shim;
-> `05-architecture-decisions-and-tradeoffs.md` records why we chose passthrough.
+> Because this file is quarantined verbatim, any grep hit inside it for `LLM-Home-Controller`
+> internals (provider Protocol, `ai_task.py`, `CONF_MEMORY_ENABLED`, `sensor.py`, …) is
+> sibling-repo reference, not a claim about this repo.
 
 ---
 

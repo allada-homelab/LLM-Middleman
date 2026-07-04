@@ -1,7 +1,7 @@
 ---
 id: LLMM-017
 title: Docs rewrite (knowledge base, README, stale-claim fixes, CHANGELOG)
-status: todo
+status: in-review
 phase: 4
 depends_on: [LLMM-009, LLMM-010, LLMM-011, LLMM-012, LLMM-013]
 ---
@@ -38,6 +38,25 @@ lands in Phases 1–3 — per `CLAUDE.md` §Ground-truth discipline, the code wi
 - `README.md`: describe the five presets + the parent/subentry config model; add the
   local-intents note.
 - `CHANGELOG.md`: replace the stale "Initial project scaffold" with the v1 rewrite entry.
+
+**In (amended — small, sanctioned doc/config fixes bundled into this docs PR):**
+- **Make `uv run pre-commit run --all-files` green.** Baseline on `main` was RED (the two
+  items below); the docs gate now covers the whole-repo pre-commit run.
+  - `LICENSE` ended with a stray extra blank line (`SOFTWARE.\n\n`), failing
+    `end-of-file-fixer`. Fixed to a single trailing newline (`SOFTWARE.\n`). *(The parent
+    brief's "add a trailing newline" was a mis-diagnosis of the byte state — the file
+    already had a newline plus an extra blank line; the correct fix removes the extra one.)*
+  - `codespell` flagged the hyphenated spelling of the "preempt" verb (and its -s / -ing
+    forms) in three files. Reworded to the closed spelling "preempt" / "preempts" /
+    "preempting" (no ignore flags added, per the fix-the-gate rule):
+    `docs/implementation/plan.md` (§Adjacent, "preempts"), this ticket (README-note line,
+    "preempting"), and `docs/implementation/tickets/LLMM-019-release-engineering.md`
+    (hassfest section, "preempt").
+- **`docs/implementation/tickets/LLMM-002-sse-reader.md`** — added a Risks note: `_sse.py`
+  does not strip a leading UTF-8 BOM (WHATWG says discard one); low practical risk, tracked.
+- **`CLAUDE.md`** — fixed a reference to a nonexistent `just install` recipe (the real
+  recipe is `just sync`; the devcontainer's `.devcontainer/post-create.sh` runs
+  `uv sync --all-groups` and installs the pre-commit hooks).
 
 **Out:**
 - Renaming the repo / resolving the "middleman = shim vs middleman = brain" naming
@@ -109,7 +128,7 @@ each against the current file before editing, line numbers drift):**
 **README local-intents note (plan §Adjacent — "In v1").** Add a short section: sentence
 triggers and `prefer_local_intents` intercept turns **before** any conversation agent
 runs, and HA's intent stage handles timers/simple device control ahead of the agent —
-pre-empting "my agent never got the message" reports (research-2 constraint #3).
+preempting "my agent never got the message" reports (research-2 constraint #3).
 
 **README preset + config section.** Document the five presets (OpenAI-compatible,
 LangGraph, custom `/v1/converse`, Ollama, n8n), the parent-entry (connection) +
@@ -118,43 +137,75 @@ conversation-subentry (per-agent) model, and which presets support the HA tool l
 
 ## Acceptance criteria
 
-- [ ] `docs/knowledge/03-the-shim.md` describes the multi-backend architecture with
-      `/v1/converse` as one preset; no remaining "the contract" framing.
-- [ ] `docs/external-agent-handoff/` reframes `/v1/converse` as an optional preset and
-      resolves the "frozen contract" language.
-- [ ] `docs/knowledge/01-home-assistant-reference.md` is quarantined or trimmed so it no
-      longer asserts non-existent code as present in this repo; `README.md:12`'s framing
-      is fixed.
-- [ ] All eight stale claims above are corrected (each traceable to an edit).
-- [ ] `README.md` documents the five presets, parent/subentry model, tool-capable
-      presets, and the local-intents note.
-- [ ] `CHANGELOG.md` reflects the v1 rewrite, not "Initial project scaffold."
-- [ ] Gates green: `just check` + `just typecheck` (docs-only changes must not break
-      markdown/link checks in the gate).
+- [x] `docs/knowledge/03-the-shim.md` describes the multi-backend architecture with
+      `/v1/converse` as one preset; no remaining "the contract" framing. *(Rewritten:
+      §4 preset matrix, "one of five presets", `converse` as the reference preset.)*
+- [x] `docs/external-agent-handoff/` reframes `/v1/converse` as an optional preset and
+      resolves the "frozen contract" language. *(README "one hard rule" + brief §4 header
+      reframed; scope note added; `context` field marked not-sent.)*
+- [x] `docs/knowledge/01-home-assistant-reference.md` is quarantined (strong
+      external-reference banner at the top stating it describes the sibling repo, not this
+      one); `docs/knowledge/README.md`'s framing of 01 is fixed.
+- [x] All eight stale claims above are corrected (each traceable to an edit — see
+      Verification).
+- [x] `README.md` documents the five presets, parent/subentry model, tool-capable presets
+      (documented as built — see the tool-capability divergence note in Risks), and the
+      local-intents note.
+- [x] `CHANGELOG.md` reflects the v1 rewrite, not "Initial project scaffold."
+- [x] Gates green: `just check` + `just typecheck`, plus `uv run pre-commit run
+      --all-files` (see Verification for quoted output).
 
 ## Verification
 
-- `grep -rn "v1/converse" docs/ README.md` → every remaining hit frames it as a preset,
-  not the boundary contract (manual read of each).
-- `grep -rn "context\|continue_conversation\|done.text\|frozen" docs/` → each surviving
-  hit matches the shipped v1 behavior (cross-read against `backends/converse.py` and
-  `conversation.py` as landed in Phase 2/3).
-- `grep -rn "provider Protocol\|ai_task.py\|CONF_MEMORY_ENABLED\|sensor.py"
-  docs/knowledge/01*` → either zero hits or all under an explicit external-reference
-  quarantine header.
-- Read `README.md` end-to-end: five presets present, parent/subentry model present,
-  local-intents note present.
-- Read `CHANGELOG.md`: no "Initial project scaffold" line remains.
-- Any repo doc-lint/link-check recipe in the gate passes (`just check`).
+Executed in the LLMM-017 worktree (branch `llmm-017-docs-rewrite`, off `main` @ 9cdb9e3):
+
+- **Stale claim → edit traceability (all 8):**
+  1. Doc 01 sibling-repo content — quarantine banner added to
+     `docs/knowledge/01-home-assistant-reference.md`; `docs/knowledge/README.md` 01 row +
+     summary reframed.
+     `grep -rniE "provider Protocol|ai_task.py|CONF_MEMORY_ENABLED|sensor\.py"
+     docs/knowledge/01-home-assistant-reference.md` → all hits are inside the quarantined
+     verbatim body, under the explicit banner (banner names each term as sibling-repo
+     reference). ✅
+  2. `/v1/converse` as THE frozen contract — `03` §4, brief §4 header, and handoff README
+     "one hard rule" all reframed to "one preset". `grep -rniE "frozen" docs/knowledge
+     docs/external-agent-handoff` → no remaining contract-frozen framing (only the
+     LLMM-002 `@dataclass(frozen=True)` reference remains, unrelated). ✅
+  3. `context` request field — never sent (`backends/converse.py::stream_turn` body =
+     `conversation_id`/`text`/`language`/`device_id?`). Marked not-sent in `03` §4 and
+     brief §4. ✅
+  4. `continue_conversation` now wired — documented in `03` §6, `06` glossary, brief §2.1
+     + §4 handling (matches `conversation.py:162` OR-in and `converse.py:154-155`
+     `done.continue_conversation` / `n8n.py:264-265` `continueConversation`). ✅
+  5. `done.text` authoritative phrasing — corrected to "deltas authoritative; `done.text`
+     only when nothing streamed" in `03` §4 and brief §4 (matches `converse.py:156-160`). ✅
+  6. Resolved "open decisions" — `03` §10 marks transport / HA-tool exposure /
+     single-vs-subentries as resolved by v1. ✅
+  7. Backend-matrix open-vs-settled — `05` open-decisions §3 and brief §10 item 5 reframed
+     to "target set settled; per-model tool-calling remains to verify", agreeing with
+     `02` §1 / `llm-providers.md` §1. ✅
+  8. CHANGELOG — `CHANGELOG.md` now carries the v1 rewrite entry; no "Initial project
+     scaffold" line (`grep -n "Initial project scaffold" CHANGELOG.md` → no match). ✅
+- `README.md` read end-to-end: five-preset table, parent/subentry config model, tool-loop
+  section, follow-up listening, and the local-intents note all present.
+- **Gates (all green, quoted in the PR):** `just lint`, `just fmt-check`, `just typecheck`
+  (basedpyright strict, 0 errors), `just test` (212 passed), `just lock-check`, and
+  `uv run pre-commit run --all-files` (exit 0 — codespell + end-of-file-fixer now pass).
 
 ## Risks / open questions
 
 - **Owner decision (open question, not resolved here):** whether to rename to kill the
-  "middleman = the shim (this repo) vs middleman = the external brain" collision
-  (`06-glossary-and-references.md:57-64` calls the brain "not this repo, despite the repo
-  name"). Surface it to the owner; do not rename in this ticket.
-- Line-number anchors above are from research-3.json against the v0 docs and will have
-  drifted after Phases 1–3 doc-adjacent edits — locate each claim by content, not line.
-- This ticket must land after the code it documents; if any Phase 2/3 behavior differs
-  from plan (e.g. converse `continue_conversation` wiring changed), document the code as
-  built and flag the plan divergence rather than documenting the plan.
+  "middleman = this HA integration vs middleman = the external brain" collision
+  (`06-glossary-and-references.md` calls the brain "not this repo, despite the repo name").
+  Surface it to the owner; do not rename in this ticket. Flagged in `03` §10.
+- **Tool-capability documented as built, not as planned.** `plan.md` lists
+  OpenAI-compatible **and** Ollama as HA-tool-capable, but on `main` only
+  `openai_compat.py` sets `supports_ha_tools = True`; `ollama.py:121` is still `False`
+  (its HA-tool wiring lands in LLMM-015, not yet merged). Per §Ground-truth discipline the
+  docs describe the shipped code: README/`03` present **OpenAI-compatible as the
+  tool-capable preset** and mark Ollama tool support as "not yet". When LLMM-015 merges,
+  flip the two "not yet" notes (README preset table + `03` §4 footnote) to "yes".
+- Line-number anchors in the claim list are from v0-era research and have drifted; each
+  claim was located by content, not line.
+- This ticket lands after the code it documents; where behavior differed from plan (the
+  tool-capability note above), the code-as-built is documented and the divergence flagged.

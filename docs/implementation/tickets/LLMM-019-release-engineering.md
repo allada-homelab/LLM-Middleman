@@ -55,7 +55,7 @@ release is the last gate, so all quality work must be done and the E2E matrix pa
   art; the `home-assistant/brands` PR is required.
 
 **hassfest.** It runs in `.github/workflows/validate.yml` on push/PR. Confirm green on
-the release commit. Common failures to pre-empt (research-1 §manifest / HACS):
+the release commit. Common failures to preempt (research-1 §manifest / HACS):
 - `version` present and AwesomeVersion-valid (SemVer) — required for custom integrations.
 - Required manifest keys present: `domain, name, codeowners, dependencies, documentation,
   integration_type, iot_class, requirements` (+ `issue_tracker` for HACS).
