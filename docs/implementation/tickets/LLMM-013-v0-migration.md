@@ -1,7 +1,7 @@
 ---
 id: LLMM-013
 title: v0→v1 config-entry migration (v0 entry → converse parent + subentry)
-status: in-review
+status: done
 phase: 2
 depends_on: [LLMM-007, LLMM-009]
 ---
