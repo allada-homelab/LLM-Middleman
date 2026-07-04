@@ -1,7 +1,7 @@
 ---
 id: LLMM-003
 title: Adapter interface & factory (`backends/base.py`, `BACKEND_TO_CLS`)
-status: in-review
+status: done
 phase: 1
 depends_on: []
 ---
