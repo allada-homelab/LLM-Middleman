@@ -34,10 +34,13 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_NUM_CTX,
     CONF_THINK,
+    CONF_TIMEOUT,
+    IDLE_TIMEOUT,
 )
 from tests.conftest import (
     TEST_BASE_URL,
     FakeStreamResponse,
+    MockChatLog,
     chunk_bytes,
     fake_aiohttp_session,
 )
@@ -348,3 +351,14 @@ def test_convert_content_maps_roles() -> None:
     assert _convert_content(conversation.UserContent(content="u")) == {"role": "user", "content": "u"}
     asst = conversation.AssistantContent(agent_id="a", content="hi", thinking_content="why")
     assert _convert_content(asst) == {"role": "assistant", "content": "hi", "thinking": "why"}
+
+
+async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # The per-agent CONF_TIMEOUT plus the shared idle deadline reach the wire call.
+    response = FakeStreamResponse([b'{"message":{"role":"assistant","content":"x"},"done":true}\n'])
+    session = fake_aiohttp_session(response=response)
+    adapter = _adapter(hass, session)
+    await _run(adapter, mock_chat_log, options={CONF_MODEL: "llama3", CONF_TIMEOUT: 45})
+    timeout = session.post.call_args.kwargs["timeout"]
+    assert timeout.total == 45
+    assert timeout.sock_read == IDLE_TIMEOUT

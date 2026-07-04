@@ -28,7 +28,10 @@ type LLMMiddlemanConfigEntry = ConfigEntry[BackendAdapter]
 async def async_setup_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> bool:
     """Build the backend adapter and forward the conversation platform."""
     adapter_cls = get_backend_cls(entry.data[CONF_BACKEND_TYPE])
-    entry.runtime_data = adapter_cls(hass, async_create_clientsession(hass), entry.data)
+    # entry_id rides along so adapters needing a per-entry discriminator (the
+    # langgraph thread-map Store) never fall back to a shareable base_url slug.
+    connection_data = {**entry.data, "entry_id": entry.entry_id}
+    entry.runtime_data = adapter_cls(hass, async_create_clientsession(hass), connection_data)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

@@ -50,6 +50,7 @@ from .base import (
     BackendStreamError,
     DeltaStream,
     TurnContext,
+    build_client_timeout,
 )
 
 
@@ -197,6 +198,7 @@ class OllamaAdapter(BackendAdapter):
             f"{base_url}/api/chat",
             json=body,
             headers=_auth_headers(self.connection_data),
+            timeout=build_client_timeout(ctx.options),
         ) as response:
             if response.status != 200:
                 raise BackendConnectionError(f"Ollama /api/chat returned HTTP {response.status}")

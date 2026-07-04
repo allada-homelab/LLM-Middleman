@@ -54,7 +54,13 @@ from custom_components.llm_middleman.const import (
 )
 
 from ._sse import BackendStreamError, async_iter_sse
-from .base import BackendAdapter, BackendAuthError, BackendConnectionError, DeltaStream
+from .base import (
+    BackendAdapter,
+    BackendAuthError,
+    BackendConnectionError,
+    DeltaStream,
+    build_client_timeout,
+)
 
 if TYPE_CHECKING:
     from homeassistant.components import conversation
@@ -67,7 +73,6 @@ _LOGGER = logging.getLogger(__name__)
 # symbols; used as literals here (mirroring tests/conftest.py) until they land.
 _CONF_BASE_URL = "base_url"
 _CONF_API_KEY = "api_key"
-_CONF_TIMEOUT = "timeout"
 _CONF_ENTRY_ID = "entry_id"
 _CONF_MEMORY_SCOPE = "memory_scope"
 _SCOPE_CONVERSATION = "conversation"
@@ -211,7 +216,7 @@ class LangGraphAdapter(BackendAdapter):
         """
         del chat_log  # server-side history; only the new turn is forwarded
         options = ctx.options
-        timeout = aiohttp.ClientTimeout(total=float(options.get(_CONF_TIMEOUT, DEFAULT_TIMEOUT)))
+        timeout = build_client_timeout(options)
 
         if bool(options.get(CONF_STATELESS_RUNS, False)):
             async for delta in self._run_stream(None, user_input, options, timeout):

@@ -30,6 +30,8 @@ async def test_setup_builds_adapter_and_forwards(hass: HomeAssistant) -> None:
     assert isinstance(entry.runtime_data, FakeAdapter)
     assert isinstance(entry.runtime_data, BackendAdapter)
     assert entry.runtime_data.connection_data["backend_type"] == "fake"
+    # __init__ injects entry_id so adapters can key per-entry storage.
+    assert entry.runtime_data.connection_data["entry_id"] == entry.entry_id
     forward.assert_called_once()
 
 

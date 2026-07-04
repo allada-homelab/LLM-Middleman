@@ -40,7 +40,14 @@ from custom_components.llm_middleman.const import (
 
 from ._history import trim_history
 from ._sse import async_iter_sse
-from .base import BackendAdapter, BackendAuthError, BackendConnectionError, DeltaStream, TurnContext
+from .base import (
+    BackendAdapter,
+    BackendAuthError,
+    BackendConnectionError,
+    DeltaStream,
+    TurnContext,
+    build_client_timeout,
+)
 
 # The provider terminates the SSE stream with this literal payload, not JSON.
 _DONE_SENTINEL = "[DONE]"
@@ -175,7 +182,12 @@ class OpenAICompatAdapter(BackendAdapter):
         headers = {"Accept": "text/event-stream", **_auth_headers(self.connection_data)}
         url = f"{_base_url(self.connection_data)}/v1/chat/completions"
         role_sent = False
-        async with self.session.post(url, json=self._build_body(chat_log, ctx), headers=headers) as response:
+        async with self.session.post(
+            url,
+            json=self._build_body(chat_log, ctx),
+            headers=headers,
+            timeout=build_client_timeout(ctx.options),
+        ) as response:
             async for event in async_iter_sse(response.content.iter_any()):
                 if event.data == _DONE_SENTINEL:
                     return

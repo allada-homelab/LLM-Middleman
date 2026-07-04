@@ -34,6 +34,7 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_TEMPERATURE,
     CONF_TOP_P,
+    IDLE_TIMEOUT,
 )
 from tests.conftest import (
     TEST_API_KEY,
@@ -323,3 +324,14 @@ async def test_real_session_type_contract(hass: HomeAssistant) -> None:
     session = async_get_clientsession(hass)
     adapter = OpenAICompatAdapter(hass, session, _CONNECTION)
     assert adapter.session is session
+
+
+async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # The per-agent CONF_TIMEOUT plus the shared idle deadline reach the wire call.
+    response = FakeStreamResponse([b"data: [DONE]\n\n"])
+    session = fake_aiohttp_session(response=response)
+    adapter = OpenAICompatAdapter(hass, session, _CONNECTION)
+    _ = [d async for d in adapter.stream_turn(mock_chat_log, _input(), _ctx(timeout=120))]
+    timeout = session.post.call_args.kwargs["timeout"]
+    assert timeout.total == 120
+    assert timeout.sock_read == IDLE_TIMEOUT
