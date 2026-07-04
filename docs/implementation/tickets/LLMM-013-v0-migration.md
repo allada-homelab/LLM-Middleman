@@ -1,7 +1,7 @@
 ---
 id: LLMM-013
 title: v0→v1 config-entry migration (v0 entry → converse parent + subentry)
-status: todo
+status: in-review
 phase: 2
 depends_on: [LLMM-007, LLMM-009]
 ---
@@ -115,15 +115,16 @@ subentry `CONF_PROMPT` (the converse adapter forwards/uses it per LLMM-009's sch
 committed — build the new data dict fresh and let `async_update_entry` replace `data` atomically.
 
 ## Acceptance criteria
-- [ ] A VERSION-1 entry with `{url, token, system_prompt, name}` migrates to VERSION 2 with
+- [x] A VERSION-1 entry with `{url, token, system_prompt, name}` migrates to VERSION 2 with
       `data == {CONF_BACKEND_TYPE: BACKEND_CONVERSE, CONF_BASE_URL: url, CONF_TOKEN: token}`.
-- [ ] Exactly one `conversation` subentry is created with `CONF_NAME`, `CONF_PROMPT`
+- [x] Exactly one `conversation` subentry is created with the agent name (its `title`, the
+      canonical location the add-agent subentry flow stores it), `CONF_PROMPT`
       (= v0 `system_prompt`), and `CONF_TIMEOUT`.
-- [ ] The pre-existing conversation entity's registry `unique_id` becomes the subentry id and
+- [x] The pre-existing conversation entity's registry `unique_id` becomes the subentry id and
       it is attached to the subentry — the **entity_id is unchanged** across migration.
-- [ ] A future `version > 2` entry returns `False` (no corruption).
-- [ ] After migration the entry sets up cleanly (the `converse` adapter, LLMM-009, loads).
-- [ ] gates green: `just check` + `just typecheck`.
+- [x] A future `version > 2` entry returns `False` (no corruption).
+- [x] After migration the entry sets up cleanly (the `converse` adapter, LLMM-009, loads).
+- [x] gates green: `just check` + `just typecheck`.
 
 ## Verification
 Migration unit tests (`tests/test_init.py`, `pytest-homeassistant-custom-component`):
