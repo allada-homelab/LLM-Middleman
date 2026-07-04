@@ -74,20 +74,7 @@ IDLE_TIMEOUT = 30
 # or errors mid-turn, so the Assist pipeline never hangs.
 ERROR_MESSAGE = "Sorry, I could not reach the assistant right now. Please try again."
 
-# --- v1 backend config keys (parent entry + agent subentry) ---
-# Backend-type discriminators for the BACKEND_TO_CLS factory.
-BACKEND_OLLAMA = "ollama"
-
-# Parent-entry connection keys (shared across presets; string values mirror the
-# plan's per-connector matrix and the test harness literals).
-CONF_BASE_URL = "base_url"
-CONF_API_KEY = "api_key"
-
-# Agent-subentry option keys.
-CONF_MODEL = "model"
-CONF_MAX_HISTORY = "max_history"
-
-# Ollama-native option keys (core-ollama option set).
+# Ollama-native option keys (core-ollama option set; LLMM-010).
 CONF_NUM_CTX = "num_ctx"
 CONF_KEEP_ALIVE = "keep_alive"
 CONF_THINK = "think"

@@ -1,7 +1,7 @@
 ---
 id: LLMM-010
 title: Ollama native adapter (NDJSON, trim-history)
-status: in-review
+status: done
 phase: 2
 depends_on: [LLMM-003, LLMM-004]
 ---
