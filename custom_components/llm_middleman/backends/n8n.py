@@ -29,17 +29,17 @@ from homeassistant.core import HomeAssistant
 
 from ..const import (  # noqa: TID252 — sibling package const module
     BACKEND_N8N,
+    CONF_AUTH_TYPE,
+    CONF_HEADER_NAME,
+    CONF_HEADER_VALUE,
     CONF_INPUT_FIELD,
-    CONF_N8N_AUTH_TYPE,
-    CONF_N8N_HEADER_NAME,
-    CONF_N8N_HEADER_VALUE,
-    CONF_N8N_PASSWORD,
-    CONF_N8N_USERNAME,
     CONF_OUTPUT_FIELD,
+    CONF_PASSWORD,
     CONF_SESSION_FIELD,
     CONF_SYSTEM_PROMPT,
     CONF_TARGET_TYPE,
     CONF_TIMEOUT,
+    CONF_USERNAME,
     CONF_WEBHOOK_URL,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
@@ -49,7 +49,7 @@ from ..const import (  # noqa: TID252 — sibling package const module
     N8N_DEFAULT_SESSION_FIELD,
     N8N_DEFAULT_TIMEOUT,
     N8N_OUTPUT_FIELD_FALLBACK,
-    TARGET_PLAIN_WEBHOOK,
+    N8N_TARGET_WEBHOOK,
 )
 from .base import BackendAdapter, BackendConnectionError, BackendStreamError, DeltaStream, TurnContext
 
@@ -156,7 +156,7 @@ class N8nAdapter(BackendAdapter):
             raise BackendStreamError(f"n8n request failed: {err}") from err
 
     def _auth_type(self) -> str:
-        return self.connection_data.get(CONF_N8N_AUTH_TYPE, N8N_AUTH_NONE)
+        return self.connection_data.get(CONF_AUTH_TYPE, N8N_AUTH_NONE)
 
     def _request_body(self, user_input: conversation.ConversationInput, ctx: TurnContext) -> dict[str, Any]:
         """Build the request body: session key + turn text (+ optional action/system prompt)."""
@@ -164,7 +164,7 @@ class N8nAdapter(BackendAdapter):
         input_field = ctx.options.get(CONF_INPUT_FIELD, N8N_DEFAULT_INPUT_FIELD)
         body: dict[str, Any] = {session_field: ctx.memory_key, input_field: user_input.text}
         # Only the Chat Trigger node uses ``action``; plain Webhook + Respond-to-Webhook omits it.
-        if self.connection_data.get(CONF_TARGET_TYPE) != TARGET_PLAIN_WEBHOOK:
+        if self.connection_data.get(CONF_TARGET_TYPE) != N8N_TARGET_WEBHOOK:
             body["action"] = _ACTION_SEND_MESSAGE
         if system_prompt := ctx.options.get(CONF_SYSTEM_PROMPT):
             body["systemPrompt"] = system_prompt
@@ -173,16 +173,16 @@ class N8nAdapter(BackendAdapter):
     def _request_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json-lines, application/json"}
         if self._auth_type() == N8N_AUTH_HEADER:
-            name = self.connection_data.get(CONF_N8N_HEADER_NAME)
-            value = self.connection_data.get(CONF_N8N_HEADER_VALUE)
+            name = self.connection_data.get(CONF_HEADER_NAME)
+            value = self.connection_data.get(CONF_HEADER_VALUE)
             if name and value:
                 headers[name] = value
         return headers
 
     def _request_auth(self) -> aiohttp.BasicAuth | None:
         if self._auth_type() == N8N_AUTH_BASIC:
-            username = self.connection_data.get(CONF_N8N_USERNAME, "")
-            password = self.connection_data.get(CONF_N8N_PASSWORD, "")
+            username = self.connection_data.get(CONF_USERNAME, "")
+            password = self.connection_data.get(CONF_PASSWORD, "")
             return aiohttp.BasicAuth(username, password)
         return None
 

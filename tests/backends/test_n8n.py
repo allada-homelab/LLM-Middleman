@@ -28,22 +28,22 @@ from custom_components.llm_middleman.backends.base import (
 from custom_components.llm_middleman.backends.n8n import N8nAdapter
 from custom_components.llm_middleman.const import (
     BACKEND_N8N,
+    CONF_AUTH_TYPE,
+    CONF_HEADER_NAME,
+    CONF_HEADER_VALUE,
     CONF_INPUT_FIELD,
-    CONF_N8N_AUTH_TYPE,
-    CONF_N8N_HEADER_NAME,
-    CONF_N8N_HEADER_VALUE,
-    CONF_N8N_PASSWORD,
-    CONF_N8N_USERNAME,
     CONF_OUTPUT_FIELD,
+    CONF_PASSWORD,
     CONF_SESSION_FIELD,
     CONF_STREAMING,
     CONF_SYSTEM_PROMPT,
     CONF_TARGET_TYPE,
+    CONF_USERNAME,
     CONF_WEBHOOK_URL,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
-    TARGET_CHAT_TRIGGER,
-    TARGET_PLAIN_WEBHOOK,
+    N8N_TARGET_CHAT_TRIGGER,
+    N8N_TARGET_WEBHOOK,
 )
 from tests.conftest import FakeStreamResponse, chunk_bytes, fake_aiohttp_session
 
@@ -220,7 +220,7 @@ async def test_action_included_for_chat_trigger(hass: HomeAssistant) -> None:
     response = _response([b'{"output":"ok"}'], "application/json")
     session = fake_aiohttp_session(response=response)
     await _collect(
-        _adapter(hass, session, connection={CONF_TARGET_TYPE: TARGET_CHAT_TRIGGER}),
+        _adapter(hass, session, connection={CONF_TARGET_TYPE: N8N_TARGET_CHAT_TRIGGER}),
         _ctx(),
     )
     body = _posted_body(session)
@@ -236,7 +236,7 @@ async def test_action_omitted_for_plain_webhook(hass: HomeAssistant) -> None:
     response = _response([b'{"output":"ok"}'], "application/json")
     session = fake_aiohttp_session(response=response)
     await _collect(
-        _adapter(hass, session, connection={CONF_TARGET_TYPE: TARGET_PLAIN_WEBHOOK}),
+        _adapter(hass, session, connection={CONF_TARGET_TYPE: N8N_TARGET_WEBHOOK}),
         _ctx(),
     )
     assert "action" not in _posted_body(session)
@@ -273,9 +273,9 @@ async def test_auth_basic_sets_basicauth_and_redacts(hass: HomeAssistant, caplog
                 hass,
                 session,
                 connection={
-                    CONF_N8N_AUTH_TYPE: N8N_AUTH_BASIC,
-                    CONF_N8N_USERNAME: "user",
-                    CONF_N8N_PASSWORD: "s3cret",
+                    CONF_AUTH_TYPE: N8N_AUTH_BASIC,
+                    CONF_USERNAME: "user",
+                    CONF_PASSWORD: "s3cret",
                 },
             ),
             _ctx(),
@@ -295,9 +295,9 @@ async def test_auth_header_sets_header_and_redacts(hass: HomeAssistant, caplog: 
                 hass,
                 session,
                 connection={
-                    CONF_N8N_AUTH_TYPE: N8N_AUTH_HEADER,
-                    CONF_N8N_HEADER_NAME: "X-Api-Key",
-                    CONF_N8N_HEADER_VALUE: "tok-42",
+                    CONF_AUTH_TYPE: N8N_AUTH_HEADER,
+                    CONF_HEADER_NAME: "X-Api-Key",
+                    CONF_HEADER_VALUE: "tok-42",
                 },
             ),
             _ctx(),

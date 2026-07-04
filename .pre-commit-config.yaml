@@ -13,8 +13,8 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
-        # hass = Home Assistant object/domain term (not "hash").
-        # hel = deliberate mid-object split of "Hello" in n8n stream-parser test data.
+        # hass = Home Assistant object/domain term (not "hash");
+        # hel = truncated streaming-delta token ("Hel"+"lo") in SSE test fixtures.
         args: ["-L", "hass,hel"]
         additional_dependencies: ["tomli"]
 

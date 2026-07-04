@@ -8,6 +8,42 @@ CONF_TOKEN = "token"  # noqa: S105 — config-key name, not a secret value
 CONF_NAME = "name"
 CONF_SYSTEM_PROMPT = "system_prompt"
 
+# v1 parent-entry connection keys (LLMM-006 config flow). The backend type selected
+# in step 1 keys BACKEND_TO_CLS and routes to that backend's connection step.
+CONF_BACKEND_TYPE = "backend_type"
+CONF_BASE_URL = "base_url"
+CONF_API_KEY = "api_key"
+CONF_ASSISTANT_ID = "assistant_id"
+CONF_WEBHOOK_URL = "webhook_url"
+CONF_TARGET_TYPE = "target_type"
+CONF_AUTH_TYPE = "auth_type"
+CONF_USERNAME = "username"
+CONF_PASSWORD = "password"  # noqa: S105 — config-key name, not a secret value
+CONF_HEADER_NAME = "header_name"
+CONF_HEADER_VALUE = "header_value"
+
+# Backend-type values: each equals the SelectSelector option and the config-flow
+# connection step suffix (async_step_<value>), and each adapter's `backend_type`.
+BACKEND_OPENAI_COMPAT = "openai_compat"
+BACKEND_LANGGRAPH = "langgraph"
+BACKEND_OLLAMA = "ollama"
+BACKEND_CONVERSE = "converse"
+BACKEND_N8N = "n8n"
+
+# n8n connection choices (CONF_TARGET_TYPE / CONF_AUTH_TYPE option values).
+N8N_TARGET_CHAT_TRIGGER = "chat_trigger"
+N8N_TARGET_WEBHOOK = "webhook"
+N8N_AUTH_NONE = "none"
+N8N_AUTH_BASIC = "basic"
+N8N_AUTH_HEADER = "custom_header"
+
+# v1 per-agent subentry option keys (LLMM-008 OpenAI-compatible agent options).
+CONF_MODEL = "model"
+CONF_MAX_HISTORY = "max_history"
+CONF_TEMPERATURE = "temperature"
+CONF_TOP_P = "top_p"
+CONF_MAX_TOKENS = "max_tokens"
+
 # The streaming converse endpoint appended to the configured base URL.
 CONVERSE_PATH = "/v1/converse"
 
@@ -15,36 +51,58 @@ CONVERSE_PATH = "/v1/converse"
 # so we fall back rather than hang the pipeline.
 DEFAULT_TIMEOUT = 60
 
+# --- v1 re-architecture (LLMM-005) ---
+
+# Per-agent (conversation subentry) option keys.
+CONF_TIMEOUT = "timeout"
+CONF_MEMORY_SCOPE = "memory_scope"
+
+# memory_scope values — control the session key the entity derives per turn and
+# hands stateful adapters via ``TurnContext.memory_key``.
+MEMORY_SCOPE_CONVERSATION = "conversation"  # default: HA conversation_id (session TTL)
+MEMORY_SCOPE_DEVICE = "device"  # per-satellite/room; falls back to conversation
+MEMORY_SCOPE_AGENT = "agent"  # one global thread per agent subentry
+
+# Subentry type for a conversation agent (one entity per such subentry).
+SUBENTRY_TYPE_CONVERSATION = "conversation"
+
+# sock_read idle timeout: kill only a truly stalled stream, not a slow-but-alive
+# one (the v0 single-total-deadline bug). Paired with CONF_TIMEOUT as the total.
+IDLE_TIMEOUT = 30
+
 # Shown to the user (and spoken via TTS) when the external agent is unreachable
 # or errors mid-turn, so the Assist pipeline never hangs.
 ERROR_MESSAGE = "Sorry, I could not reach the assistant right now. Please try again."
 
-# --- n8n backend (LLMM-012) ---
-# Registered backend-type key (BACKEND_TO_CLS) and config-flow dropdown value.
-BACKEND_N8N = "n8n"
+# Ollama-native option keys (core-ollama option set; LLMM-010).
+CONF_NUM_CTX = "num_ctx"
+CONF_KEEP_ALIVE = "keep_alive"
+CONF_THINK = "think"
 
-# Parent-entry connection keys. The webhook URL is the opaque full production chat
-# URL (``/webhook/<id>/chat``) the user pastes verbatim; no path is appended.
-CONF_WEBHOOK_URL = "webhook_url"
-CONF_TARGET_TYPE = "target_type"
-TARGET_CHAT_TRIGGER = "chat_trigger"  # Chat Trigger node — request carries ``action``
-TARGET_PLAIN_WEBHOOK = "plain_webhook"  # plain Webhook + Respond-to-Webhook — no ``action``
-CONF_N8N_AUTH_TYPE = "n8n_auth_type"
-N8N_AUTH_NONE = "none"
-N8N_AUTH_BASIC = "basic"
-N8N_AUTH_HEADER = "header"
-CONF_N8N_USERNAME = "n8n_username"
-CONF_N8N_PASSWORD = "n8n_password"  # noqa: S105 — config-key name, not a secret value
-CONF_N8N_HEADER_NAME = "n8n_header_name"
-CONF_N8N_HEADER_VALUE = "n8n_header_value"
+# keep_alive sentinel: -1 means "keep the model loaded forever" and must be sent as
+# the integer -1, not a duration string ("-1s" is an invalid negative duration).
+KEEP_ALIVE_FOREVER = -1
 
-# Per-agent (subentry) option keys. ``CONF_STREAMING`` is a config-flow help-text
-# toggle only: the adapter branches on the actual response, never on this toggle.
+# --- LangGraph backend options (LLMM-011; BACKEND_LANGGRAPH/CONF_ASSISTANT_ID above) ---
+DEFAULT_ASSISTANT_ID = "agent"
+# Agent option: the graph's input key the new message list is nested under.
+CONF_INPUT_MESSAGES_KEY = "input_messages_key"
+DEFAULT_INPUT_MESSAGES_KEY = "messages"
+# Agent option: only emit tokens whose metadata.langgraph_node matches this name
+# (so intermediate/tool-node chatter is not spoken). Empty/unset = emit all nodes.
+CONF_RESPONSE_NODE_FILTER = "response_node_filter"
+# Agent option: run without a server-side thread (POST /runs/stream).
+CONF_STATELESS_RUNS = "stateless_runs"
+# helpers.storage.Store schema version for the session_key -> thread_id map.
+STORAGE_VERSION = 1
+
+# --- n8n agent-subentry options (LLMM-012; connection keys live above with LLMM-006) ---
+# ``CONF_STREAMING`` is a config-flow help-text toggle only: the adapter branches on
+# the actual response, never on this toggle.
 CONF_STREAMING = "streaming"
 CONF_INPUT_FIELD = "input_field"
 CONF_OUTPUT_FIELD = "output_field"
 CONF_SESSION_FIELD = "session_field"
-CONF_TIMEOUT = "timeout"
 
 # n8n field defaults (n8n 1.103.0). The output field falls back to ``text`` when the
 # configured field is absent; a fully missing reply surfaces an error, never raw JSON.
