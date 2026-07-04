@@ -9,13 +9,16 @@ silent stream end, error-after-deltas, oversized line, malformed JSON.
 from __future__ import annotations
 
 import json
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import aiohttp
 import pytest
+import voluptuous as vol
 from homeassistant.components import conversation
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from custom_components.llm_middleman.backends import BACKEND_TO_CLS, get_backend_cls
@@ -240,6 +243,146 @@ async def test_no_bearer_header_without_api_key(hass: HomeAssistant, mock_chat_l
     assert "Authorization" not in session.post.call_args.kwargs["headers"]
 
 
+# --- tools (LLMM-014) -----------------------------------------------------------
+
+
+class _FakeTool:
+    """Minimal duck-typed ``llm.Tool`` (name/description/voluptuous parameters)."""
+
+    name = "get_time"
+    description = "Return the current time"
+    parameters = vol.Schema({})
+
+
+class _FakeLLMApi:
+    """Duck-typed ``llm.APIInstance`` exposing only what the adapter/chat_log read."""
+
+    def __init__(self, tools: list[Any], result: dict[str, Any] | None = None) -> None:
+        self.tools = tools
+        self.custom_serializer = None
+        self._result: dict[str, Any] = result if result is not None else {}
+
+    async def async_call_tool(self, tool_input: llm.ToolInput) -> dict[str, Any]:
+        return self._result
+
+
+def _tc_frame(call: dict[str, Any]) -> bytes:
+    """One SSE frame carrying a single ``delta.tool_calls`` fragment, CRLF-framed."""
+    payload = json.dumps({"choices": [{"delta": {"tool_calls": [call]}}]})
+    return b"data: " + payload.encode() + b"\r\n\r\n"
+
+
+async def test_tool_calls_reassembled_across_chunks(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # Two interleaved calls whose id/name/arguments each arrive split across frames and
+    # split byte-at-a-time (mid-`arguments`, mid-frame, CRLF). Adapter must fold them by
+    # index and emit exactly two ToolInput with parsed-dict args after [DONE].
+    blob = (
+        _data_frame({"role": "assistant"})
+        + _tc_frame({"index": 0, "id": "call_a", "function": {"name": "get_", "arguments": ""}})
+        + _tc_frame({"index": 1, "id": "call_b", "function": {"name": "set_", "arguments": ""}})
+        + _tc_frame({"index": 0, "function": {"name": "time", "arguments": '{"tz":'}})
+        + _tc_frame({"index": 1, "function": {"name": "temp", "arguments": '{"v":'}})
+        + _tc_frame({"index": 0, "function": {"arguments": '"utc"}'}})
+        + _tc_frame({"index": 1, "function": {"arguments": "21}"}})
+        + b"data: [DONE]\r\n\r\n"
+    )
+    deltas = await _collect(hass, mock_chat_log, chunk_bytes(blob, 1), _ctx())
+
+    assert deltas[0] == {"role": "assistant"}  # role-first before the tool_calls delta
+    assert len(deltas) == 2
+    calls = deltas[1].get("tool_calls")
+    assert calls is not None
+    assert [(c.id, c.tool_name, c.tool_args) for c in calls] == [
+        ("call_a", "get_time", {"tz": "utc"}),
+        ("call_b", "set_temp", {"v": 21}),
+    ]
+
+
+async def test_tool_call_with_text_then_call(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # A turn that streams text AND a tool call: content deltas pass through live, the
+    # tool_calls delta is flushed once at the end (single assistant block, role-first once).
+    blob = (
+        _data_frame({"content": "Let me check. "})
+        + _tc_frame({"index": 0, "id": "c1", "function": {"name": "get_time", "arguments": "{}"}})
+        + b"data: [DONE]\n\n"
+    )
+    deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+    assert deltas[0] == {"role": "assistant"}
+    assert deltas[1] == {"content": "Let me check. "}
+    calls = deltas[2].get("tool_calls")
+    assert calls is not None
+    assert calls[0].id == "c1"
+    assert calls[0].tool_args == {}
+
+
+async def test_empty_arguments_default_to_empty_object(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # A no-arg call streams no `arguments`; the flush parses "" as {} (never raises).
+    blob = _tc_frame({"index": 0, "id": "c1", "function": {"name": "ping"}}) + b"data: [DONE]\n\n"
+    deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+    calls = deltas[-1].get("tool_calls")
+    assert calls is not None
+    assert calls[0].tool_args == {}
+
+
+async def test_tools_field_sent_when_llm_api_set(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    mock_chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([_FakeTool()]))
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    adapter = _adapter(hass, session)
+    _ = [d async for d in adapter.stream_turn(mock_chat_log, _input(), _ctx())]
+    tools = _posted_body(session)["tools"]
+    assert len(tools) == 1
+    assert tools[0]["type"] == "function"
+    assert tools[0]["function"]["name"] == "get_time"
+    assert tools[0]["function"]["description"] == "Return the current time"
+    assert isinstance(tools[0]["function"]["parameters"], dict)
+
+
+async def test_tools_field_absent_without_llm_api(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    adapter = _adapter(hass, session)
+    _ = [d async for d in adapter.stream_turn(mock_chat_log, _input(), _ctx())]
+    assert "tools" not in _posted_body(session)
+
+
+async def test_history_replays_tool_calls_and_results_default_str(
+    hass: HomeAssistant, mock_chat_log: MockChatLog
+) -> None:
+    # A prior tool turn is replayed: the assistant message carries `tool_calls`, and the
+    # tool result — holding a non-JSON-native datetime — serializes via default=str.
+    now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
+    content: list[conversation.Content] = [
+        conversation.SystemContent(content="sys"),
+        conversation.UserContent(content="what time is it"),
+        conversation.AssistantContent(
+            agent_id="a",
+            content=None,
+            tool_calls=[llm.ToolInput(id="call_1", tool_name="get_time", tool_args={"tz": "utc"})],
+        ),
+        conversation.ToolResultContent(
+            agent_id="a",
+            tool_call_id="call_1",
+            tool_name="get_time",
+            tool_result={"now": now},  # pyright: ignore[reportArgumentType]
+        ),
+    ]
+    mock_chat_log.content = content
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    adapter = _adapter(hass, session)
+    _ = [d async for d in adapter.stream_turn(mock_chat_log, _input(), _ctx())]
+    messages = _posted_body(session)["messages"]
+
+    assert messages[2] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "get_time", "arguments": '{"tz": "utc"}'}}
+        ],
+    }
+    assert messages[3]["role"] == "tool"
+    assert messages[3]["tool_call_id"] == "call_1"
+    assert json.loads(messages[3]["content"]) == {"now": str(now)}
+
+
 # --- registration ---------------------------------------------------------------
 
 
@@ -247,7 +390,7 @@ def test_registered_in_factory() -> None:
     assert BACKEND_TO_CLS["openai_compat"] is OpenAICompatAdapter
     assert get_backend_cls("openai_compat") is OpenAICompatAdapter
     assert OpenAICompatAdapter.backend_type == "openai_compat"
-    assert OpenAICompatAdapter.supports_ha_tools is False
+    assert OpenAICompatAdapter.supports_ha_tools is True
 
 
 # --- connection probe / model list ----------------------------------------------

@@ -8,16 +8,21 @@ continue_conversation override, and memory-scope key derivation.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
+import voluptuous as vol
 from homeassistant.components import conversation
+from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigSubentry
-from homeassistant.const import CONF_PROMPT, MATCH_ALL
+from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.helpers import llm
 
 from custom_components.llm_middleman.backends.base import (
     BackendAdapter,
@@ -25,20 +30,24 @@ from custom_components.llm_middleman.backends.base import (
     TurnContext,
     build_client_timeout,
 )
+from custom_components.llm_middleman.backends.openai_compat import OpenAICompatAdapter
 from custom_components.llm_middleman.const import (
+    CONF_API_KEY,
+    CONF_BASE_URL,
     CONF_MEMORY_SCOPE,
     CONF_TIMEOUT,
     DEFAULT_TIMEOUT,
     DOMAIN,
     ERROR_MESSAGE,
     IDLE_TIMEOUT,
+    MAX_TOOL_ITERATIONS,
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
 )
 from custom_components.llm_middleman.conversation import LLMMiddlemanConversationEntity
 
-from .conftest import MockChatLog
+from .conftest import FakeStreamResponse, MockChatLog
 
 
 class FakeAdapter(BackendAdapter):
@@ -350,3 +359,171 @@ async def test_converse_error_is_returned(hass: HomeAssistant) -> None:
 
     assert isinstance(result, conversation.ConversationResult)
     assert adapter.received_ctx is None
+
+
+# --- CONTROL feature gating (LLMM-014) ---------------------------------------
+
+
+def test_control_feature_present_with_llm_api(hass: HomeAssistant) -> None:
+    """CONTROL is advertised iff the subentry has an HA LLM API configured."""
+    with_api = _make_entity(hass, _make_adapter(hass), subentry_data={CONF_LLM_HASS_API: ["assist"]})
+    assert with_api.supported_features is ConversationEntityFeature.CONTROL
+
+    without_api = _make_entity(hass, _make_adapter(hass), subentry_data={})
+    assert without_api.supported_features == ConversationEntityFeature(0)
+
+    empty_list = _make_entity(hass, _make_adapter(hass), subentry_data={CONF_LLM_HASS_API: []})
+    assert empty_list.supported_features == ConversationEntityFeature(0)
+
+
+# --- tool loop (LLMM-014) ----------------------------------------------------
+
+
+class _FakeTool:
+    """Minimal duck-typed ``llm.Tool`` for the round-trip through the real adapter."""
+
+    name = "get_time"
+    description = "Return the current time"
+    parameters = vol.Schema({})
+
+
+class _FakeLLMApi:
+    """Duck-typed ``llm.APIInstance`` exposing only what the adapter/chat_log read."""
+
+    def __init__(self, result: Any) -> None:
+        self.tools: list[Any] = [_FakeTool()]
+        self.custom_serializer = None
+        self._result = result
+
+    async def async_call_tool(self, tool_input: llm.ToolInput) -> Any:
+        return self._result
+
+
+class _AlwaysToolAdapter(BackendAdapter):
+    """Adapter that emits a fresh tool call every turn — the runaway-backend case."""
+
+    backend_type = "fake"
+
+    def __init__(self, hass: HomeAssistant, session: Any, connection_data: Mapping[str, Any]) -> None:
+        super().__init__(hass, session, connection_data)
+        self.calls = 0
+
+    @classmethod
+    async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
+        return None
+
+    async def stream_turn(
+        self,
+        chat_log: conversation.ChatLog,
+        user_input: conversation.ConversationInput,
+        ctx: TurnContext,
+    ) -> DeltaStream:
+        self.calls += 1
+        yield {"role": "assistant"}
+        yield {"tool_calls": [llm.ToolInput(id=f"c{self.calls}", tool_name="get_time", tool_args={})]}
+
+
+def _entity_with_adapter(
+    hass: HomeAssistant,
+    adapter: BackendAdapter,
+    *,
+    subentry_data: Mapping[str, Any] | None = None,
+) -> LLMMiddlemanConversationEntity:
+    entry = MagicMock()
+    entry.runtime_data = adapter
+    subentry = MagicMock(spec=ConfigSubentry)
+    subentry.subentry_id = "sub-1"
+    subentry.title = "Agent"
+    subentry.data = dict(subentry_data) if subentry_data is not None else {}
+    entity = LLMMiddlemanConversationEntity(entry, subentry)
+    entity.entity_id = "conversation.test"
+    entity.hass = hass
+    return entity
+
+
+def _openai_frame(delta: dict[str, Any]) -> bytes:
+    return b"data: " + json.dumps({"choices": [{"delta": delta}]}).encode() + b"\r\n\r\n"
+
+
+async def test_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """Two real-adapter round-trips: turn 1 calls a tool, turn 2 answers in text.
+
+    Proves the loop re-enters on an unresponded tool result and breaks when the reply
+    carries no tool call, and that the replayed turn-2 body serializes the tool result
+    (a non-JSON-native ``datetime``) via ``default=str`` without raising.
+    """
+    now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
+    fake_api = _FakeLLMApi(result={"now": now})
+
+    turn1 = FakeStreamResponse(
+        [
+            _openai_frame({"role": "assistant"})
+            + _openai_frame(
+                {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "get_time", "arguments": "{}"}}]}
+            )
+            + b"data: [DONE]\r\n\r\n"
+        ]
+    )
+    turn2 = FakeStreamResponse([_openai_frame({"content": "It is noon."}) + b"data: [DONE]\r\n\r\n"])
+    session = MagicMock()
+    session.post = MagicMock(side_effect=[turn1, turn2])
+    adapter = OpenAICompatAdapter(hass, session, {CONF_BASE_URL: "http://backend.local", CONF_API_KEY: "k"})
+    entity = _entity_with_adapter(hass, adapter, subentry_data={CONF_LLM_HASS_API: ["assist"]})
+
+    async def _provide(*_args: Any, **_kwargs: Any) -> None:
+        mock_chat_log.llm_api = cast(llm.APIInstance, fake_api)
+
+    with patch.object(mock_chat_log, "async_provide_llm_data", side_effect=_provide):
+        result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    # Exactly two provider round-trips (tool turn + answer turn).
+    assert session.post.call_count == 2
+
+    # Turn 2's replayed body carries the tool result, datetime serialized via default=str.
+    body2 = session.post.call_args_list[1].kwargs["json"]
+    tool_messages = [m for m in body2["messages"] if m.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["tool_call_id"] == "call_1"
+    assert json.loads(tool_messages[0]["content"]) == {"now": str(now)}
+
+    # Final spoken answer is the turn-2 text.
+    last = mock_chat_log.content[-1]
+    assert isinstance(last, conversation.AssistantContent)
+    assert last.content == "It is noon."
+    assert result.response.speech["plain"]["speech"] == "It is noon."
+
+
+async def test_text_only_turn_runs_one_iteration(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A backend that returns plain text (no tool call) drives exactly one round-trip."""
+    session = MagicMock()
+    session.post = MagicMock(
+        side_effect=[FakeStreamResponse([_openai_frame({"content": "Hi."}) + b"data: [DONE]\n\n"])]
+    )
+    adapter = OpenAICompatAdapter(hass, session, {CONF_BASE_URL: "http://backend.local"})
+    entity = _entity_with_adapter(hass, adapter)
+
+    result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert session.post.call_count == 1
+    assert result.response.speech["plain"]["speech"] == "Hi."
+
+
+async def test_tool_loop_iteration_cap(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A backend that always calls a tool stops after MAX_TOOL_ITERATIONS with a result."""
+    fake_api = _FakeLLMApi(result={"ok": True})
+    adapter = _AlwaysToolAdapter(hass, MagicMock(), {})
+    entity = _entity_with_adapter(hass, adapter, subentry_data={CONF_LLM_HASS_API: ["assist"]})
+
+    async def _provide(*_args: Any, **_kwargs: Any) -> None:
+        mock_chat_log.llm_api = cast(llm.APIInstance, fake_api)
+
+    with (
+        patch.object(mock_chat_log, "async_provide_llm_data", side_effect=_provide),
+        patch("custom_components.llm_middleman.conversation._LOGGER") as logger,
+    ):
+        result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert adapter.calls == MAX_TOOL_ITERATIONS  # bounded, no hang
+    assert isinstance(result, conversation.ConversationResult)
+    assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+    logger.warning.assert_called_once()

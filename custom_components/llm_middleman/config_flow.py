@@ -24,13 +24,14 @@ from homeassistant.config_entries import (
     ConfigSubentryFlow,
     SubentryFlowResult,
 )
-from homeassistant.const import CONF_NAME, CONF_PROMPT
+from homeassistant.const import CONF_LLM_HASS_API, CONF_NAME, CONF_PROMPT
 from homeassistant.core import callback
 from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
     NumberSelector,  # pyright: ignore[reportUnknownVariableType]
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectOptionDict,
     SelectSelector,  # pyright: ignore[reportUnknownVariableType]
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -333,8 +334,8 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         """Build the common per-agent schema; ``options`` prefills each field.
 
         Every field is a per-agent setting. Capability ClassVars on the adapter gate
-        the model dropdown (catalog backends only) and ``CONF_MEMORY_SCOPE`` (stateful
-        backends only). ``CONF_LLM_HASS_API`` is intentionally not rendered yet.
+        the model dropdown (catalog backends only), ``CONF_MEMORY_SCOPE`` (stateful
+        backends only), and ``CONF_LLM_HASS_API`` (tool-capable backends only).
         """
         schema: dict[Any, Any] = {}
 
@@ -389,10 +390,22 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
                 )
             )
 
-        # TODO(LLMM-014): render CONF_LLM_HASS_API as a multi-select over
-        # llm.async_get_apis(hass) here, gated on adapter_cls.supports_ha_tools, once the
-        # HA tool loop exists. Omitted until then so an unset value means "no tools" —
-        # no default is stored.
+        # HA LLM API(s) whose tools the backend may call — only for tool-capable
+        # backends. Multi-select storing list[str]; async_provide_llm_data accepts a
+        # list and pulls in the tools of every named API (device control + any HA
+        # MCP-client entry). Unset/empty means "no tools" — no default is stored.
+        if adapter_cls.supports_ha_tools:
+            schema[
+                vol.Optional(
+                    CONF_LLM_HASS_API,
+                    description={"suggested_value": options.get(CONF_LLM_HASS_API)},
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=[SelectOptionDict(value=api.id, label=api.name) for api in llm.async_get_apis(self.hass)],
+                    multiple=True,
+                )
+            )
 
         return vol.Schema(schema)
 
