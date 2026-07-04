@@ -1,7 +1,7 @@
 ---
 id: LLMM-012
 title: n8n adapter (Chat Trigger/plain webhook, dual streaming/blocking)
-status: in-review
+status: done
 phase: 2
 depends_on: [LLMM-003, LLMM-004]
 ---
