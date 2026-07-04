@@ -10,26 +10,38 @@ nothing.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
+    SOURCE_USER,
+    ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentryFlow,
+    SubentryFlowResult,
 )
+from homeassistant.const import CONF_NAME, CONF_PROMPT
+from homeassistant.core import callback
+from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
+    NumberSelector,  # pyright: ignore[reportUnknownVariableType]
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectSelector,  # pyright: ignore[reportUnknownVariableType]
     SelectSelectorConfig,
     SelectSelectorMode,
+    TemplateSelector,  # pyright: ignore[reportUnknownVariableType]
     TextSelector,  # pyright: ignore[reportUnknownVariableType]
     TextSelectorConfig,
     TextSelectorType,
 )
 
 from .backends import BACKEND_TO_CLS
-from .backends.base import BackendAuthError, BackendConnectionError
+from .backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
 from .const import (
     BACKEND_CONVERSE,
     BACKEND_LANGGRAPH,
@@ -43,18 +55,33 @@ from .const import (
     CONF_BASE_URL,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
+    CONF_MAX_HISTORY,
+    CONF_MEMORY_SCOPE,
+    CONF_MODEL,
     CONF_PASSWORD,
     CONF_TARGET_TYPE,
+    CONF_TIMEOUT,
     CONF_TOKEN,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
+    DEFAULT_MAX_HISTORY,
+    DEFAULT_TIMEOUT,
     DOMAIN,
+    MEMORY_SCOPE_AGENT,
+    MEMORY_SCOPE_CONVERSATION,
+    MEMORY_SCOPE_DEVICE,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_AUTH_NONE,
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
+    SUBENTRY_TYPE_CONVERSATION,
 )
+
+_LOGGER = logging.getLogger(__name__)
+
+# Default display name for a newly added conversation agent.
+_DEFAULT_AGENT_NAME = "LLM Middleman"
 
 # Fixed per-backend entry title. The human-facing agent name lives on the
 # conversation subentry (LLMM-007), so the parent title is a stable backend label.
@@ -150,6 +177,12 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the flow. The backend type is set in step 1 (or reconfigure)."""
         # Empty until a backend is picked; every connection step runs only after it is set.
         self._backend_type: str = ""
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(cls, config_entry: ConfigEntry) -> dict[str, type[ConfigSubentryFlow]]:
+        """Expose the conversation-agent subentry type for every backend (LLMM-007)."""
+        return {SUBENTRY_TYPE_CONVERSATION: ConversationSubentryFlowHandler}
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Step 1: choose the backend type, then route to its connection step."""
@@ -254,3 +287,129 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
         if self.source == SOURCE_RECONFIGURE:
             return self.add_suggested_values_to_schema(schema, self._get_reconfigure_entry().data)
         return schema
+
+
+class ConversationSubentryFlowHandler(ConfigSubentryFlow):
+    """Per-agent conversation subentry flow (LLMM-007).
+
+    One typed ``conversation`` subentry per agent under a parent backend entry, so a
+    single backend/credential can back several agents with different prompts/models.
+    Mirrors the core ollama template: ``async_step_user`` (new agent) and
+    ``async_step_reconfigure`` (edit) both alias one shared ``set_options`` step; the
+    subentry ``data`` produced here is exactly what the entity (LLMM-005) reads.
+    """
+
+    @property
+    def _is_new(self) -> bool:
+        """True for the add-agent flow, False when reconfiguring an existing one."""
+        return self.source == SOURCE_USER
+
+    async def async_step_set_options(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Show/handle the common agent options form (create vs reconfigure)."""
+        entry = self._get_entry()
+        adapter_cls = BACKEND_TO_CLS[entry.data[CONF_BACKEND_TYPE]]
+
+        if user_input is not None:
+            if self._is_new:
+                # The name is the subentry title, not stored option data.
+                return self.async_create_entry(title=user_input.pop(CONF_NAME), data=user_input)
+            return self.async_update_and_abort(entry, self._get_reconfigure_subentry(), data=user_input)
+
+        options = {} if self._is_new else dict(self._get_reconfigure_subentry().data)
+        return self.async_show_form(
+            step_id="set_options",
+            data_schema=await self._build_schema(adapter_cls, entry, options),
+        )
+
+    async_step_user = async_step_set_options
+    async_step_reconfigure = async_step_set_options
+
+    async def _build_schema(
+        self,
+        adapter_cls: type[BackendAdapter],
+        entry: ConfigEntry,
+        options: Mapping[str, Any],
+    ) -> vol.Schema:
+        """Build the common per-agent schema; ``options`` prefills each field.
+
+        Every field is a per-agent setting. Capability ClassVars on the adapter gate
+        the model dropdown (catalog backends only) and ``CONF_MEMORY_SCOPE`` (stateful
+        backends only). ``CONF_LLM_HASS_API`` is intentionally not rendered yet.
+        """
+        schema: dict[Any, Any] = {}
+
+        # The agent's display name — new agents only; reconfigure keeps the title.
+        if self._is_new:
+            schema[vol.Required(CONF_NAME, default=_DEFAULT_AGENT_NAME)] = TextSelector()
+
+        # Per-agent system prompt (a Jinja template; converse/n8n also forward it,
+        # langgraph prepends it under MessagesState).
+        schema[
+            vol.Optional(
+                CONF_PROMPT,
+                description={"suggested_value": options.get(CONF_PROMPT, llm.DEFAULT_INSTRUCTIONS_PROMPT)},
+            )
+        ] = TemplateSelector()
+
+        # Model dropdown only for backends with a catalog (openai/ollama); free-text on
+        # probe failure; absent entirely when the backend has no catalog.
+        model_selector = await self._model_selector(adapter_cls, entry)
+        if model_selector is not None:
+            schema[vol.Optional(CONF_MODEL, description={"suggested_value": options.get(CONF_MODEL)})] = model_selector
+
+        # Stateless-replay trim depth; harmless for full-replay backends.
+        schema[
+            vol.Optional(
+                CONF_MAX_HISTORY,
+                description={"suggested_value": options.get(CONF_MAX_HISTORY, DEFAULT_MAX_HISTORY)},
+            )
+        ] = NumberSelector(NumberSelectorConfig(min=0, step=1, mode=NumberSelectorMode.BOX))
+
+        # Per-turn total deadline (seconds); voice UX degrades past it.
+        schema[
+            vol.Optional(
+                CONF_TIMEOUT,
+                description={"suggested_value": options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)},
+            )
+        ] = NumberSelector(NumberSelectorConfig(min=10, max=300, step=1, mode=NumberSelectorMode.BOX))
+
+        # Session-key scope — only stateful backends can honor it; stateless backends
+        # can't resurrect history HA discarded, so the option is hidden for them.
+        if adapter_cls.supports_memory_scope:
+            schema[
+                vol.Optional(
+                    CONF_MEMORY_SCOPE,
+                    description={"suggested_value": options.get(CONF_MEMORY_SCOPE, MEMORY_SCOPE_CONVERSATION)},
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=[MEMORY_SCOPE_CONVERSATION, MEMORY_SCOPE_DEVICE, MEMORY_SCOPE_AGENT],
+                    translation_key="memory_scope",
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+
+        # TODO(LLMM-014): render CONF_LLM_HASS_API as a multi-select over
+        # llm.async_get_apis(hass) here, gated on adapter_cls.supports_ha_tools, once the
+        # HA tool loop exists. Omitted until then so an unset value means "no tools" —
+        # no default is stored.
+
+        return vol.Schema(schema)
+
+    async def _model_selector(self, adapter_cls: type[BackendAdapter], entry: ConfigEntry) -> Any:
+        """Return the model field selector, or ``None`` for catalog-less backends.
+
+        Probes the backend's model catalog. Catalog present → a dropdown with a
+        free-text fallback (``custom_value``). Catalog-less backend → ``None`` (no
+        field). Probe failure → a plain text field, so the form still renders.
+        """
+        try:
+            models = await adapter_cls.async_list_models(self.hass, entry.data)
+        except Exception:  # any probe failure must still render the form (free-text)
+            _LOGGER.debug("Model probe failed for %s; falling back to free text", adapter_cls.backend_type)
+            return TextSelector()  # pyright: ignore[reportUnknownVariableType]
+        if models is None:
+            return None
+        return SelectSelector(  # pyright: ignore[reportUnknownVariableType]
+            SelectSelectorConfig(options=models, custom_value=True, mode=SelectSelectorMode.DROPDOWN)
+        )

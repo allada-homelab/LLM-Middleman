@@ -1,7 +1,7 @@
 ---
 id: LLMM-007
 title: Conversation subentry flow (agents: prompt/model/options)
-status: todo
+status: done
 phase: 1
 depends_on: [LLMM-006]
 ---
@@ -120,21 +120,21 @@ titles), and a `selector.memory_scope` translation block for the three scope lab
 `CONF_LLM_HASS_API` strings for LLMM-014.
 
 ## Acceptance criteria
-- [ ] `async_get_supported_subentry_types` returns `{"conversation":
+- [x] `async_get_supported_subentry_types` returns `{"conversation":
       ConversationSubentryFlowHandler}`; the "Add conversation agent" flow appears under a
       configured parent entry.
-- [ ] The set_options form shows name, prompt (TemplateSelector), max_history, and timeout
+- [x] The set_options form shows name, prompt (TemplateSelector), max_history, and timeout
       for every backend; creating it produces a subentry whose `data` carries those keys.
-- [ ] `CONF_MODEL` appears as a dropdown-with-free-text only for model-capable backends
+- [x] `CONF_MODEL` appears as a dropdown-with-free-text only for model-capable backends
       (openai/ollama), populated from the probe when reachable, plain text on probe failure.
-- [ ] `CONF_MEMORY_SCOPE` appears only when `adapter_cls.supports_memory_scope`; absent for
+- [x] `CONF_MEMORY_SCOPE` appears only when `adapter_cls.supports_memory_scope`; absent for
       openai/ollama.
-- [ ] `CONF_LLM_HASS_API` is NOT rendered (hidden until LLMM-014) and no default is stored,
+- [x] `CONF_LLM_HASS_API` is NOT rendered (hidden until LLMM-014) and no default is stored,
       with a `TODO(LLMM-014)` marker at the gate site.
-- [ ] `async_step_reconfigure` edits an existing agent's options and prefills current values.
-- [ ] `config_subentries.conversation.*` strings/translations complete; translations lint
+- [x] `async_step_reconfigure` edits an existing agent's options and prefills current values.
+- [x] `config_subentries.conversation.*` strings/translations complete; translations lint
       clean.
-- [ ] gates green: `just check` + `just typecheck`.
+- [x] gates green: `just check` + `just typecheck`.
 
 ## Verification
 Subentry-flow unit tests (`tests/test_config_flow.py`, `hass` + a `MockConfigEntry` parent

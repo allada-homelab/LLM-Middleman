@@ -92,7 +92,47 @@
             "reconfigure_successful": "Re-configuration was successful"
         }
     },
+    "config_subentries": {
+        "conversation": {
+            "initiate_flow": {
+                "user": "Add conversation agent",
+                "reconfigure": "Reconfigure conversation agent"
+            },
+            "entry_type": "Conversation agent",
+            "step": {
+                "set_options": {
+                    "title": "Conversation agent options",
+                    "data": {
+                        "name": "Name",
+                        "prompt": "System prompt",
+                        "model": "Model",
+                        "max_history": "Max history",
+                        "timeout": "Timeout (seconds)",
+                        "memory_scope": "Memory scope"
+                    },
+                    "data_description": {
+                        "name": "Display name for this agent's conversation entity.",
+                        "prompt": "Instructions the agent is given (a template). Sent as the system prompt to backends that accept one.",
+                        "model": "Model this agent uses. Pick one the backend offers, or type a name.",
+                        "max_history": "How many past turns to replay to stateless backends. Higher costs more per turn; full-replay backends may ignore it.",
+                        "timeout": "Per-turn deadline. The pipeline falls back rather than hang past this.",
+                        "memory_scope": "Which conversations share memory on stateful backends: per conversation, per device, or one continuous thread for the agent."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "Re-configuration was successful"
+            }
+        }
+    },
     "selector": {
+        "memory_scope": {
+            "options": {
+                "conversation": "Per conversation",
+                "device": "Per device",
+                "agent": "Per agent"
+            }
+        },
         "backend_type": {
             "options": {
                 "openai_compat": "OpenAI-compatible",
