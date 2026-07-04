@@ -1,7 +1,7 @@
 ---
 id: LLMM-011
 title: LangGraph adapter (threads, messages-tuple, Store-persisted mapping)
-status: in-review
+status: done
 phase: 2
 depends_on: [LLMM-002, LLMM-003, LLMM-004]
 ---
