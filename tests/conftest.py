@@ -228,6 +228,9 @@ def build_config_entry(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Test Middleman",
+        # Entries created by the current flow are VERSION 2 (config_flow.py); v0
+        # version-1 entries are exercised by the LLMM-013 migration tests instead.
+        version=2,
         data={
             "backend_type": backend_type,
             "base_url": TEST_BASE_URL,
