@@ -17,12 +17,13 @@ Import direction (no cycle): ``base`` ← concrete adapters ← this module.
 from __future__ import annotations
 
 from .base import BackendAdapter
+from .ollama import OllamaAdapter
 
 __all__ = ["BACKEND_TO_CLS", "BackendAdapter", "get_backend_cls"]
 
-# Registered adapter classes, keyed by their ``backend_type`` classvar. Empty until
-# LLMM-008 adds the first concrete adapter (see module docstring for the convention).
-BACKEND_TO_CLS: dict[str, type[BackendAdapter]] = {}
+# Registered adapter classes, keyed by their ``backend_type`` classvar. Each adapter
+# ticket adds its class to the tuple (see module docstring for the convention).
+BACKEND_TO_CLS: dict[str, type[BackendAdapter]] = {cls.backend_type: cls for cls in (OllamaAdapter,)}
 
 
 def get_backend_cls(backend_type: str) -> type[BackendAdapter]:

@@ -14,7 +14,8 @@ repos:
     hooks:
       - id: codespell
         # hass = Home Assistant object/domain term (not "hash").
-        args: ["-L", "hass"]
+        # hel = deliberate streaming fragment ("Hel" + "lo") in NDJSON parser tests.
+        args: ["-L", "hass,hel"]
         additional_dependencies: ["tomli"]
 
   # Local hooks invoke the project's pinned ruff via uv, so the hook, CI, and

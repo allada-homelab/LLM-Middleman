@@ -1,7 +1,7 @@
 ---
 id: LLMM-010
 title: Ollama native adapter (NDJSON, trim-history)
-status: todo
+status: in-review
 phase: 2
 depends_on: [LLMM-003, LLMM-004]
 ---
@@ -74,18 +74,18 @@ via `_trim_history` (system + last `2*max_history+1`). Text-only in this ticket;
   `CONF_BASE_URL` from LLMM-008/006).
 
 ## Acceptance criteria
-- [ ] `OllamaAdapter(BackendAdapter)` with `backend_type = "ollama"`,
+- [x] `OllamaAdapter(BackendAdapter)` with `backend_type = "ollama"`,
       `supports_ha_tools = False`, registered in `BACKEND_TO_CLS`.
-- [ ] `async_validate_connection` hits `GET /api/tags`, raises on failure, returns `None`.
-- [ ] `async_list_models` returns the installed-model list from `GET /api/tags`.
-- [ ] `stream_turn` replays trimmed history, POSTs `/api/chat` with `stream: true`, and
+- [x] `async_validate_connection` hits `GET /api/tags`, raises on failure, returns `None`.
+- [x] `async_list_models` returns the installed-model list from `GET /api/tags`.
+- [x] `stream_turn` replays trimmed history, POSTs `/api/chat` with `stream: true`, and
       streams `message.content` as role-first deltas.
-- [ ] NDJSON parser handles chunk-split lines, a partial trailing fragment, and terminates
+- [x] NDJSON parser handles chunk-split lines, a partial trailing fragment, and terminates
       on `done: true` (and on EOF without a `done` object — guard guarantee holds).
-- [ ] `num_ctx`, `keep_alive`, `think`, `model` sent only when configured; `max_history`
+- [x] `num_ctx`, `keep_alive`, `think`, `model` sent only when configured; `max_history`
       trims history to system + last `2*max_history+1`.
-- [ ] `base_url` treated as host root (no `/v1`), trailing slash stripped.
-- [ ] Gates green: `just check` + `just typecheck`.
+- [x] `base_url` treated as host root (no `/v1`), trailing slash stripped.
+- [x] Gates green: `just check` + `just typecheck`.
 
 ## Verification
 Write `tests/backends/test_ollama.py` driving **raw bytes** through the real NDJSON parser
@@ -104,6 +104,27 @@ Write `tests/backends/test_ollama.py` driving **raw bytes** through the real NDJ
 - **Validate:** fake `GET /api/tags` 200 → `async_validate_connection` returns `None`;
   connection error → raises. `async_list_models` on a 200 → returns the model list.
 Run `just check` + `just typecheck`; record delta vs baseline.
+
+### Verification evidence (executed)
+`tests/backends/test_ollama.py` was written and drives raw bytes through the real
+`_iter_ndjson` parser via the conftest harness (`chunk_bytes`, `FakeStreamResponse`).
+All acceptance scenarios are covered by tests: happy path (byte-at-a-time,
+mid-object-cut, and single-chunk splits), no-trailing-newline, EOF-without-done,
+whitespace-preserved, done-with-no-delta, thinking role-first, malformed-JSON →
+`BackendStreamError`, error-after-deltas propagation, non-200 → `BackendConnectionError`,
+trim (system + last 3 at `max_history=1`), option gating (`num_ctx`/`keep_alive`/`think`
+present only when set), `keep_alive=-1` sentinel stays literal int, base-url
+trailing-slash strip, auth header, `/api/tags` validate/list (200/401/connection-error),
+and registration. Gate results in the implementer worktree:
+
+- `just lock-check` → `Resolved 214 packages` (clean).
+- `just lint` → `All checks passed!`
+- `just fmt-check` → `19 files already formatted`.
+- `just typecheck` → `0 errors, 0 warnings, 0 notes`.
+- `just test` → `80 passed` (baseline 55 + 25 new; no baseline test regressed —
+  `test_backends_base.py::test_factory_empty_registry_raises` was repurposed to
+  `test_factory_unknown_type_raises` since the registry is no longer empty once ollama
+  registers).
 
 ## Risks / open questions
 - **`supports_ha_tools = False` in Phase 2** is deliberate (anti-Potemkin) — LLMM-015 flips
