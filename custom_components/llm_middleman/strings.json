@@ -2,44 +2,118 @@
     "config": {
         "step": {
             "user": {
-                "title": "Connect to LLM Middleman",
-                "description": "Configure the external agent this conversation agent forwards to.",
+                "title": "Add an LLM Middleman backend",
+                "description": "Choose the backend type this integration connects to. Each conversation agent is added afterwards as a subentry.",
                 "data": {
-                    "name": "Name",
-                    "url": "Endpoint URL",
-                    "token": "Auth Token",
-                    "system_prompt": "System Prompt"
+                    "backend_type": "Backend type"
                 },
                 "data_description": {
-                    "name": "Display name for this conversation agent",
-                    "url": "Base URL of the external agent (the /v1/converse path is appended automatically)",
-                    "token": "Optional bearer token sent as an Authorization header",
-                    "system_prompt": "Optional system prompt override for the Home Assistant chat log"
+                    "backend_type": "The external backend protocol this connection speaks."
                 }
             },
-            "reconfigure": {
-                "title": "Reconfigure LLM Middleman",
-                "description": "Update the external agent connection settings.",
+            "openai_compat": {
+                "title": "OpenAI-compatible connection",
+                "description": "Connect to an OpenAI-compatible chat-completions server.",
                 "data": {
-                    "name": "[%key:component::llm_middleman::config::step::user::data::name%]",
-                    "url": "[%key:component::llm_middleman::config::step::user::data::url%]",
-                    "token": "[%key:component::llm_middleman::config::step::user::data::token%]",
-                    "system_prompt": "[%key:component::llm_middleman::config::step::user::data::system_prompt%]"
+                    "base_url": "Base URL",
+                    "api_key": "API key"
                 },
                 "data_description": {
-                    "name": "[%key:component::llm_middleman::config::step::user::data_description::name%]",
-                    "url": "[%key:component::llm_middleman::config::step::user::data_description::url%]",
-                    "token": "[%key:component::llm_middleman::config::step::user::data_description::token%]",
-                    "system_prompt": "[%key:component::llm_middleman::config::step::user::data_description::system_prompt%]"
+                    "base_url": "Base URL of the server, including the /v1 path (a trailing slash is stripped automatically).",
+                    "api_key": "Optional. Many \"OpenAI-compatible\" servers still require a non-empty dummy key."
+                }
+            },
+            "langgraph": {
+                "title": "LangGraph connection",
+                "description": "Connect to a LangGraph deployment (langgraph dev, self-hosted, or cloud).",
+                "data": {
+                    "base_url": "Deployment URL",
+                    "api_key": "API key",
+                    "assistant_id": "Assistant ID"
+                },
+                "data_description": {
+                    "base_url": "LangGraph deployment URL (a trailing slash is stripped automatically).",
+                    "api_key": "Optional; sent as the x-api-key header.",
+                    "assistant_id": "Graph name or UUID (default: agent)."
+                }
+            },
+            "ollama": {
+                "title": "Ollama connection",
+                "description": "Connect to an Ollama server's native API.",
+                "data": {
+                    "base_url": "Base URL",
+                    "api_key": "API key"
+                },
+                "data_description": {
+                    "base_url": "Ollama host root, e.g. http://host:11434 — not the /v1 path (a trailing slash is stripped automatically).",
+                    "api_key": "Optional."
+                }
+            },
+            "converse": {
+                "title": "Custom /v1/converse connection",
+                "description": "Connect to a backend speaking the custom /v1/converse contract.",
+                "data": {
+                    "base_url": "Base URL",
+                    "token": "Bearer token"
+                },
+                "data_description": {
+                    "base_url": "Base URL of the backend; the /v1/converse path is appended (a trailing slash is stripped automatically).",
+                    "token": "Optional bearer token sent as an Authorization header."
+                }
+            },
+            "n8n": {
+                "title": "n8n connection",
+                "description": "Connect to an n8n Chat Trigger or plain Webhook workflow.",
+                "data": {
+                    "webhook_url": "Webhook URL",
+                    "target_type": "Target type",
+                    "auth_type": "Authentication",
+                    "username": "Username",
+                    "password": "Password",
+                    "header_name": "Header name",
+                    "header_value": "Header value"
+                },
+                "data_description": {
+                    "webhook_url": "Full production chat URL (…/webhook/<id>/chat). Stored verbatim — it is opaque and never normalized.",
+                    "target_type": "Chat Trigger, or plain Webhook with a Respond to Webhook node.",
+                    "auth_type": "How the workflow authenticates requests.",
+                    "username": "Basic-auth username (when authentication is basic auth).",
+                    "password": "Basic-auth password (when authentication is basic auth).",
+                    "header_name": "Header name (when authentication is a custom header).",
+                    "header_value": "Header value (when authentication is a custom header)."
                 }
             }
         },
         "error": {
-            "cannot_connect": "Failed to connect to the endpoint. Please check the URL."
+            "cannot_connect": "Failed to connect. Check the URL and that the backend is reachable.",
+            "invalid_auth": "Authentication failed. Check your credentials."
         },
         "abort": {
-            "already_configured": "This endpoint is already configured.",
             "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
+        }
+    },
+    "selector": {
+        "backend_type": {
+            "options": {
+                "openai_compat": "OpenAI-compatible",
+                "langgraph": "LangGraph",
+                "ollama": "Ollama",
+                "converse": "Custom /v1/converse",
+                "n8n": "n8n"
+            }
+        },
+        "target_type": {
+            "options": {
+                "chat_trigger": "Chat Trigger",
+                "webhook": "Webhook (Respond to Webhook)"
+            }
+        },
+        "auth_type": {
+            "options": {
+                "none": "None",
+                "basic": "Basic auth",
+                "custom_header": "Custom header"
+            }
         }
     }
 }
