@@ -1,7 +1,7 @@
 ---
 id: LLMM-009
 title: Custom `/v1/converse` adapter (v0 contract through new parser/guard)
-status: todo
+status: done
 phase: 2
 depends_on: [LLMM-002, LLMM-003, LLMM-004]
 ---
@@ -75,17 +75,17 @@ plumbing), and the canonical internal delta shape the other presets normalize in
   already exist in `const.py`; add `BACKEND_CONVERSE = "converse"`.
 
 ## Acceptance criteria
-- [ ] `ConverseAdapter(BackendAdapter)` with `backend_type = "converse"`,
+- [x] `ConverseAdapter(BackendAdapter)` with `backend_type = "converse"`,
       `supports_ha_tools = False`, registered in `BACKEND_TO_CLS`.
-- [ ] `stream_turn` POSTs the v0 body to `{base_url}/v1/converse` (bearer token when set)
+- [x] `stream_turn` POSTs the v0 body to `{base_url}/v1/converse` (bearer token when set)
       and streams `text_delta.delta` as role-first `AssistantContentDeltaDict` deltas.
-- [ ] A `done` event with no prior delta emits `done.text` (or `ERROR_MESSAGE`); a `done`
+- [x] A `done` event with no prior delta emits `done.text` (or `ERROR_MESSAGE`); a `done`
       after deltas terminates without duplicating text.
-- [ ] An `error` event surfaces as a `BackendStreamError` (guard → fallback), never a hang.
-- [ ] `done.continue_conversation` (when true) sets `ctx.continue_conversation = True`.
-- [ ] The request `conversation_id` is `ctx.memory_key` (derivation lives in the entity).
-- [ ] Module documents that this is the reference adapter.
-- [ ] Gates green: `just check` + `just typecheck`.
+- [x] An `error` event surfaces as a `BackendStreamError` (guard → fallback), never a hang.
+- [x] `done.continue_conversation` (when true) sets `ctx.continue_conversation = True`.
+- [x] The request `conversation_id` is `ctx.memory_key` (derivation lives in the entity).
+- [x] Module documents that this is the reference adapter.
+- [x] Gates green: `just check` + `just typecheck`.
 
 ## Verification
 Write `tests/backends/test_converse.py` driving **raw bytes** through `_sse.py` + adapter
@@ -105,6 +105,27 @@ Write `tests/backends/test_converse.py` driving **raw bytes** through `_sse.py` 
 - **continue absent:** `done` without `continue_conversation` → `ctx.continue_conversation`
   stays `False`.
 Run `just check` + `just typecheck`; record delta vs baseline.
+
+### Verification evidence (executed 2026-07-04, branch `llmm-009-converse-adapter`)
+Baseline on `main` (613c20e): `55 passed`; basedpyright `0 errors, 0 warnings, 0 notes`;
+lint/format/lock clean.
+
+After this ticket (`tests/backends/test_converse.py`, 15 new tests):
+- `uv run ruff check .` → `All checks passed!`
+- `uv run ruff format --check .` → `18 files already formatted`
+- `uv run basedpyright` → `0 errors, 0 warnings, 0 notes`
+- `uv run pytest tests/` → `70 passed in 1.73s` (55 baseline + 15 new; delta +15, no regressions)
+- `uv lock --check` → clean (`Resolved 214 packages`, no lock change)
+
+The 15 tests drive raw bytes through the real `_sse` reader + adapter and cover every
+Verification bullet plus the v0-untested surfaces: happy path (mid-frame 5-byte chunk
+splits, CRLF) with `continue_conversation` set; request shape (`conversation_id ==
+ctx.memory_key`, bearer + URL); no-token/no-device omission; multi-line `data:`;
+done-without-delta (text and `ERROR_MESSAGE` fallback); done-after-deltas discarding
+`done.text`; error event → `BackendStreamError`; error-after-deltas (deltas seen, then
+raise); silent EOF → yields nothing (guard supplies fallback); malformed JSON skipped;
+HTTP non-200 → `BackendStreamError`; oversized line (70 KB) → `BackendStreamError`;
+classvars; and a transport-failure `async_validate_connection` → `BackendConnectionError`.
 
 ## Risks / open questions
 - Plan §Implementation-time checkpoints: confirm `async_add_delta_content_stream` +

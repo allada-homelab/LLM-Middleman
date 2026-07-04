@@ -1,7 +1,7 @@
 ---
 id: LLMM-006
 title: Parent config flow (backend-type menu, per-backend connection steps, probes)
-status: todo
+status: done
 phase: 1
 depends_on: [LLMM-003]
 ---
@@ -119,21 +119,23 @@ step (field labels + data_description including the dummy-key and host-root hint
 the `config_subentries.*` section for LLMM-007.
 
 ## Acceptance criteria
-- [ ] Step 1 shows a backend-type dropdown sourced from `BACKEND_TO_CLS` keys; selecting one
+- [x] Step 1 shows a backend-type dropdown sourced from `BACKEND_TO_CLS` keys; selecting one
       routes to that backend's connection step.
-- [ ] Each backend's connection form collects exactly its matrix Parent fields; base-URL
+- [x] Each backend's connection form collects exactly its matrix Parent fields; base-URL
       backends strip a trailing slash, n8n's webhook URL is stored verbatim.
-- [ ] Submission calls `adapter_cls.async_validate_connection`; a raised
+- [x] Submission calls `adapter_cls.async_validate_connection`; a raised
       `BackendConnectionError`/`BackendAuthError` re-shows the form with the mapped
       `errors["base"]` (`cannot_connect`/`invalid_auth`), no entry created.
-- [ ] A valid submission creates an entry whose `data` includes `CONF_BACKEND_TYPE`; no
+- [x] A valid submission creates an entry whose `data` includes `CONF_BACKEND_TYPE`; no
       `unique_id` is set and a second identical URL is NOT aborted as duplicate.
-- [ ] `async_step_reconfigure` edits connection fields of an existing entry (type fixed) and
+- [x] `async_step_reconfigure` edits connection fields of an existing entry (type fixed) and
       ends in `async_update_reload_and_abort`.
-- [ ] `VERSION = 2` on the flow class.
-- [ ] `strings.json`/`translations/en.json` cover every parent step, field, error, and abort;
-      `hassfest`/translations lint is clean.
-- [ ] gates green: `just check` + `just typecheck`.
+- [x] `VERSION = 2` on the flow class.
+- [x] `strings.json`/`translations/en.json` cover every parent step, field, error, and abort
+      (88/88 keys match, verified by parity script). `hassfest` is not runnable in this
+      environment (ships with the HA source tree, not the installed package) — NOT run;
+      JSON well-formedness + strings/en key parity checked instead.
+- [x] gates green: `just check` (lock-check + lint + fmt-check + test, 59 passed) + `just typecheck` (0 errors).
 
 ## Verification
 Config-flow unit tests (`tests/test_config_flow.py`, `pytest-homeassistant-custom-component`
