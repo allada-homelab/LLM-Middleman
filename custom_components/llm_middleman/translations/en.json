@@ -108,7 +108,8 @@
                         "model": "Model",
                         "max_history": "Max history",
                         "timeout": "Timeout (seconds)",
-                        "memory_scope": "Memory scope"
+                        "memory_scope": "Memory scope",
+                        "llm_hass_api": "Control Home Assistant"
                     },
                     "data_description": {
                         "name": "Display name for this agent's conversation entity.",
@@ -116,7 +117,8 @@
                         "model": "Model this agent uses. Pick one the backend offers, or type a name.",
                         "max_history": "How many past turns to replay to stateless backends. Higher costs more per turn; full-replay backends may ignore it.",
                         "timeout": "Per-turn deadline. The pipeline falls back rather than hang past this.",
-                        "memory_scope": "Which conversations share memory on stateful backends: per conversation, per device, or one continuous thread for the agent."
+                        "memory_scope": "Which conversations share memory on stateful backends: per conversation, per device, or one continuous thread for the agent.",
+                        "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent."
                     }
                 }
             },

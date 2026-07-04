@@ -69,6 +69,10 @@ MEMORY_SCOPE_AGENT = "agent"  # one global thread per agent subentry
 # Subentry type for a conversation agent (one entity per such subentry).
 SUBENTRY_TYPE_CONVERSATION = "conversation"
 
+# Upper bound on assistant<->tool round-trips within a single turn (LLMM-014). The
+# HA-side backstop against a runaway tool-calling backend; matches core openai/ollama.
+MAX_TOOL_ITERATIONS = 10
+
 # sock_read idle timeout: kill only a truly stalled stream, not a slow-but-alive
 # one (the v0 single-total-deadline bug). Paired with CONF_TIMEOUT as the total.
 IDLE_TIMEOUT = 30

@@ -7,9 +7,10 @@ follow-up listening, and memory-scope session-key derivation. All provider-speci
 streaming lives in the adapters (``backends/``), never here.
 
 One entity is created per ``conversation`` subentry (core openai/ollama pattern); the
-shared adapter lives in ``entry.runtime_data``. The single-turn drive is factored into
-:meth:`_async_run_turn` so LLMM-014 can wrap it in the HA tool loop; this ticket drives
-``stream_turn`` exactly once (text-only, ``llm_api=None``).
+shared adapter lives in ``entry.runtime_data``. A single adapter round-trip is factored
+into :meth:`_async_run_turn`; :meth:`_async_handle_message` drives it inside the bounded
+HA tool loop (LLMM-014) — one iteration for text-only turns, up to
+``MAX_TOOL_ITERATIONS`` when the backend keeps calling tools.
 """
 
 from __future__ import annotations
@@ -18,8 +19,9 @@ import logging
 from typing import Literal
 
 from homeassistant.components import conversation
+from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigSubentry
-from homeassistant.const import CONF_PROMPT, MATCH_ALL
+from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -30,6 +32,7 @@ from .const import (
     CONF_MEMORY_SCOPE,
     DOMAIN,
     ERROR_MESSAGE,
+    MAX_TOOL_ITERATIONS,
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
@@ -82,6 +85,12 @@ class LLMMiddlemanConversationEntity(
             manufacturer="LLM Middleman",
             entry_type=dr.DeviceEntryType.SERVICE,
         )
+        # Advertise CONTROL only when this agent has an HA LLM API configured (core
+        # openai/ollama pattern): without it the pipeline's local-intent fallback keeps
+        # handling device commands; with it this entity owns them and the backend runs
+        # the tools. Gated on the configured API, not the adapter's capability.
+        if subentry.data.get(CONF_LLM_HASS_API):
+            self._attr_supported_features = ConversationEntityFeature.CONTROL
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -109,16 +118,43 @@ class LLMMiddlemanConversationEntity(
         try:
             await chat_log.async_provide_llm_data(
                 user_input.as_llm_context(DOMAIN),
-                # No HA LLM API until LLMM-014 wires CONF_LLM_HASS_API + the tool
-                # loop; this ticket is text-only passthrough.
-                None,
+                # The selected HA LLM API(s) (a list, or None when unset / a falsy
+                # empty list). A list pulls in the tools of every named llm.API —
+                # including HA MCP-client entries — so the backend can call them.
+                options.get(CONF_LLM_HASS_API) or None,
                 options.get(CONF_PROMPT),
                 user_input.extra_system_prompt,
             )
         except conversation.ConverseError as err:
             return err.as_conversation_result()
 
-        ctx = await self._async_run_turn(user_input, chat_log)
+        # One TurnContext for the whole turn (stable memory_key across iterations),
+        # reused by each adapter round-trip. Built here, never on the shared adapter.
+        ctx = TurnContext(
+            options=self.subentry.data,
+            memory_key=self._derive_memory_key(user_input, chat_log),
+        )
+        # Bounded tool loop (core openai/ollama shape): drive the adapter, let HA run
+        # any tool calls it emitted and append their results, and re-enter while the
+        # last content is an unresponded tool result. Text-only turns (no tools, or a
+        # backend that never calls one) break after exactly one iteration. The range()
+        # cap is the HA-side backstop against a runaway tool-calling backend.
+        for _ in range(MAX_TOOL_ITERATIONS):
+            await self._async_run_turn(user_input, chat_log, ctx)
+            if not chat_log.unresponded_tool_results:
+                break
+        else:
+            # Exhausted the cap while the backend was still mid-tool-call (last content
+            # is an unresponded tool result). Append a fallback assistant turn so the
+            # pipeline gets a spoken reply instead of async_get_result_from_chat_log
+            # raising — the never-hang guarantee extends to a runaway tool loop.
+            _LOGGER.warning(
+                "Tool loop hit MAX_TOOL_ITERATIONS (%d) without a final answer; returning fallback",
+                MAX_TOOL_ITERATIONS,
+            )
+            chat_log.async_add_assistant_content_without_tools(
+                conversation.AssistantContent(agent_id=self.entity_id, content=ERROR_MESSAGE)
+            )
 
         result = conversation.async_get_result_from_chat_log(user_input, chat_log)
         # Follow-up listening: HA already ORs in "reply ends with '?'"; the adapter
@@ -130,18 +166,20 @@ class LLMMiddlemanConversationEntity(
         self,
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
+        ctx: TurnContext | None = None,
     ) -> TurnContext:
         """Drive ONE adapter round-trip through the guard into the chat log.
 
-        Factored out (single turn, no tool loop) so LLMM-014 can wrap it in
-        ``for _ in range(MAX_TOOL_ITERATIONS)`` while ``chat_log.unresponded_tool_results``.
-        Returns the per-turn :class:`TurnContext` (created fresh here, never on the
-        shared adapter) so the caller can read ``continue_conversation``.
+        ``ctx`` is the per-turn :class:`TurnContext` the tool loop builds once and
+        reuses; when omitted a fresh one is created (its ``memory_key`` is derived
+        deterministically, so a per-iteration context has the same key). Returns the
+        context so the caller can read ``continue_conversation``.
         """
-        ctx = TurnContext(
-            options=self.subentry.data,
-            memory_key=self._derive_memory_key(user_input, chat_log),
-        )
+        if ctx is None:
+            ctx = TurnContext(
+                options=self.subentry.data,
+                memory_key=self._derive_memory_key(user_input, chat_log),
+            )
         async for _content in chat_log.async_add_delta_content_stream(
             self.entity_id,
             self._guarded(self.adapter.stream_turn(chat_log, user_input, ctx)),

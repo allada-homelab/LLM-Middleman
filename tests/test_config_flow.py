@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_NAME, CONF_PROMPT
+from homeassistant.const import CONF_LLM_HASS_API, CONF_NAME, CONF_PROMPT
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.selector import (
@@ -351,13 +351,22 @@ async def test_memory_scope_gated(hass: HomeAssistant) -> None:
     assert CONF_MEMORY_SCOPE in _schema_keys(form["data_schema"])
 
 
-async def test_llm_hass_api_hidden(hass: HomeAssistant) -> None:
-    """CONF_LLM_HASS_API is not rendered yet, even for a tool-capable backend (LLMM-014)."""
+async def test_llm_hass_api_gated(hass: HomeAssistant) -> None:
+    """CONF_LLM_HASS_API appears only for tool-capable backends, as a multi-select."""
     entry = _parent_entry(hass, BACKEND_OPENAI_COMPAT)
-    registry = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, supports_ha_tools=True)}
-    with patch(_REGISTRY_PATH, registry):
+
+    text_only = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, supports_ha_tools=False)}
+    with patch(_REGISTRY_PATH, text_only):
         form = await _init_subentry(hass, entry)
-    assert "llm_hass_api" not in _schema_keys(form["data_schema"])
+    assert CONF_LLM_HASS_API not in _schema_keys(form["data_schema"])
+
+    tool_capable = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, supports_ha_tools=True)}
+    with patch(_REGISTRY_PATH, tool_capable):
+        form = await _init_subentry(hass, entry)
+    assert CONF_LLM_HASS_API in _schema_keys(form["data_schema"])
+    selector = _selector_for(form["data_schema"], CONF_LLM_HASS_API)
+    assert isinstance(selector, SelectSelector)
+    assert selector.config["multiple"] is True  # pyright: ignore[reportUnknownMemberType]
 
 
 async def test_reconfigure_prefills(hass: HomeAssistant) -> None:

@@ -1,7 +1,7 @@
 ---
 id: LLMM-014
 title: Tool loop core + OpenAI-compatible tools (LLM API multi-select, CONTROL flag, iteration bound)
-status: todo
+status: in-review
 phase: 3
 depends_on: [LLMM-005, LLMM-007, LLMM-008]
 ---
@@ -155,21 +155,28 @@ def supported_features(self) -> ConversationEntityFeature:
 
 ## Acceptance criteria
 
-- [ ] `CONF_LLM_HASS_API` appears in the conversation subentry form **only** for backends
+- [x] `CONF_LLM_HASS_API` appears in the conversation subentry form **only** for backends
       whose adapter `supports_ha_tools`; it is a multi-select storing `list[str]`.
-- [ ] Entity passes the configured LLM API list to `async_provide_llm_data`; when unset,
+      (`config_flow.py` `_build_schema` gate; `test_llm_hass_api_gated`.)
+- [x] Entity passes the configured LLM API list to `async_provide_llm_data`; when unset,
       passes `None` and the turn behaves exactly as text-only (regression: LLMM-008
-      tests still green).
-- [ ] `ConversationEntityFeature.CONTROL` is reported iff the subentry has an LLM API
-      configured, and not otherwise.
-- [ ] The tool loop runs ≤ `MAX_TOOL_ITERATIONS` and breaks when
+      tests still green). (`conversation.py` `options.get(CONF_LLM_HASS_API) or None`;
+      `test_provides_llm_data_without_ha_tools` + full suite green.)
+- [x] `ConversationEntityFeature.CONTROL` is reported iff the subentry has an LLM API
+      configured, and not otherwise. (`__init__` sets `_attr_supported_features`;
+      `test_control_feature_present_with_llm_api`.)
+- [x] The tool loop runs ≤ `MAX_TOOL_ITERATIONS` and breaks when
       `chat_log.unresponded_tool_results` is empty; a text-only subentry does exactly one
-      iteration.
-- [ ] OpenAI-compatible adapter sends a `tools` array when an LLM API is set, accumulates
+      iteration. (`test_tool_loop_round_trip`, `test_text_only_turn_runs_one_iteration`,
+      `test_tool_loop_iteration_cap`.)
+- [x] OpenAI-compatible adapter sends a `tools` array when an LLM API is set, accumulates
       streamed `tool_calls` fragments by `index`, emits `llm.ToolInput` deltas, and
       replays prior tool calls/results (with `json.dumps(..., default=str)`) on the next
-      iteration.
-- [ ] Gates green: `just check` + `just typecheck`.
+      iteration. (`test_tools_field_sent_when_llm_api_set`,
+      `test_tool_calls_reassembled_across_chunks`,
+      `test_history_replays_tool_calls_and_results_default_str`.)
+- [x] Gates green: `just check` + `just typecheck` (199 passed; basedpyright 0 errors;
+      lint/format/lock clean).
 
 ## Verification
 
@@ -194,6 +201,38 @@ lines, CRLF line endings), asserting on `MockChatLog` content (LLMM-004 harness)
    API; assert `supported_features` differs accordingly.
 5. **Config-flow gating** — subentry flow for an openai-compat parent offers the field;
    for a converse parent (supports_ha_tools=False) it does not. Assert on the schema.
+
+### Executed (evidence)
+
+Tests written and passing (`uv run pytest`, full suite **199 passed**, 2 pre-existing
+aiohttp BasicAuth deprecation warnings; baseline was 189):
+
+- `tests/backends/test_openai_compat.py`: `test_tool_calls_reassembled_across_chunks`
+  (two interleaved calls, args split across frames, byte-at-a-time + CRLF),
+  `test_tool_call_with_text_then_call`, `test_empty_arguments_default_to_empty_object`,
+  `test_tools_field_sent_when_llm_api_set`, `test_tools_field_absent_without_llm_api`,
+  `test_history_replays_tool_calls_and_results_default_str` (datetime tool result →
+  `default=str`, no raise).
+- `tests/test_conversation.py`: `test_control_feature_present_with_llm_api`,
+  `test_tool_loop_round_trip` (real adapter, 2 iterations, turn-2 body carries the
+  serialized tool result), `test_text_only_turn_runs_one_iteration`,
+  `test_tool_loop_iteration_cap` (stops at `MAX_TOOL_ITERATIONS`, returns a result).
+- `tests/test_config_flow.py`: `test_llm_hass_api_gated` (multi-select present only for
+  a tool-capable parent).
+
+Gates: `just check` (lock-check + lint + fmt-check + test) green; `just typecheck`
+0 errors. `just pre-commit` on the changed files passes; the repo-wide pre-commit
+failures (LICENSE end-of-file, codespell in `LLMM-017`/`LLMM-019`/`plan.md`) are
+pre-existing and outside this ticket's files.
+
+### In-ticket amendment (small scope)
+
+The bounded loop uses a `for … else`: if the cap is exhausted while the last content is
+still an unresponded tool result (a runaway tool-calling backend), the entity logs a
+warning and appends an `ERROR_MESSAGE` assistant turn so `async_get_result_from_chat_log`
+returns a `ConversationResult` instead of raising `HomeAssistantError`. This extends the
+LLMM-005 never-hang guarantee to the tool loop and satisfies the "still return a
+`ConversationResult`" clause of Verification item 3.
 
 ## Risks / open questions
 
