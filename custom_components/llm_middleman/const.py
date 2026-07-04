@@ -95,3 +95,20 @@ CONF_RESPONSE_NODE_FILTER = "response_node_filter"
 CONF_STATELESS_RUNS = "stateless_runs"
 # helpers.storage.Store schema version for the session_key -> thread_id map.
 STORAGE_VERSION = 1
+
+# --- n8n agent-subentry options (LLMM-012; connection keys live above with LLMM-006) ---
+# ``CONF_STREAMING`` is a config-flow help-text toggle only: the adapter branches on
+# the actual response, never on this toggle.
+CONF_STREAMING = "streaming"
+CONF_INPUT_FIELD = "input_field"
+CONF_OUTPUT_FIELD = "output_field"
+CONF_SESSION_FIELD = "session_field"
+
+# n8n field defaults (n8n 1.103.0). The output field falls back to ``text`` when the
+# configured field is absent; a fully missing reply surfaces an error, never raw JSON.
+N8N_DEFAULT_INPUT_FIELD = "chatInput"
+N8N_DEFAULT_OUTPUT_FIELD = "output"
+N8N_OUTPUT_FIELD_FALLBACK = "text"
+N8N_DEFAULT_SESSION_FIELD = "sessionId"
+# n8n workflows can be slow; lower than the global default so voice UX fails soft sooner.
+N8N_DEFAULT_TIMEOUT = 30
