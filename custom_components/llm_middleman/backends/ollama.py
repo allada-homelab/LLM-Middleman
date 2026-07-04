@@ -12,22 +12,27 @@ Template: HA core ``homeassistant/components/ollama/entity.py`` (``_convert_cont
 speak raw ``aiohttp`` rather than the ``ollama`` pip client to keep the manifest deps
 thin.
 
-Text-only in this ticket (LLMM-010). Native ``tool_calls`` parsing + malformed-arg
-repair (``_parse_tool_args``) and flipping ``supports_ha_tools`` land in LLMM-015; the
-per-object emit loop is shaped to accept ``message.tool_calls`` without restructuring.
+Tools (LLMM-015): when ``chat_log.llm_api`` is set the adapter formats HA tool schemas
+into the request ``tools`` field, parses native ``message.tool_calls`` from the NDJSON
+stream into ``llm.ToolInput`` deltas (repairing small-model malformed args via
+``_parse_tool_args``), and replays prior tool calls/results back into ``messages[]`` on
+the next iteration. The entity's bounded tool loop drives the re-entry; this adapter
+stays stateless.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, Callable, Mapping
 from typing import Any, ClassVar, cast
 
 import aiohttp
 from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from voluptuous_openapi import convert  # pyright: ignore[reportUnknownVariableType]
 
 from custom_components.llm_middleman.const import (
     BACKEND_OLLAMA,
@@ -60,11 +65,56 @@ def _auth_headers(data: Mapping[str, Any]) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
-def _convert_content(content: conversation.Content) -> dict[str, Any]:
-    """Map one ChatLog item to an Ollama ``messages[]`` entry (text-only subset).
+def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None) -> dict[str, Any]:
+    """Format one HA tool as an Ollama ``/api/chat`` function-tool spec.
 
-    ``ToolResultContent`` won't appear until the tool loop lands (LLMM-015) but is
-    mapped here so history needs no rework then.
+    Ollama's wire shape nests ``name``/``parameters``/``description`` under ``function``
+    and, unlike OpenAI's, omits ``description`` when the tool has none (core
+    ``ollama/entity.py:_format_tool``). ``convert`` (voluptuous-openapi) renders the
+    voluptuous schema to JSON Schema; ``custom_serializer`` handles HA selector types.
+    """
+    function: dict[str, Any] = {
+        "name": tool.name,
+        "parameters": convert(tool.parameters, custom_serializer=custom_serializer),
+    }
+    if tool.description:
+        function["description"] = tool.description
+    return {"type": "function", "function": function}
+
+
+def _fix_invalid_arguments(value: Any) -> Any:
+    """Repair one malformed tool-argument value (core ``ollama/entity.py``).
+
+    Small local models routinely emit a JSON array/object as a *string*; parse it back
+    when it looks like one, else pass the value through unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    if (value.startswith("[") and value.endswith("]")) or (value.startswith("{") and value.endswith("}")):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    return value
+
+
+def _parse_tool_args(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Repair small-model tool-argument dicts (core ``ollama/entity.py``).
+
+    Drops keys whose value is ``None`` or ``""`` (they fail HA intent parsing) and
+    parses any stringified-JSON value back into a list/dict.
+    """
+    return {k: _fix_invalid_arguments(v) for k, v in arguments.items() if v is not None and v != ""}
+
+
+def _convert_content(content: conversation.Content) -> dict[str, Any]:
+    """Map one ChatLog item to an Ollama ``messages[]`` entry.
+
+    Assistant turns carry any ``tool_calls`` (LLMM-015) so a re-entered tool loop
+    replays them in Ollama's ``{"function": {"name", "arguments"}}`` wire shape; the
+    closed ``Content`` union makes the final branch the tool-result case, serialized
+    with ``default=str`` (a ``time``/``datetime`` tool result is not otherwise
+    JSON-serializable).
     """
     if isinstance(content, conversation.SystemContent):
         return {"role": "system", "content": content.content}
@@ -74,10 +124,12 @@ def _convert_content(content: conversation.Content) -> dict[str, Any]:
         message: dict[str, Any] = {"role": "assistant", "content": content.content or ""}
         if content.thinking_content:
             message["thinking"] = content.thinking_content
-        # tool_calls + _parse_tool_args: LLMM-015
+        if content.tool_calls:
+            message["tool_calls"] = [
+                {"function": {"name": call.tool_name, "arguments": call.tool_args}} for call in content.tool_calls
+            ]
         return message
-    # Only ToolResultContent remains (Content is a closed union); it won't appear
-    # until the tool loop lands in LLMM-015, but is mapped so history needs no rework.
+    # Only ToolResultContent remains (Content is a closed union).
     return {"role": "tool", "content": json.dumps(content.tool_result, default=str)}
 
 
@@ -116,9 +168,10 @@ class OllamaAdapter(BackendAdapter):
     """Ollama-native preset: ``/api/chat`` NDJSON, stateless replay + trim."""
 
     backend_type: ClassVar[str] = BACKEND_OLLAMA
-    # Native tool_calls + _parse_tool_args repair land in LLMM-015; until then the
-    # subentry flow must offer no dead tool option.
-    supports_ha_tools: ClassVar[bool] = False
+    # Formats HA tool schemas + parses native message.tool_calls with _parse_tool_args
+    # repair (LLMM-015), so the subentry flow offers CONF_LLM_HASS_API and the entity
+    # runs the tool loop.
+    supports_ha_tools: ClassVar[bool] = True
 
     @classmethod
     async def _async_get_models(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -174,6 +227,9 @@ class OllamaAdapter(BackendAdapter):
             body["keep_alive"] = keep_alive if keep_alive == KEEP_ALIVE_FOREVER else f"{keep_alive}s"
         if CONF_THINK in options:
             body["think"] = options[CONF_THINK]
+        # HA tool schemas, only when an LLM API is configured for this agent.
+        if chat_log.llm_api is not None and chat_log.llm_api.tools:
+            body["tools"] = [_format_tool(tool, chat_log.llm_api.custom_serializer) for tool in chat_log.llm_api.tools]
         return body
 
     async def stream_turn(
@@ -206,7 +262,22 @@ class OllamaAdapter(BackendAdapter):
             role_emitted = False
             async for obj in _iter_ndjson(response.content.iter_any()):
                 message: dict[str, Any] = obj.get("message") or {}
-                # message.tool_calls + _parse_tool_args: LLMM-015
+                tool_calls = message.get("tool_calls")
+                if tool_calls:
+                    if not role_emitted:
+                        role_emitted = True
+                        yield {"role": "assistant"}
+                    # Ollama emits each call as a whole object with args already a dict
+                    # (not a JSON string) -> no json.loads, just the malformed-arg repair.
+                    yield {
+                        "tool_calls": [
+                            llm.ToolInput(
+                                tool_name=tc["function"]["name"],
+                                tool_args=_parse_tool_args(tc["function"]["arguments"]),
+                            )
+                            for tc in tool_calls
+                        ]
+                    }
                 thinking = message.get("thinking")
                 if thinking:
                     if not role_emitted:
