@@ -1,7 +1,7 @@
 ---
 id: LLMM-004
 title: Test harness port (MockChatLog conftest + fake-stream helpers)
-status: todo
+status: done
 phase: 1
 depends_on: []
 ---
@@ -96,21 +96,21 @@ instead of re-inventing scaffolding.
   needed.
 
 ## Acceptance criteria
-- [ ] `MockChatLog` and `mock_chat_log` are ported (same names) and pass **strict** pyright.
-- [ ] `sse_bytes(...)` returns one bytes blob (event + data + blank line per frame; CRLF via
+- [x] `MockChatLog` and `mock_chat_log` are ported (same names) and pass **strict** pyright.
+- [x] `sse_bytes(...)` returns one bytes blob (event + data + blank line per frame; CRLF via
       `newline`), and `chunk_bytes(...)` splits a blob at arbitrary boundaries (incl. byte-
       at-a-time and mid-CRLF).
-- [ ] `FakeStreamResponse` is an async CM exposing `status`, `headers`, `text()`, and
+- [x] `FakeStreamResponse` is an async CM exposing `status`, `headers`, `text()`, and
       `.content.iter_any()` that yields the exact chunks given (no re-splitting); it can
       raise a scripted exception after K chunks.
-- [ ] `fake_aiohttp_session(response=…)` / `(exc=…)` returns the async-CM response from
+- [x] `fake_aiohttp_session(response=…)` / `(exc=…)` returns the async-CM response from
       `.post` or raises the exception.
-- [ ] `mock_config_entry` is a parent `MockConfigEntry` with one `conversation` subentry
+- [x] `mock_config_entry` is a parent `MockConfigEntry` with one `conversation` subentry
       (`ConfigSubentryData`), added to hass; the subentry-factory builds N subentries with a
       chosen `backend_type`.
-- [ ] No adapter/entity/flow test assertions live in this ticket (harness + one smoke test
+- [x] No adapter/entity/flow test assertions live in this ticket (harness + one smoke test
       only).
-- [ ] Gates green: `just check` + `just typecheck`.
+- [x] Gates green: `just check` + `just typecheck`.
 
 ## Verification
 Write `tests/test_harness_smoke.py` (proves the harness without depending on LLMM-002 —
