@@ -74,7 +74,7 @@
                     "header_value": "Header value"
                 },
                 "data_description": {
-                    "webhook_url": "Full production chat URL (…/webhook/<id>/chat). Stored verbatim — it is opaque and never normalized.",
+                    "webhook_url": "Full production chat URL (…/webhook/ID/chat). Stored verbatim — it is opaque and never normalized.",
                     "target_type": "Chat Trigger, or plain Webhook with a Respond to Webhook node.",
                     "auth_type": "How the workflow authenticates requests.",
                     "username": "Basic-auth username (when authentication is basic auth).",
