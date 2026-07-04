@@ -1,7 +1,7 @@
 ---
 id: LLMM-003
 title: Adapter interface & factory (`backends/base.py`, `BACKEND_TO_CLS`)
-status: todo
+status: in-review
 phase: 1
 depends_on: []
 ---
@@ -118,23 +118,23 @@ for connection validation — research-4).
   `backend_type` classvar.
 
 ## Acceptance criteria
-- [ ] `BackendAdapter(ABC)` exists with `backend_type: ClassVar[str]`, `supports_ha_tools:
+- [x] `BackendAdapter(ABC)` exists with `backend_type: ClassVar[str]`, `supports_ha_tools:
       ClassVar[bool] = False`, `supports_memory_scope: ClassVar[bool] = False`,
       `__init__(self, hass, session, connection_data)`, abstract classmethod
       `async_validate_connection(cls, hass, data) -> None`, non-abstract classmethod
       `async_list_models(cls, hass, data) -> list[str] | None` (default returns `None`), and
       abstract `stream_turn(self, chat_log, user_input, ctx: TurnContext) ->
       AsyncGenerator[conversation.AssistantContentDeltaDict]`.
-- [ ] `TurnContext` dataclass exists with fields `options: Mapping[str, Any]`,
+- [x] `TurnContext` dataclass exists with fields `options: Mapping[str, Any]`,
       `memory_key: str`, `continue_conversation: bool = False`.
-- [ ] Instantiating `BackendAdapter` (or a subclass missing an abstract method) raises
+- [x] Instantiating `BackendAdapter` (or a subclass missing an abstract method) raises
       `TypeError`; a subclass implementing both abstracts instantiates.
-- [ ] `BACKEND_TO_CLS: dict[str, type[BackendAdapter]]` exists (empty in this ticket) and
+- [x] `BACKEND_TO_CLS: dict[str, type[BackendAdapter]]` exists (empty in this ticket) and
       `get_backend_cls("openai_compat")` raises a clear error while the registry is empty.
-- [ ] `TurnContext`, `DeltaStream`, `BackendConnectionError`, `BackendAuthError` are exported
+- [x] `TurnContext`, `DeltaStream`, `BackendConnectionError`, `BackendAuthError` are exported
       from `base`, and `BackendStreamError` is importable from `base` (re-exported from `_sse`).
-- [ ] No concrete adapter is added by this ticket.
-- [ ] Gates green: `just check` + `just typecheck` (strict — verify the `def -> AsyncGenerator`
+- [x] No concrete adapter is added by this ticket.
+- [x] Gates green: `just check` + `just typecheck` (strict — verify the `def -> AsyncGenerator`
       abstract / `async def` override typechecks; see Risks).
 
 ## Verification
