@@ -40,6 +40,9 @@ N8N_AUTH_HEADER = "custom_header"
 # v1 per-agent subentry option keys (LLMM-008 OpenAI-compatible agent options).
 CONF_MODEL = "model"
 CONF_MAX_HISTORY = "max_history"
+# Default stateless-replay history depth (agent subentry). Ollama-style trim keeps
+# 2*max_history+1 messages; full-replay backends may ignore it.
+DEFAULT_MAX_HISTORY = 20
 CONF_TEMPERATURE = "temperature"
 CONF_TOP_P = "top_p"
 CONF_MAX_TOKENS = "max_tokens"

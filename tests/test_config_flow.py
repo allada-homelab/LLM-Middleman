@@ -11,23 +11,40 @@ from collections.abc import Mapping
 from typing import Any
 from unittest.mock import patch
 
+import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.const import CONF_NAME, CONF_PROMPT
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.selector import (
+    SelectSelector,  # pyright: ignore[reportUnknownVariableType]
+    TextSelector,  # pyright: ignore[reportUnknownVariableType]
+)
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.llm_middleman.backends.base import (
+    BackendAdapter,
     BackendAuthError,
     BackendConnectionError,
 )
+from custom_components.llm_middleman.config_flow import (
+    ConversationSubentryFlowHandler,
+    LLMMiddlemanConfigFlow,
+)
 from custom_components.llm_middleman.const import (
+    BACKEND_CONVERSE,
     BACKEND_N8N,
     BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_MAX_HISTORY,
+    CONF_MEMORY_SCOPE,
+    CONF_MODEL,
+    CONF_TIMEOUT,
     CONF_WEBHOOK_URL,
     DOMAIN,
+    SUBENTRY_TYPE_CONVERSATION,
 )
 
 _REGISTRY_PATH = "custom_components.llm_middleman.config_flow.BACKEND_TO_CLS"
@@ -172,3 +189,212 @@ async def test_reconfigure_updates_connection(hass: HomeAssistant) -> None:
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_BACKEND_TYPE] == BACKEND_OPENAI_COMPAT
     assert entry.data[CONF_BASE_URL] == "http://new.local:9000"
+
+
+# --- Conversation subentry flow (LLMM-007) ------------------------------------
+
+
+def _sub_adapter(
+    *,
+    backend_type: str,
+    models: list[str] | None = None,
+    models_raise: bool = False,
+    supports_memory_scope: bool = False,
+    supports_ha_tools: bool = False,
+) -> type[BackendAdapter]:
+    """Fake adapter exposing the capability ClassVars + model probe the subentry uses.
+
+    Subclasses the real ABC (never instantiated) so the capability ClassVars and the
+    ``async_list_models`` override are the genuine typed surface the flow reads.
+    """
+    # Bind params to distinctly named locals so the class body below doesn't shadow them.
+    bt, ms, ht = backend_type, supports_memory_scope, supports_ha_tools
+    model_list, raise_probe = models, models_raise
+
+    class _SubAdapter(BackendAdapter):
+        backend_type = bt
+        supports_memory_scope = ms
+        supports_ha_tools = ht
+
+        @classmethod
+        async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
+            return None
+
+        @classmethod
+        async def async_list_models(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> list[str] | None:
+            if raise_probe:
+                raise BackendConnectionError("probe down")
+            return model_list
+
+        def stream_turn(self, chat_log: Any, user_input: Any, ctx: Any) -> Any:
+            raise NotImplementedError
+
+    return _SubAdapter
+
+
+async def _init_subentry(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
+    """Start the add-conversation-agent (user) subentry flow, returning a plain dict."""
+    result = await hass.config_entries.subentries.async_init(  # pyright: ignore[reportUnknownMemberType]
+        (entry.entry_id, SUBENTRY_TYPE_CONVERSATION),
+        context={"source": config_entries.SOURCE_USER},
+    )
+    return dict(result)
+
+
+async def _configure_subentry(hass: HomeAssistant, flow_id: str, user_input: dict[str, Any]) -> dict[str, Any]:
+    """Advance a subentry flow, returning the result as a plain dict."""
+    result = await hass.config_entries.subentries.async_configure(flow_id, user_input)  # pyright: ignore[reportUnknownMemberType]
+    return dict(result)
+
+
+def _parent_entry(hass: HomeAssistant, backend_type: str, **kwargs: Any) -> MockConfigEntry:
+    """Add a configured parent backend entry to hass."""
+    entry = MockConfigEntry(domain=DOMAIN, version=2, data={CONF_BACKEND_TYPE: backend_type}, **kwargs)
+    entry.add_to_hass(hass)
+    return entry
+
+
+def _schema_keys(schema: vol.Schema) -> set[str]:
+    """Field keys of a rendered vol.Schema."""
+    return {str(marker.schema) for marker in schema.schema}
+
+
+def _selector_for(schema: vol.Schema, key: str) -> Any:
+    """Return the selector object bound to ``key`` in a rendered schema."""
+    for marker, selector in schema.schema.items():
+        if str(marker.schema) == key:
+            return selector
+    raise AssertionError(f"{key} not in schema")
+
+
+def _suggested_values(schema: vol.Schema) -> dict[str, Any]:
+    """Map each field key to its ``description['suggested_value']`` (if any)."""
+    out: dict[str, Any] = {}
+    for marker in schema.schema:
+        desc = getattr(marker, "description", None)
+        if desc and "suggested_value" in desc:
+            out[str(marker.schema)] = desc["suggested_value"]
+    return out
+
+
+def test_supported_subentry_types() -> None:
+    """The parent flow advertises the conversation subentry type."""
+    entry = MockConfigEntry(domain=DOMAIN, version=2, data={CONF_BACKEND_TYPE: BACKEND_OPENAI_COMPAT})
+    types = LLMMiddlemanConfigFlow.async_get_supported_subentry_types(entry)  # type: ignore[arg-type]
+    assert types[SUBENTRY_TYPE_CONVERSATION] is ConversationSubentryFlowHandler
+
+
+async def test_create_conversation_subentry(hass: HomeAssistant) -> None:
+    """The user step submits name/prompt/timeout and creates a subentry carrying them."""
+    entry = _parent_entry(hass, BACKEND_CONVERSE)
+    registry = {BACKEND_CONVERSE: _sub_adapter(backend_type=BACKEND_CONVERSE)}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+        assert form["type"] is FlowResultType.FORM
+        assert form["step_id"] == "set_options"
+        keys = _schema_keys(form["data_schema"])
+        assert {CONF_NAME, CONF_PROMPT, CONF_MAX_HISTORY, CONF_TIMEOUT} <= keys
+
+        result = await _configure_subentry(
+            hass,
+            form["flow_id"],
+            {CONF_NAME: "Kitchen agent", CONF_PROMPT: "Be brief.", CONF_TIMEOUT: 45},
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Kitchen agent"
+    assert result["data"][CONF_PROMPT] == "Be brief."
+    assert result["data"][CONF_TIMEOUT] == 45
+    # The name is the subentry title, not stored option data.
+    assert CONF_NAME not in result["data"]
+
+
+async def test_model_dropdown_openai(hass: HomeAssistant) -> None:
+    """A reachable model catalog yields a dropdown-with-free-text; a failed probe → text."""
+    entry = _parent_entry(hass, BACKEND_OPENAI_COMPAT)
+
+    registry = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, models=["m1", "m2"])}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+    selector = _selector_for(form["data_schema"], CONF_MODEL)
+    assert isinstance(selector, SelectSelector)
+    assert selector.config["options"] == ["m1", "m2"]  # pyright: ignore[reportUnknownMemberType]
+    assert selector.config["custom_value"] is True  # pyright: ignore[reportUnknownMemberType]
+
+    registry = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, models_raise=True)}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+    assert isinstance(_selector_for(form["data_schema"], CONF_MODEL), TextSelector)
+
+
+async def test_model_field_absent_without_catalog(hass: HomeAssistant) -> None:
+    """A catalog-less backend (async_list_models → None) renders no model field."""
+    entry = _parent_entry(hass, BACKEND_CONVERSE)
+    registry = {BACKEND_CONVERSE: _sub_adapter(backend_type=BACKEND_CONVERSE)}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+    assert CONF_MODEL not in _schema_keys(form["data_schema"])
+
+
+async def test_memory_scope_gated(hass: HomeAssistant) -> None:
+    """CONF_MEMORY_SCOPE appears only for backends that support it."""
+    entry = _parent_entry(hass, BACKEND_OPENAI_COMPAT)
+
+    stateless = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT)}
+    with patch(_REGISTRY_PATH, stateless):
+        form = await _init_subentry(hass, entry)
+    assert CONF_MEMORY_SCOPE not in _schema_keys(form["data_schema"])
+
+    stateful = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, supports_memory_scope=True)}
+    with patch(_REGISTRY_PATH, stateful):
+        form = await _init_subentry(hass, entry)
+    assert CONF_MEMORY_SCOPE in _schema_keys(form["data_schema"])
+
+
+async def test_llm_hass_api_hidden(hass: HomeAssistant) -> None:
+    """CONF_LLM_HASS_API is not rendered yet, even for a tool-capable backend (LLMM-014)."""
+    entry = _parent_entry(hass, BACKEND_OPENAI_COMPAT)
+    registry = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, supports_ha_tools=True)}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+    assert "llm_hass_api" not in _schema_keys(form["data_schema"])
+
+
+async def test_reconfigure_prefills(hass: HomeAssistant) -> None:
+    """Reconfigure prefills the stored option values and updates them on submit."""
+    stored = {CONF_PROMPT: "Custom prompt", CONF_MAX_HISTORY: 5, CONF_TIMEOUT: 90}
+    entry = _parent_entry(
+        hass,
+        BACKEND_CONVERSE,
+        subentries_data=[
+            {
+                "subentry_type": SUBENTRY_TYPE_CONVERSATION,
+                "data": stored,
+                "title": "Existing agent",
+                "unique_id": None,
+            }
+        ],
+    )
+    subentry_id = next(iter(entry.subentries))
+    registry = {BACKEND_CONVERSE: _sub_adapter(backend_type=BACKEND_CONVERSE)}
+
+    with patch(_REGISTRY_PATH, registry):
+        form: dict[str, Any] = dict(await entry.start_subentry_reconfigure_flow(hass, subentry_id))
+        assert form["step_id"] == "set_options"
+        # No name field on reconfigure (the title stays put).
+        assert CONF_NAME not in _schema_keys(form["data_schema"])
+        suggested = _suggested_values(form["data_schema"])
+        assert suggested[CONF_PROMPT] == "Custom prompt"
+        assert suggested[CONF_MAX_HISTORY] == 5
+        assert suggested[CONF_TIMEOUT] == 90
+
+        result = await _configure_subentry(
+            hass,
+            form["flow_id"],
+            {CONF_PROMPT: "Updated prompt", CONF_MAX_HISTORY: 3, CONF_TIMEOUT: 60},
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.subentries[subentry_id].data[CONF_PROMPT] == "Updated prompt"
+    assert entry.subentries[subentry_id].data[CONF_MAX_HISTORY] == 3
