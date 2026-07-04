@@ -43,7 +43,13 @@ from custom_components.llm_middleman.const import (
 )
 
 from ._sse import BackendStreamError, async_iter_sse
-from .base import BackendAdapter, BackendConnectionError, DeltaStream, TurnContext
+from .base import (
+    BackendAdapter,
+    BackendConnectionError,
+    DeltaStream,
+    TurnContext,
+    build_client_timeout,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -118,7 +124,7 @@ class ConverseAdapter(BackendAdapter):
             url,
             json=body,
             headers=headers,
-            timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
+            timeout=build_client_timeout(ctx.options),
         ) as response:
             if response.status != 200:
                 detail = (await response.text())[:500]
