@@ -85,8 +85,13 @@ async def mock_chat_log(hass: HomeAssistant) -> AsyncGenerator[MockChatLog]:
             MockChatLog,
         ),
         chat_session.async_get_chat_session(hass, "mock-conversation-id") as session,
-        conversation.async_get_chat_log(hass, session) as chat_log,
+        # chat_log_delta_listener's dict param is untyped upstream in HA.
+        conversation.async_get_chat_log(  # pyright: ignore[reportUnknownMemberType]
+            hass, session
+        ) as chat_log,
     ):
+        # The ChatLog patch above makes this hold at runtime; narrows the type.
+        assert isinstance(chat_log, MockChatLog)
         yield chat_log
 
 
