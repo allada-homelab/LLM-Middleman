@@ -1,0 +1,45 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Connect to LLM Middleman",
+                "description": "Configure the external agent this conversation agent forwards to.",
+                "data": {
+                    "name": "Name",
+                    "url": "Endpoint URL",
+                    "token": "Auth Token",
+                    "system_prompt": "System Prompt"
+                },
+                "data_description": {
+                    "name": "Display name for this conversation agent",
+                    "url": "Base URL of the external agent (the /v1/converse path is appended automatically)",
+                    "token": "Optional bearer token sent as an Authorization header",
+                    "system_prompt": "Optional system prompt override for the Home Assistant chat log"
+                }
+            },
+            "reconfigure": {
+                "title": "Reconfigure LLM Middleman",
+                "description": "Update the external agent connection settings.",
+                "data": {
+                    "name": "Name",
+                    "url": "Endpoint URL",
+                    "token": "Auth Token",
+                    "system_prompt": "System Prompt"
+                },
+                "data_description": {
+                    "name": "Display name for this conversation agent",
+                    "url": "Base URL of the external agent (the /v1/converse path is appended automatically)",
+                    "token": "Optional bearer token sent as an Authorization header",
+                    "system_prompt": "Optional system prompt override for the Home Assistant chat log"
+                }
+            }
+        },
+        "error": {
+            "cannot_connect": "Failed to connect to the endpoint. Please check the URL."
+        },
+        "abort": {
+            "already_configured": "This endpoint is already configured.",
+            "reconfigure_successful": "Re-configuration was successful"
+        }
+    }
+}

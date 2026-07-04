@@ -1,31 +1,10 @@
-set dotenv-load := true
-
 # List available recipes.
 default:
     @just --list
 
-# Install deps (all groups) and git hooks.
-install:
-    uv sync --all-groups
-    uv run pre-commit install
-    uv run pre-commit install --hook-type post-checkout --hook-type post-merge
-
-# Sync deps to the lockfile.
+# Sync deps (dev group) to the lockfile.
 sync:
-    uv sync --all-groups
-
-# Run unit tests.
-test:
-    uv run pytest
-
-# Run integration tests (requires a Docker daemon).
-test-int:
-    uv run pytest tests/integration -m integration
-
-# Run tests with coverage and the configured fail-under gate.
-coverage:
-    uv run coverage run -m pytest
-    uv run coverage report
+    uv sync --locked --dev
 
 # Lint.
 lint:
@@ -43,6 +22,14 @@ fmt:
 fmt-check:
     uv run ruff format --check .
 
+# Run tests.
+test:
+    uv run pytest tests/
+
+# Verify the lockfile is current.
+lock-check:
+    uv lock --check
+
 # Type-check.
 typecheck:
     uv run basedpyright
@@ -51,19 +38,5 @@ typecheck:
 pre-commit:
     uv run pre-commit run --all-files
 
-# Build sdist + wheel.
-build:
-    uv build
-
-# Validate the compose configuration.
-compose-config:
-    docker compose config
-
-# Build and start the service stack (detached).
-up:
-    docker compose up -d --build
-
-# Stop the service stack and remove volumes.
-down:
-    docker compose down -v
-
+# Run the full CI gate (lockfile + lint + format + tests).
+check: lock-check lint fmt-check test

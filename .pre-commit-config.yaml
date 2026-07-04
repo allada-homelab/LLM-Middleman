@@ -6,7 +6,6 @@ repos:
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
-        args: [--unsafe]
       - id: end-of-file-fixer
       - id: trailing-whitespace
 
@@ -14,6 +13,8 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
+        # hass = Home Assistant object/domain term (not "hash").
+        args: ["-L", "hass"]
         additional_dependencies: ["tomli"]
 
   # Local hooks invoke the project's pinned ruff via uv, so the hook, CI, and
@@ -37,7 +38,7 @@ repos:
       # Keep the venv current after branch switches / merges.
       - id: uv-sync
         name: uv sync
-        entry: uv sync --all-groups
+        entry: uv sync --locked --dev
         pass_filenames: false
         language: system
         always_run: true
