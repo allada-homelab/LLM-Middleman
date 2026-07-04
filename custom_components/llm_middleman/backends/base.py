@@ -24,6 +24,12 @@ from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.llm_middleman.const import (
+    CONF_TIMEOUT,
+    DEFAULT_TIMEOUT,
+    IDLE_TIMEOUT,
+)
+
 from ._sse import BackendStreamError
 
 __all__ = [
@@ -33,7 +39,23 @@ __all__ = [
     "BackendStreamError",
     "DeltaStream",
     "TurnContext",
+    "build_client_timeout",
 ]
+
+
+def build_client_timeout(options: Mapping[str, Any]) -> aiohttp.ClientTimeout:
+    """Return the aiohttp timeout every adapter uses for its streaming POST.
+
+    ``total`` is the per-agent ``CONF_TIMEOUT`` (default 60 s); ``sock_read`` is the
+    idle deadline (:data:`IDLE_TIMEOUT`), so a responsive-but-slow stream isn't killed
+    by a single total deadline (the v0 60 s bug). Lives on ``base`` — not the entity
+    module — so adapters import it without a cycle back through ``conversation``.
+    """
+    return aiohttp.ClientTimeout(
+        total=options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
+        sock_read=IDLE_TIMEOUT,
+    )
+
 
 # Canonical HA delta-dict stream every adapter yields. Single-arg AsyncGenerator:
 # the entity only iterates (never sends values in), so the send type defaults to None.
