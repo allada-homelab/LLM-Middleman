@@ -1,7 +1,7 @@
 ---
 id: LLMM-015
 title: Ollama tool support (native tool_calls + malformed-args repair)
-status: in-review
+status: done
 phase: 3
 depends_on: [LLMM-010, LLMM-014]
 ---
