@@ -110,11 +110,12 @@ def test_factory_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
         get_backend_cls("nope")
 
 
-def test_factory_empty_registry_raises() -> None:
-    # Empty until LLMM-008 registers the first adapter (acceptance criterion).
-    assert BACKEND_TO_CLS == {}
+def test_factory_registers_converse_and_unknown_raises() -> None:
+    # LLMM-009 registered the converse adapter as the first concrete backend;
+    # unknown types still raise.
+    assert BACKEND_TO_CLS.get("converse") is not None
     with pytest.raises(ValueError, match="Unknown backend type"):
-        get_backend_cls("openai_compat")
+        get_backend_cls("nonexistent_backend")
 
 
 def test_exception_surface() -> None:
