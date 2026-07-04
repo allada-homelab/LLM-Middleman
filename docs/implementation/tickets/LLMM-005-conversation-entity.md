@@ -1,7 +1,7 @@
 ---
 id: LLMM-005
 title: Backend-agnostic conversation entity (never-hangs guard, timeouts, continue_conversation, memory_scope)
-status: in-review
+status: done
 phase: 1
 depends_on: [LLMM-003, LLMM-004]
 ---
