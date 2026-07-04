@@ -17,13 +17,16 @@ Import direction (no cycle): ``base`` ← concrete adapters ← this module.
 from __future__ import annotations
 
 from .base import BackendAdapter
+from .converse import ConverseAdapter
 from .openai_compat import OpenAICompatAdapter
 
 __all__ = ["BACKEND_TO_CLS", "BackendAdapter", "get_backend_cls"]
 
 # Registered adapter classes, keyed by their ``backend_type`` classvar. Each adapter
 # ticket adds one import above and one entry to the tuple below.
-BACKEND_TO_CLS: dict[str, type[BackendAdapter]] = {cls.backend_type: cls for cls in (OpenAICompatAdapter,)}
+BACKEND_TO_CLS: dict[str, type[BackendAdapter]] = {
+    cls.backend_type: cls for cls in (ConverseAdapter, OpenAICompatAdapter)
+}
 
 
 def get_backend_cls(backend_type: str) -> type[BackendAdapter]:
