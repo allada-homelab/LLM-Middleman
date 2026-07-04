@@ -86,9 +86,24 @@ tests/               # conftest MockChatLog harness (carried from v0) + per-back
 ### Adapter interface (`backends/base.py`)
 
 ```python
+@dataclass
+class TurnContext:
+    """Per-turn channel between entity and adapter (created fresh each turn —
+    the adapter instance is shared across subentries/turns, so per-turn state
+    must never live on the adapter itself)."""
+    options: Mapping[str, Any]          # the agent subentry's options
+    memory_key: str                     # session key derived by the entity (memory_scope)
+    continue_conversation: bool = False # adapter may set; entity ORs into the result
+
+
 class BackendAdapter(ABC):
     backend_type: ClassVar[str]
-    supports_ha_tools: ClassVar[bool]   # gates CONF_LLM_HASS_API in the subentry flow
+    supports_ha_tools: ClassVar[bool] = False       # gates CONF_LLM_HASS_API in subentry flow
+    supports_memory_scope: ClassVar[bool] = False   # gates CONF_MEMORY_SCOPE in subentry flow
+
+    def __init__(self, hass, session, connection_data) -> None:
+        """Constructor contract: adapters read connection state (base_url, auth, …)
+        from self; built once in __init__.py setup and stored in entry.runtime_data."""
 
     @classmethod
     @abstractmethod
@@ -97,21 +112,28 @@ class BackendAdapter(ABC):
         openai: GET /v1/models · ollama: GET /api/tags · langgraph: GET /ok (fallback
         POST /assistants/search) · converse: transport-level check."""
 
+    @classmethod
+    async def async_list_models(cls, hass, data) -> list[str] | None:
+        """Model catalog for the subentry dropdown; None = backend has no catalog."""
+        return None
+
     @abstractmethod
     def stream_turn(
-        self, chat_log, user_input, subentry_options,
+        self, chat_log, user_input, ctx: TurnContext,
     ) -> AsyncGenerator[conversation.AssistantContentDeltaDict]:
         """One provider round-trip → canonical HA delta dicts.
         Stateless adapters rebuild provider messages from chat_log.content (with
         ollama-style trim via CONF_MAX_HISTORY) and pass HA tool schemas when
-        chat_log.llm_api is set. Stateful adapters send only the new turn + their
-        session key (conversation_id → thread_id map held on the adapter instance)."""
+        chat_log.llm_api is set. Stateful adapters send only the new turn keyed by
+        ctx.memory_key (e.g. mapped to a LangGraph thread_id)."""
 ```
 
 The adapter instance lives in `entry.runtime_data` (with a shared
-`async_create_clientsession`). LangGraph's `conversation_id → thread_id` map is in-memory
-on the adapter — HA rotates conversation_id after its 5-min session TTL, so a new ID
-simply creates a new thread; no persistence needed.
+`async_create_clientsession`), built by `__init__.py::async_setup_entry` via the
+`BACKEND_TO_CLS` factory. LangGraph's `memory_key → thread_id` map: in-memory for
+`conversation` scope (HA rotates conversation_id after its 5-min session TTL — a new ID
+simply creates a new thread); persisted via `helpers.storage.Store` for `device`/`agent`
+scopes (see §Conversation continuity).
 
 ### Conversation entity (backend-agnostic, `conversation.py`)
 
@@ -167,8 +189,8 @@ plus a sock_read idle timeout (~30 s) so a responsive-but-slow stream isn't kill
   are legitimate). Reconfigure step re-runs the same validation.
 - **Subentry flow** (`async_get_supported_subentry_types` → `{"conversation": …}`,
   ollama template with `async_step_user = async_step_reconfigure = shared set_options`):
-  agent name, system prompt (`TemplateSelector`), `CONF_LLM_HASS_API` (`LLM_API_ASSIST`
-  selector, only when `supports_ha_tools`), model (openai-compat/ollama — populated from
+  agent name, system prompt (`TemplateSelector`), `CONF_LLM_HASS_API` (multi-select over
+  `llm.async_get_apis()`, only when `supports_ha_tools`), model (openai-compat/ollama — populated from
   the probe's model list where possible), `CONF_MAX_HISTORY`, `CONF_TIMEOUT`.
 - **Migration:** config-entry `VERSION = 2` + `async_migrate_entry` converting a v0 entry
   (url/token/system_prompt) into a converse-type parent + one conversation subentry, so
