@@ -9,13 +9,17 @@ and the ``/api/tags`` probe.
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from datetime import UTC, datetime
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import aiohttp
 import pytest
+import voluptuous as vol
 from homeassistant.components import conversation
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.helpers import llm
 
 from custom_components.llm_middleman.backends import BACKEND_TO_CLS, get_backend_cls
 from custom_components.llm_middleman.backends._history import trim_history
@@ -317,13 +321,125 @@ async def test_list_models(hass: HomeAssistant) -> None:
     assert models == ["llama3:latest", "qwen3:4b"]
 
 
+# --- tools (LLMM-015) ---
+
+
+class _FakeTool:
+    """Minimal duck-typed ``llm.Tool`` (name/description/voluptuous parameters)."""
+
+    name = "get_time"
+    description = "Return the current time"
+    parameters = vol.Schema({})
+
+
+class _FakeLLMApi:
+    """Duck-typed ``llm.APIInstance`` exposing only what the adapter reads."""
+
+    def __init__(self, tools: list[Any]) -> None:
+        self.tools = tools
+        self.custom_serializer = None
+
+
+async def test_native_tool_call_extraction(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    # A message chunk carries a whole tool_calls object (args already a dict), a later
+    # chunk closes with done:true -> exactly one ToolInput, role-first before it.
+    blob = (
+        b'{"message":{"role":"assistant","content":"",'
+        b'"tool_calls":[{"function":{"name":"get_time","arguments":{"tz":"utc"}}}]}}\n'
+        b'{"message":{"content":""},"done":true}\n'
+    )
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse(chunk_bytes(blob, 1))))
+    deltas = await _run(adapter, mock_chat_log)
+    assert deltas[0] == {"role": "assistant"}  # role-first before the tool_calls delta
+    calls = deltas[1].get("tool_calls")
+    assert calls is not None
+    assert len(calls) == 1
+    assert calls[0].tool_name == "get_time"
+    assert calls[0].tool_args == {"tz": "utc"}
+
+
+async def test_malformed_tool_args_repaired(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    # Empty/None values are dropped (they fail HA intent parsing); a stringified JSON
+    # list is parsed back — the small-model repair from core ollama's _parse_tool_args.
+    args = '{"area": "", "name": null, "domain": "light", "extra": "[1, 2]"}'
+    blob = (
+        b'{"message":{"role":"assistant","content":"",'
+        b'"tool_calls":[{"function":{"name":"set_light","arguments":' + args.encode() + b"}}]}}\n"
+        b'{"message":{"content":""},"done":true}\n'
+    )
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse(chunk_bytes(blob, 7))))
+    deltas = await _run(adapter, mock_chat_log)
+    calls = deltas[-1].get("tool_calls")
+    assert calls is not None
+    assert calls[0].tool_args == {"domain": "light", "extra": [1, 2]}
+
+
+async def test_tools_field_sent_when_llm_api_set(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    mock_chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([_FakeTool()]))
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    adapter = _adapter(hass, session)
+    await _run(adapter, mock_chat_log)
+    tools = session.post.call_args.kwargs["json"]["tools"]
+    assert len(tools) == 1
+    assert tools[0]["type"] == "function"
+    assert tools[0]["function"]["name"] == "get_time"
+    assert tools[0]["function"]["description"] == "Return the current time"
+    assert isinstance(tools[0]["function"]["parameters"], dict)
+
+
+async def test_tools_field_absent_without_llm_api(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    adapter = _adapter(hass, session)
+    await _run(adapter, mock_chat_log)
+    assert "tools" not in session.post.call_args.kwargs["json"]
+
+
+async def test_history_replays_tool_calls_and_results_default_str(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    # A prior tool turn is replayed: the assistant message carries `tool_calls` in
+    # Ollama's {"function": {name, arguments}} shape, and the tool result — holding a
+    # non-JSON-native datetime — serializes via default=str.
+    now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
+    mock_chat_log.content.clear()
+    mock_chat_log.content.extend(
+        [
+            conversation.SystemContent(content="sys"),
+            conversation.UserContent(content="what time is it"),
+            conversation.AssistantContent(
+                agent_id="a",
+                content=None,
+                tool_calls=[llm.ToolInput(id="call_1", tool_name="get_time", tool_args={"tz": "utc"})],
+            ),
+            conversation.ToolResultContent(
+                agent_id="a",
+                tool_call_id="call_1",
+                tool_name="get_time",
+                tool_result={"now": now},  # pyright: ignore[reportArgumentType]
+            ),
+        ]
+    )
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    adapter = _adapter(hass, session)
+    await _run(adapter, mock_chat_log)
+    messages = session.post.call_args.kwargs["json"]["messages"]
+
+    assert messages[2] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"function": {"name": "get_time", "arguments": {"tz": "utc"}}}],
+    }
+    assert messages[3]["role"] == "tool"
+    assert json.loads(messages[3]["content"]) == {"now": str(now)}
+
+
 # --- Registration + classvars ---
 
 
 def test_registration_and_classvars() -> None:
     assert BACKEND_OLLAMA == "ollama"
     assert OllamaAdapter.backend_type == BACKEND_OLLAMA
-    assert OllamaAdapter.supports_ha_tools is False
+    assert OllamaAdapter.supports_ha_tools is True
     assert BACKEND_TO_CLS[BACKEND_OLLAMA] is OllamaAdapter
     assert get_backend_cls(BACKEND_OLLAMA) is OllamaAdapter
 

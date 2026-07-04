@@ -30,6 +30,7 @@ from custom_components.llm_middleman.backends.base import (
     TurnContext,
     build_client_timeout,
 )
+from custom_components.llm_middleman.backends.ollama import OllamaAdapter
 from custom_components.llm_middleman.backends.openai_compat import OpenAICompatAdapter
 from custom_components.llm_middleman.const import (
     CONF_API_KEY,
@@ -527,3 +528,49 @@ async def test_tool_loop_iteration_cap(hass: HomeAssistant, mock_chat_log: MockC
     assert isinstance(result, conversation.ConversationResult)
     assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
     logger.warning.assert_called_once()
+
+
+async def test_ollama_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """Same two-round loop against the Ollama NDJSON adapter: turn 1 calls a tool
+    (native ``message.tool_calls``), turn 2 answers in text.
+
+    Proves the LLMM-014 loop drives Ollama tool turns and that the replayed turn-2
+    ``messages[]`` serializes the tool result (a non-JSON-native ``datetime``) via
+    ``default=str`` into a ``role: "tool"`` message without raising.
+    """
+    now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
+    fake_api = _FakeLLMApi(result={"now": now})
+
+    turn1 = FakeStreamResponse(
+        [
+            b'{"message":{"role":"assistant","content":"",'
+            b'"tool_calls":[{"function":{"name":"get_time","arguments":{"tz":"utc"}}}]}}\n'
+            b'{"message":{"content":""},"done":true}\n'
+        ]
+    )
+    turn2 = FakeStreamResponse([b'{"message":{"content":"It is noon."},"done":true}\n'])
+    session = MagicMock()
+    session.post = MagicMock(side_effect=[turn1, turn2])
+    adapter = OllamaAdapter(hass, session, {CONF_BASE_URL: "http://ollama.local"})
+    entity = _entity_with_adapter(hass, adapter, subentry_data={CONF_LLM_HASS_API: ["assist"]})
+
+    async def _provide(*_args: Any, **_kwargs: Any) -> None:
+        mock_chat_log.llm_api = cast(llm.APIInstance, fake_api)
+
+    with patch.object(mock_chat_log, "async_provide_llm_data", side_effect=_provide):
+        result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    # Exactly two provider round-trips (tool turn + answer turn).
+    assert session.post.call_count == 2
+
+    # Turn 2's replayed body carries the tool result, datetime serialized via default=str.
+    body2 = session.post.call_args_list[1].kwargs["json"]
+    tool_messages = [m for m in body2["messages"] if m.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    assert json.loads(tool_messages[0]["content"]) == {"now": str(now)}
+
+    # Final spoken answer is the turn-2 text.
+    last = mock_chat_log.content[-1]
+    assert isinstance(last, conversation.AssistantContent)
+    assert last.content == "It is noon."
+    assert result.response.speech["plain"]["speech"] == "It is noon."
