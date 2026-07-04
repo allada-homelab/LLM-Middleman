@@ -1,7 +1,7 @@
 ---
 id: LLMM-008
 title: OpenAI-compatible adapter (text-only)
-status: todo
+status: in-review
 phase: 1
 depends_on: [LLMM-002, LLMM-003, LLMM-004]
 ---
@@ -86,20 +86,20 @@ reshaping `stream_turn`.
   `CONF_BASE_URL`, `BACKEND_OPENAI_COMPAT = "openai_compat"`.
 
 ## Acceptance criteria
-- [ ] `OpenAICompatAdapter(BackendAdapter)` exists with `backend_type = "openai_compat"`,
+- [x] `OpenAICompatAdapter(BackendAdapter)` exists with `backend_type = "openai_compat"`,
       `supports_ha_tools = False`, and is registered in `BACKEND_TO_CLS`.
-- [ ] `async_validate_connection` hits `GET /v1/models`, raises the adapter's typed error
+- [x] `async_validate_connection` hits `GET /v1/models`, raises the adapter's typed error
       on failure, and returns `None` on success.
-- [ ] `async_list_models` returns the parsed model-id list from `GET /v1/models`.
-- [ ] `stream_turn` replays trimmed history to `messages[]`, POSTs
+- [x] `async_list_models` returns the parsed model-id list from `GET /v1/models`.
+- [x] `stream_turn` replays trimmed history to `messages[]`, POSTs
       `/v1/chat/completions` with `stream: true`, and streams `choices[0].delta.content`
       as role-first `AssistantContentDeltaDict` deltas.
-- [ ] `[DONE]` sentinel ends the stream cleanly; a stream that ends without `[DONE]` still
+- [x] `[DONE]` sentinel ends the stream cleanly; a stream that ends without `[DONE]` still
       terminates (EOF) and the guard's ≥1-`AssistantContent` guarantee holds.
-- [ ] `temperature`, `top_p`, `max_tokens`, `model` from `ctx.options` appear in the
+- [x] `temperature`, `top_p`, `max_tokens`, `model` from `ctx.options` appear in the
       request body only when configured.
-- [ ] `base_url` trailing slash is stripped; Bearer header sent only when `api_key` set.
-- [ ] Gates green: `just check` + `just typecheck`.
+- [x] `base_url` trailing slash is stripped; Bearer header sent only when `api_key` set.
+- [x] Gates green: `just check` + `just typecheck`.
 
 ## Verification
 Write `tests/backends/test_openai_compat.py` driving **raw bytes** through the real
@@ -118,6 +118,28 @@ Write `tests/backends/test_openai_compat.py` driving **raw bytes** through the r
 - **Validate:** fake `GET /v1/models` 200 → `async_validate_connection` returns `None`;
   401/500 → raises. `async_list_models` on a 200 → returns the parsed model list.
 Run `just check` + `just typecheck` and record the pass/fail delta vs baseline.
+
+### Executed evidence (this branch)
+All commands run in the worktree via `uv run`:
+- `just check` (lock-check + lint + fmt-check + tests): **76 passed** (baseline 55 +
+  21 new in `tests/backends/test_openai_compat.py`); ruff `All checks passed!`; ruff
+  format `19 files already formatted`.
+- `just typecheck` (basedpyright strict): **0 errors, 0 warnings, 0 notes**.
+- `uv lock --check`: clean (`Resolved 214 packages`).
+
+The 21 new tests drive raw bytes through the real `_sse` reader + adapter:
+- Happy path — byte-at-a-time / CRLF split mid-line & mid-frame → deltas
+  `[{"role":"assistant"},{"content":"Hel"},{"content":"lo"}]` (role-first asserted).
+- Whitespace preserved (`" world"` verbatim); empty-string delta passes through.
+- Fallback surfaces: done-with-no-delta (yields nothing), silent stream end (no
+  `[DONE]` EOF still terminates), error-after-deltas (`ClientError` propagates after
+  partial deltas), oversized line (`BackendStreamError`), malformed JSON
+  (`json.JSONDecodeError`).
+- History trim (`max_history=1` → system + last 3) and untrimmed (`max_history=0`).
+- Options present only when set / omitted when unset; `stream: true` always.
+- Trailing-slash strip + Bearer header present with key / absent without key.
+- Registration in `BACKEND_TO_CLS`; validate 200→None, 401→`BackendAuthError`,
+  500 & transport→`BackendConnectionError`; `async_list_models` parses ids.
 
 ## Risks / open questions
 - **`supports_ha_tools = False` in Phase 1** is deliberate anti-Potemkin: the flag gates
