@@ -1,7 +1,7 @@
 ---
 id: LLMM-014
 title: Tool loop core + OpenAI-compatible tools (LLM API multi-select, CONTROL flag, iteration bound)
-status: in-review
+status: done
 phase: 3
 depends_on: [LLMM-005, LLMM-007, LLMM-008]
 ---
