@@ -18,7 +18,13 @@ from homeassistant.core import Context, HomeAssistant
 from custom_components.llm_middleman.backends._sse import BackendStreamError
 from custom_components.llm_middleman.backends.base import TurnContext
 from custom_components.llm_middleman.backends.converse import ConverseAdapter
-from custom_components.llm_middleman.const import CONF_BASE_URL, CONF_TOKEN, CONVERSE_PATH
+from custom_components.llm_middleman.const import (
+    CONF_BASE_URL,
+    CONF_TIMEOUT,
+    CONF_TOKEN,
+    CONVERSE_PATH,
+    IDLE_TIMEOUT,
+)
 from tests.conftest import (
     TEST_BASE_URL,
     TEST_TOKEN,
@@ -267,3 +273,15 @@ async def test_validate_connection_maps_client_error(hass: HomeAssistant) -> Non
         pytest.raises(BackendConnectionError),
     ):
         await ConverseAdapter.async_validate_connection(hass, {CONF_BASE_URL: TEST_BASE_URL})
+
+
+async def test_turn_post_honors_agent_timeout(hass: HomeAssistant) -> None:
+    # The per-agent CONF_TIMEOUT plus the shared idle deadline reach the wire call
+    # (v0 hardcoded one 60 s total for everyone).
+    blob = sse_bytes(("done", '{"text":""}'))
+    session = fake_aiohttp_session(response=FakeStreamResponse([blob]))
+    adapter = ConverseAdapter(hass, session, {CONF_BASE_URL: TEST_BASE_URL})
+    await _collect(adapter, TurnContext(options={CONF_TIMEOUT: 90}, memory_key="k"))
+    timeout = session.post.call_args.kwargs["timeout"]
+    assert timeout.total == 90
+    assert timeout.sock_read == IDLE_TIMEOUT

@@ -41,6 +41,7 @@ from ..const import (  # noqa: TID252 — sibling package const module
     CONF_TIMEOUT,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
+    IDLE_TIMEOUT,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_AUTH_NONE,
@@ -148,7 +149,7 @@ class N8nAdapter(BackendAdapter):
                 data=json.dumps(body, default=str),
                 headers=headers,
                 auth=auth,
-                timeout=aiohttp.ClientTimeout(total=timeout),
+                timeout=aiohttp.ClientTimeout(total=timeout, sock_read=IDLE_TIMEOUT),
             ) as response:
                 async for delta in self._iter_deltas(response, ctx):
                     yield delta
