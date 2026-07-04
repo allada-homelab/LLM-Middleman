@@ -1,7 +1,7 @@
 ---
 id: LLMM-017
 title: Docs rewrite (knowledge base, README, stale-claim fixes, CHANGELOG)
-status: in-review
+status: done
 phase: 4
 depends_on: [LLMM-009, LLMM-010, LLMM-011, LLMM-012, LLMM-013]
 ---
