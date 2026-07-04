@@ -1,7 +1,7 @@
 ---
 id: LLMM-007
 title: Conversation subentry flow (agents: prompt/model/options)
-status: in-review
+status: done
 phase: 1
 depends_on: [LLMM-006]
 ---
