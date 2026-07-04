@@ -115,6 +115,7 @@ def test_factory_registers_adapters_and_unknown_raises() -> None:
     assert "openai_compat" in BACKEND_TO_CLS
     assert "converse" in BACKEND_TO_CLS
     assert "ollama" in BACKEND_TO_CLS
+    assert "langgraph" in BACKEND_TO_CLS
     with pytest.raises(ValueError, match="Unknown backend type"):
         get_backend_cls("nonexistent_backend")
 

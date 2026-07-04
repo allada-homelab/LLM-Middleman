@@ -82,3 +82,16 @@ CONF_THINK = "think"
 # keep_alive sentinel: -1 means "keep the model loaded forever" and must be sent as
 # the integer -1, not a duration string ("-1s" is an invalid negative duration).
 KEEP_ALIVE_FOREVER = -1
+
+# --- LangGraph backend options (LLMM-011; BACKEND_LANGGRAPH/CONF_ASSISTANT_ID above) ---
+DEFAULT_ASSISTANT_ID = "agent"
+# Agent option: the graph's input key the new message list is nested under.
+CONF_INPUT_MESSAGES_KEY = "input_messages_key"
+DEFAULT_INPUT_MESSAGES_KEY = "messages"
+# Agent option: only emit tokens whose metadata.langgraph_node matches this name
+# (so intermediate/tool-node chatter is not spoken). Empty/unset = emit all nodes.
+CONF_RESPONSE_NODE_FILTER = "response_node_filter"
+# Agent option: run without a server-side thread (POST /runs/stream).
+CONF_STATELESS_RUNS = "stateless_runs"
+# helpers.storage.Store schema version for the session_key -> thread_id map.
+STORAGE_VERSION = 1
