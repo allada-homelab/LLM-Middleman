@@ -1,7 +1,7 @@
 ---
 id: LLMM-001
 title: Tooling & manifest housekeeping (py3.14, strict pyright, typecheck in CI, manifest/hacs floors)
-status: in-review
+status: done
 phase: 1
 depends_on: []
 ---
