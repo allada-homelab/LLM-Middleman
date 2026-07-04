@@ -63,7 +63,9 @@ This is a **HACS custom integration, not a pip package** — there is intentiona
 
 Run `just` (or `just --list`) to see everything. The core loop:
 
-- `just install` — sync all dependency groups and install git hooks.
+- `just sync` — sync the dev dependency group (`uv sync --locked --dev`). The
+  devcontainer's `.devcontainer/post-create.sh` runs `uv sync --all-groups` and installs
+  the pre-commit hooks on create; run those two by hand outside the container.
 - `just test` — run the unit suite.
 - `just lint` / `just lint-fix` — ruff check (with autofix).
 - `just fmt` / `just fmt-check` — ruff format.

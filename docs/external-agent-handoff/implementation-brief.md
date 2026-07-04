@@ -70,8 +70,10 @@ Key HA behaviors your service must respect:
   time-to-first-audio** — but only if you **stream** text as it's produced. Buffer the whole answer
   and you lose that.
 - **STT gives a single final transcript** (no interim words), so you always receive complete `text`.
-- **`continue_conversation`** — HA can keep the mic open for a follow-up. Signal it in your `done`
-  event when you asked a clarifying question.
+- **`continue_conversation`** — HA can keep the mic open for a follow-up. The `converse` adapter
+  **honors `done.continue_conversation`** (it ORs the flag into the result), so signal it in your
+  `done` event when you asked a clarifying question. (HA also sets it automatically when your reply
+  ends in `?`.)
 
 ### 2.2 Controlling the home
 You control HA by acting as an **MCP client** to HA's built-in **`mcp_server`**, which exposes HA's
@@ -100,9 +102,12 @@ LangGraph deep-agent graph — kept separate from the voice path.
 
 ---
 
-## 4. The contract: shim ⇄ external agent  (THE critical interface — FROZEN)
+## 4. The contract: the `/v1/converse` preset  (the interface your service implements)
 
-The HA shim already implements the consumer side of this. Do not change it unilaterally.
+`LLM-Middleman`'s `converse` adapter is the consumer of this contract — **one of the integration's
+five backend presets**, not the system-wide boundary it was in v0. Treat it as a stable preset
+interface: if you build against it, implement the endpoint, request shape, and SSE event names below
+exactly, or the adapter won't understand you.
 
 **Transport: HTTP POST with a Server-Sent Events (SSE) response stream.** SSE matches HA's streaming
 idiom and is one-directional (request → streamed response), which is all a turn needs.
@@ -112,15 +117,15 @@ idiom and is one-directional (request → streamed response), which is all a tur
 **Request body (JSON):**
 ```jsonc
 {
-  "conversation_id": "01J...",      // HA session key; null on a brand-new conversation
+  "conversation_id": "01J...",      // session key (the adapter's memory_key); the backend keys state on it
   "text": "turn off the kitchen lights",
   "language": "en",
-  "device_id": "…",                 // optional: originating satellite/device
-  "context": {                      // optional: extra grounding the shim may supply
-    "area": "kitchen"
-  }
+  "device_id": "…"                  // optional: included only when the turn originates from a device
 }
 ```
+> **No `context` field.** v0 documented an optional `context: {area: …}` object; the shipped adapter
+> **never sends it** (`custom_components/llm_middleman/backends/converse.py::stream_turn` builds a body
+> of exactly the four fields above). Do not design your service to expect it.
 
 **Response: `text/event-stream`, a sequence of SSE events** (`event:` + JSON `data:`):
 ```
@@ -142,11 +147,15 @@ event: error
 data: {"code": "backend_unavailable", "message": "…"}
 ```
 
-**What the shim does with this stream** (so you know your consumer):
-- Converts each `text_delta` → an HA assistant-content delta for early TTS.
-- On `error` or timeout → falls back (canned message, or HA's default agent). So **fail fast with a
-  clear `error` event** rather than hang.
-- Passes `conversation_id` through unchanged; treats `null` as "new session".
+**What the adapter does with this stream** (so you know your consumer):
+- Converts each `text_delta` → an HA assistant-content delta for early TTS. **The streamed deltas are
+  authoritative**: `done.text` is voiced **only** when you streamed no `text_delta` at all, so always
+  stream your text — don't rely on `done.text` to overwrite the deltas.
+- Reads `done.continue_conversation`: when truthy it ORs `continue_conversation` into the result, so
+  HA keeps the mic open for a follow-up (§2.1). Set it when you asked a clarifying question.
+- On `error` or timeout → falls back (canned message). So **fail fast with a clear `error` event**
+  rather than hang.
+- Sends `conversation_id` as the session key (derived from HA's per the agent's memory scope).
 
 ---
 
@@ -240,8 +249,10 @@ new repo):
    `openai`/`anthropic` SDKs vs LangChain wrappers.
 4. **LangGraph deep agents**: build now (autonomous capability) or start with a simple loop and add
    later.
-5. **Backend matrix**: which of llama-swap / Ollama / vLLM / LiteLLM / Anthropic are first-class, and
-   which reliably support tool-calling + structured output.
+5. **Backend matrix**: the target set is settled — OpenAI-compatible self-hosted servers (llama-swap /
+   Ollama / vLLM / LiteLLM) plus Anthropic (see `llm-providers.md` §1). What's left to confirm *live*
+   is which specific models reliably support tool-calling + structured output, not which backends are
+   in scope.
 6. **Memory**: per-session only vs cross-restart persistence (drives a checkpointer/store).
 7. **CI runner / Python floor** for this repo.
 

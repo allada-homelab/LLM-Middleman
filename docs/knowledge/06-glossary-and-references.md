@@ -146,5 +146,8 @@
 - **Which local OpenAI-compatible backends** honor tool-calling / `response_format: json_schema` — for
   the external agent.
 - **Anthropic extended-thinking signature replay** — for the external agent.
-- **`continue_conversation`** — the shim does not propagate it in v1 (HA computes it from the reply
-  ending in `?`); wire explicitly if reliable voice follow-ups are needed.
+- **`continue_conversation`** — v1 propagates it. HA computes it automatically from the reply ending
+  in `?` (all presets), and the entity additionally ORs in an explicit adapter flag: the custom
+  `/v1/converse` preset honors `done.continue_conversation` and n8n honors `continueConversation`
+  in a blocking reply (see `03` §6). OpenAI-compatible / Ollama / LangGraph have no protocol slot, so
+  they rely on the automatic `?`-detection.

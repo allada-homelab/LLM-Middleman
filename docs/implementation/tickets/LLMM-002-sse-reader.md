@@ -140,6 +140,11 @@ the delta.
   single-line JSON deltas are small, so 64 KB is generous; it is a per-call kwarg so an
   adapter with unusually large frames can raise it. Confirm no target backend emits a
   legitimate single line over the cap.
+- **Leading UTF-8 BOM not stripped.** The WHATWG SSE spec says a decoder must discard one
+  leading U+FEFF byte-order mark before parsing. `async_iter_sse` does not (no `﻿`
+  handling in `_sse.py`), so a BOM-prefixed first frame's `event`/`data` field name would
+  fail to match. Low practical risk — no target backend (openai-compat / converse /
+  langgraph) is known to emit a BOM — so it is tracked here rather than fixed speculatively.
 - **`BackendStreamError` ownership.** Defined here (raised here); LLMM-003 `base.py`
   re-exports it so adapters import backend exceptions from one place. Keep the import
   direction one-way (`base` imports from `_sse`, never the reverse).

@@ -150,15 +150,22 @@ integration reimplements stock code for no gain.
 
 ## Open decisions still needing the owner's call
 
-*Shim-side decisions are settled by the build: SSE-over-HTTP transport, pure passthrough (no HA-side
-tools), a single config entry, and its own HACS repo (`LLM-Middleman`). The rest concern the
-**external agent**:*
+*Integration-side (`LLM-Middleman`) decisions are settled by the v1 build: **five backend presets**
+(OpenAI-compatible, Ollama, LangGraph, custom `/v1/converse`, n8n) behind a common adapter layer;
+streaming per preset (SSE or NDJSON); **optional** HA-side tools per agent via `CONF_LLM_HASS_API` on
+tool-capable presets (not pure-passthrough-only); a **parent entry + conversation subentries** config
+model (not a single entry); per-agent memory scope; and its own HACS repo (`LLM-Middleman`). The
+remaining open items concern only the separate **external-agent service** that may implement the
+`/v1/converse` preset:*
 
 1. **(D8)** LLM client: ported adapters vs official SDKs vs LangChain.
 2. **(D2)** Deep agents now (autonomous capability) or later.
-3. **Backend matrix:** which of llama-swap / Ollama / vLLM / LiteLLM / Anthropic are first-class; which
-   reliably support tool-calling + structured output.
-4. **Memory:** per-session only vs cross-restart persistence.
+3. **Backend matrix (external agent):** the target set is settled — **OpenAI-compatible** self-hosted
+   servers plus **Anthropic** (see `02` §1 / `llm-providers.md` §1). What remains to confirm *live*
+   is which specific models reliably support tool-calling + structured output, not which backends are
+   in scope. (Note: `LLM-Middleman` itself now speaks OpenAI-compatible and Ollama natively as presets,
+   so an external agent is no longer the only way to reach those backends.)
+4. **Memory:** per-session only vs cross-restart persistence (for the external agent's own store).
 
 ---
 
