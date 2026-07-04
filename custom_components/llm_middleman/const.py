@@ -4,7 +4,6 @@ DOMAIN = "llm_middleman"
 
 # Config entry data keys
 CONF_URL = "url"
-CONF_BASE_URL = "base_url"  # v1 parent-entry connection key (replaces v0 CONF_URL)
 CONF_TOKEN = "token"  # noqa: S105 — config-key name, not a secret value
 CONF_NAME = "name"
 CONF_SYSTEM_PROMPT = "system_prompt"

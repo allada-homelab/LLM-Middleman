@@ -1,7 +1,7 @@
 ---
 id: LLMM-009
 title: Custom `/v1/converse` adapter (v0 contract through new parser/guard)
-status: in-review
+status: done
 phase: 2
 depends_on: [LLMM-002, LLMM-003, LLMM-004]
 ---
