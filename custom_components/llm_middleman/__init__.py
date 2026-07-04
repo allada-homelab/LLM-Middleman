@@ -1,27 +1,34 @@
 """LLM Middleman integration for Home Assistant.
 
-A thin, text-only passthrough conversation agent: it forwards each Assist turn to
-an external LLM agent over the ``/v1/converse`` SSE contract and streams the reply
+A backend-agnostic, text-only passthrough conversation agent: it forwards each
+Assist turn to an external LLM backend (selected via a preset) and streams the reply
 back into the pipeline. All intelligence (tools, memory, providers) lives in the
 external service; this integration owns only the HA plumbing.
+
+Setup builds the backend adapter once — via the ``BACKEND_TO_CLS`` factory keyed on
+the parent entry's ``CONF_BACKEND_TYPE`` — and stores the shared instance in
+``entry.runtime_data``. The conversation platform drives that one adapter per turn.
 """
 
 from __future__ import annotations
 
-import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
+from .backends import BackendAdapter, get_backend_cls
+from .const import CONF_BACKEND_TYPE
+
 PLATFORMS = (Platform.CONVERSATION,)
 
-type LLMMiddlemanConfigEntry = ConfigEntry[aiohttp.ClientSession]
+type LLMMiddlemanConfigEntry = ConfigEntry[BackendAdapter]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> bool:
-    """Set up LLM Middleman from a config entry."""
-    entry.runtime_data = async_create_clientsession(hass)
+    """Build the backend adapter and forward the conversation platform."""
+    adapter_cls = get_backend_cls(entry.data[CONF_BACKEND_TYPE])
+    entry.runtime_data = adapter_cls(hass, async_create_clientsession(hass), entry.data)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

@@ -1,34 +1,39 @@
-"""Conversation entity for LLM Middleman.
+"""Backend-agnostic conversation entity for LLM Middleman.
 
-The entity forwards each recognized turn to the external agent over the
-``/v1/converse`` SSE contract and translates ``text_delta`` events into HA
-``AssistantContentDeltaDict`` deltas so TTS can start speaking early. It runs no
-LLM and executes no tools of its own — the external agent owns all of that.
+This is the ONE ``ConversationEntity`` every backend preset shares. It wires HA's
+``ChatLog`` to a backend adapter's ``stream_turn``, hardens the "never hang the
+pipeline" guarantee behind :meth:`_guarded`, and applies per-agent timeouts,
+follow-up listening, and memory-scope session-key derivation. All provider-specific
+streaming lives in the adapters (``backends/``), never here.
+
+One entity is created per ``conversation`` subentry (core openai/ollama pattern); the
+shared adapter lives in ``entry.runtime_data``. The single-turn drive is factored into
+:meth:`_async_run_turn` so LLMM-014 can wrap it in the HA tool loop; this ticket drives
+``stream_turn`` exactly once (text-only, ``llm_api=None``).
 """
 
 from __future__ import annotations
 
-import json
 import logging
-from collections.abc import AsyncGenerator
-from typing import Any, Literal
+from typing import Literal
 
-import aiohttp
 from homeassistant.components import conversation
-from homeassistant.const import MATCH_ALL
+from homeassistant.config_entries import ConfigSubentry
+from homeassistant.const import CONF_PROMPT, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import LLMMiddlemanConfigEntry
+from .backends.base import BackendAdapter, DeltaStream, TurnContext
 from .const import (
-    CONF_SYSTEM_PROMPT,
-    CONF_TOKEN,
-    CONF_URL,
-    CONVERSE_PATH,
-    DEFAULT_TIMEOUT,
+    CONF_MEMORY_SCOPE,
     DOMAIN,
     ERROR_MESSAGE,
+    MEMORY_SCOPE_AGENT,
+    MEMORY_SCOPE_CONVERSATION,
+    MEMORY_SCOPE_DEVICE,
+    SUBENTRY_TYPE_CONVERSATION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,34 +44,48 @@ async def async_setup_entry(
     config_entry: LLMMiddlemanConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the conversation entity for a config entry."""
-    async_add_entities([LLMMiddlemanConversationEntity(config_entry)])
+    """Add one conversation entity per ``conversation`` subentry."""
+    for subentry in config_entry.subentries.values():
+        if subentry.subentry_type != SUBENTRY_TYPE_CONVERSATION:
+            continue
+        async_add_entities(
+            [LLMMiddlemanConversationEntity(config_entry, subentry)],
+            config_subentry_id=subentry.subentry_id,
+        )
 
 
 class LLMMiddlemanConversationEntity(
     conversation.ConversationEntity,
-    conversation.AbstractConversationAgent,  # pyright: ignore[reportPrivateImportUsage]  # LLMM-005 replaces this
+    # AbstractConversationAgent is imported into the conversation package namespace
+    # but omitted from its __all__, so basedpyright strict flags it; core
+    # openai_conversation subclasses it the same way. Mirrors the core template:
+    # both the base and the async_set_agent lifecycle below are kept per that
+    # pattern (LLMM-005 agent-registration checkpoint — verified against the
+    # installed HA source, which still calls async_set_agent).
+    conversation.AbstractConversationAgent,  # pyright: ignore[reportPrivateImportUsage]
 ):
-    """A passthrough conversation agent that forwards turns to an external service."""
+    """A passthrough conversation agent that forwards turns to a backend adapter."""
 
     _attr_has_entity_name = True
     _attr_name = None
     _attr_supports_streaming = True
 
-    def __init__(self, entry: LLMMiddlemanConfigEntry) -> None:
-        """Initialize the conversation entity."""
+    def __init__(self, entry: LLMMiddlemanConfigEntry, subentry: ConfigSubentry) -> None:
+        """Initialize the entity for one conversation subentry."""
         self.entry = entry
-        self._attr_unique_id = entry.entry_id
+        self.subentry = subentry
+        self.adapter: BackendAdapter = entry.runtime_data
+        self._attr_unique_id = subentry.subentry_id
         self._attr_device_info = dr.DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
+            identifiers={(DOMAIN, subentry.subentry_id)},
+            name=subentry.title,
             manufacturer="LLM Middleman",
             entry_type=dr.DeviceEntryType.SERVICE,
         )
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
-        """Return supported languages — the external agent handles any language."""
+        """Return supported languages — the backend handles any language."""
         return MATCH_ALL
 
     async def async_added_to_hass(self) -> None:
@@ -84,137 +103,100 @@ class LLMMiddlemanConversationEntity(
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
-        """Forward the turn to the external agent and stream the reply back."""
-        # Standard chat-log setup (system prompt). This shim exposes no HA tools,
-        # so no LLM API is provided — the external agent owns tool calling.
+        """Forward the turn to the backend and stream the reply back."""
+        options = self.subentry.data
+
         try:
             await chat_log.async_provide_llm_data(
                 user_input.as_llm_context(DOMAIN),
+                # No HA LLM API until LLMM-014 wires CONF_LLM_HASS_API + the tool
+                # loop; this ticket is text-only passthrough.
                 None,
-                self.entry.data.get(CONF_SYSTEM_PROMPT),
+                options.get(CONF_PROMPT),
                 user_input.extra_system_prompt,
             )
         except conversation.ConverseError as err:
             return err.as_conversation_result()
 
-        await self._async_forward(user_input, chat_log)
+        ctx = await self._async_run_turn(user_input, chat_log)
 
-        return conversation.async_get_result_from_chat_log(user_input, chat_log)
+        result = conversation.async_get_result_from_chat_log(user_input, chat_log)
+        # Follow-up listening: HA already ORs in "reply ends with '?'"; the adapter
+        # may explicitly request it via the per-turn TurnContext.
+        result.continue_conversation = result.continue_conversation or ctx.continue_conversation
+        return result
 
-    async def _async_forward(
+    async def _async_run_turn(
         self,
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
-    ) -> None:
-        """POST the turn to the middleman and feed its SSE deltas into the chat log."""
-        body: dict[str, Any] = {
-            "conversation_id": chat_log.conversation_id,
-            "text": user_input.text,
-            "language": user_input.language,
-        }
-        if user_input.device_id:
-            body["device_id"] = user_input.device_id
+    ) -> TurnContext:
+        """Drive ONE adapter round-trip through the guard into the chat log.
 
-        headers = {"Accept": "text/event-stream"}
-        if token := self.entry.data.get(CONF_TOKEN):
-            headers["Authorization"] = f"Bearer {token}"
-
-        url = self.entry.data[CONF_URL].rstrip("/") + CONVERSE_PATH
-
+        Factored out (single turn, no tool loop) so LLMM-014 can wrap it in
+        ``for _ in range(MAX_TOOL_ITERATIONS)`` while ``chat_log.unresponded_tool_results``.
+        Returns the per-turn :class:`TurnContext` (created fresh here, never on the
+        shared adapter) so the caller can read ``continue_conversation``.
+        """
+        ctx = TurnContext(
+            options=self.subentry.data,
+            memory_key=self._derive_memory_key(user_input, chat_log),
+        )
         async for _content in chat_log.async_add_delta_content_stream(
             self.entity_id,
-            self._stream_deltas(url, body, headers),
+            self._guarded(self.adapter.stream_turn(chat_log, user_input, ctx)),
         ):
             pass
+        return ctx
 
-    async def _stream_deltas(
-        self,
-        url: str,
-        body: dict[str, Any],
-        headers: dict[str, str],
-    ) -> AsyncGenerator[conversation.AssistantContentDeltaDict]:
-        """Translate the middleman's SSE stream into HA assistant deltas.
+    async def _guarded(self, stream: DeltaStream) -> DeltaStream:
+        """Never-hangs wrapper around an adapter stream.
 
-        Guarantees at least one ``AssistantContent`` is produced (a graceful
-        fallback on any error/timeout) so ``async_get_result_from_chat_log`` never
-        fails and the Assist pipeline never hangs.
+        Guarantees at least one ``AssistantContent`` on every exit path so
+        ``async_get_result_from_chat_log`` never raises and the pipeline never hangs:
+
+        * Role-first invariant — if the first yielded delta has no ``role`` key, a
+          leading ``{"role": "assistant"}`` is injected (HA rejects a first delta
+          without a role).
+        * Deltas pass through untrimmed (empty-string ``content`` included).
+        * ``except Exception`` broadly (the v0 holes were ``ValueError`` from aiohttp's
+          64 KB readline limit and ``UnicodeDecodeError``, plus ``TimeoutError``);
+          logs with ``_LOGGER.exception`` and appends the fallback message, opening a
+          role first only if nothing was emitted yet.
+        * A silent end (stream yields nothing) emits role + fallback.
         """
-        session: aiohttp.ClientSession = self.entry.runtime_data
         started = False
         try:
-            async with session.post(
-                url,
-                json=body,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
-            ) as response:
-                if response.status != 200:
-                    detail = (await response.text())[:500]
-                    _LOGGER.error("Middleman returned HTTP %s: %s", response.status, detail)
+            async for delta in stream:
+                if not started and "role" not in delta:
                     yield {"role": "assistant"}
-                    yield {"content": ERROR_MESSAGE}
-                    return
-
-                event: str | None = None
-                async for raw in response.content:
-                    line = raw.decode("utf-8").rstrip("\r\n")
-                    if not line:
-                        event = None  # blank line terminates an SSE event
-                        continue
-                    if line.startswith(":"):
-                        continue  # SSE comment / keep-alive
-                    if line.startswith("event:"):
-                        event = line[len("event:") :].strip()
-                        continue
-                    if not line.startswith("data:"):
-                        continue
-
-                    payload = _parse_data(line[len("data:") :].strip())
-                    if payload is None:
-                        continue
-
-                    if event == "text_delta":
-                        if delta := payload.get("delta"):
-                            if not started:
-                                yield {"role": "assistant"}
-                                started = True
-                            yield {"content": delta}
-                    elif event == "error":
-                        _LOGGER.error(
-                            "Middleman error event: %s — %s",
-                            payload.get("code"),
-                            payload.get("message"),
-                        )
-                        if not started:
-                            yield {"role": "assistant"}
-                            started = True
-                        yield {"content": ERROR_MESSAGE}
-                        return
-                    elif event == "done":
-                        # A stream with no text_delta still needs a final message.
-                        if not started:
-                            yield {"role": "assistant"}
-                            yield {"content": payload.get("text") or ERROR_MESSAGE}
-                            started = True
-                        return
-        except (TimeoutError, aiohttp.ClientError) as err:
-            _LOGGER.error("Middleman request failed: %s", err)
+                started = True
+                yield delta
+        except Exception:
+            _LOGGER.exception("Backend stream failed; returning fallback message")
             if not started:
                 yield {"role": "assistant"}
-                yield {"content": ERROR_MESSAGE}
+            yield {"content": ERROR_MESSAGE}
             return
 
-        # Stream ended without a done/error event and produced nothing usable.
         if not started:
             yield {"role": "assistant"}
             yield {"content": ERROR_MESSAGE}
 
+    def _derive_memory_key(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+    ) -> str:
+        """Derive the session key stateful adapters use, per ``CONF_MEMORY_SCOPE``.
 
-def _parse_data(data: str) -> dict[str, Any] | None:
-    """Parse an SSE ``data:`` payload as JSON, tolerating malformed lines."""
-    try:
-        parsed = json.loads(data)
-    except json.JSONDecodeError:
-        _LOGGER.warning("Failed to parse SSE data payload: %s", data)
-        return None
-    return parsed if isinstance(parsed, dict) else None  # pyright: ignore[reportUnknownVariableType]  # LLMM-005 replaces this
+        ``conversation`` (default) → ``conversation_id``; ``device`` → the device id
+        (falling back to ``conversation_id`` when the turn has no device); ``agent`` →
+        the subentry id (one global thread per agent). Stateless adapters ignore it.
+        """
+        scope = self.subentry.data.get(CONF_MEMORY_SCOPE, MEMORY_SCOPE_CONVERSATION)
+        if scope == MEMORY_SCOPE_AGENT:
+            return self.subentry.subentry_id
+        if scope == MEMORY_SCOPE_DEVICE and user_input.device_id:
+            return user_input.device_id
+        return chat_log.conversation_id
