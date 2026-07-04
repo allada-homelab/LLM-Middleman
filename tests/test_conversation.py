@@ -102,8 +102,8 @@ def test_unique_id_and_device_info() -> None:
     entity = _make_entity(_make_session())
     assert entity.unique_id == "test-entry-id"
     assert entity.device_info is not None
-    assert (DOMAIN, "test-entry-id") in entity.device_info["identifiers"]
-    assert entity.device_info["name"] == "Test Middleman"
+    assert (DOMAIN, "test-entry-id") in entity.device_info["identifiers"]  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-005 replaces this
+    assert entity.device_info["name"] == "Test Middleman"  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-005 replaces this
 
 
 async def test_forward_streams_deltas_into_chat_log(mock_chat_log: MockChatLog) -> None:

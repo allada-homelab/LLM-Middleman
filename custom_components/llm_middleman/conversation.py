@@ -45,7 +45,7 @@ async def async_setup_entry(
 
 class LLMMiddlemanConversationEntity(
     conversation.ConversationEntity,
-    conversation.AbstractConversationAgent,
+    conversation.AbstractConversationAgent,  # pyright: ignore[reportPrivateImportUsage]  # LLMM-005 replaces this
 ):
     """A passthrough conversation agent that forwards turns to an external service."""
 
@@ -217,4 +217,4 @@ def _parse_data(data: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         _LOGGER.warning("Failed to parse SSE data payload: %s", data)
         return None
-    return parsed if isinstance(parsed, dict) else None
+    return parsed if isinstance(parsed, dict) else None  # pyright: ignore[reportUnknownVariableType]  # LLMM-005 replaces this

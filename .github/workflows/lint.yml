@@ -8,7 +8,7 @@ on:
 
 jobs:
   uv:
-    name: uv (lockfile + ruff + pytest)
+    name: uv (lockfile + ruff + basedpyright + pytest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -20,4 +20,5 @@ jobs:
       - run: uv sync --locked --dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run basedpyright
       - run: uv run pytest tests/
