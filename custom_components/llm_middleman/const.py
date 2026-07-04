@@ -73,3 +73,12 @@ IDLE_TIMEOUT = 30
 # Shown to the user (and spoken via TTS) when the external agent is unreachable
 # or errors mid-turn, so the Assist pipeline never hangs.
 ERROR_MESSAGE = "Sorry, I could not reach the assistant right now. Please try again."
+
+# Ollama-native option keys (core-ollama option set; LLMM-010).
+CONF_NUM_CTX = "num_ctx"
+CONF_KEEP_ALIVE = "keep_alive"
+CONF_THINK = "think"
+
+# keep_alive sentinel: -1 means "keep the model loaded forever" and must be sent as
+# the integer -1, not a duration string ("-1s" is an invalid negative duration).
+KEEP_ALIVE_FOREVER = -1
