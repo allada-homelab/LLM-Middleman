@@ -6,6 +6,20 @@ from-scratch build doesn't re-litigate settled forks or lose the reasoning behin
 
 ---
 
+## Decision 0 — Text-only scope (audio passthrough dropped)
+
+**Chosen: the shim is text-only** — HA does STT and TTS; the shim forwards *text* to the external
+agent and streams *text* back (Mode B). An **audio-passthrough / speech-to-speech** mode (Mode A) was
+evaluated and **dropped**.
+
+**Why.** Speech-to-speech is **not supported in Assist 2026.7**: the staged pipeline
+(`wake → stt → conversation → tts`) has no audio-in/audio-out extension point, and the maintainers
+explicitly rejected complicating it (architecture discussion #1223, closed Nov 2025). Real-world
+speech-to-speech projects run *entirely outside* Assist. Text-only keeps us in the blessed shape — and
+thanks to streaming TTS (Decision 5) it still gets ~0.5 s time-to-first-audio.
+
+---
+
 ## Decision 1 — Passthrough (external brain) vs. embedding the agent inside HA
 
 **Chosen: passthrough.** The agent brain lives in an external service; HA runs only a thin shim.
@@ -66,8 +80,8 @@ separation.
 
 ## Decision 4 — Two repos / one integration per repo (HACS reality)
 
-**Chosen: the shim and the middleman are separate deliverables; the shim needs a HACS-structured
-home, not this service repo.**
+**RESOLVED: the shim lives in its own HACS repo — `LLM-Middleman` (built) — and the external agent
+lives in a separate repo/deployment.** (Option (b) below was taken.)
 
 **Why.** **HACS enforces exactly one integration per repository** (verbatim: *"There must only be one
 integration per repository … only the first one will be managed"*). And a HA integration must be a
@@ -91,9 +105,14 @@ integration per repository … only the first one will be managed"*). And a HA i
 
 **Why.** It is the primary latency lever for agentic voice — HA feeds TTS after ~60 accumulated
 characters, so the assistant can speak before the tool loop finishes. Without it, a multi-tool turn
-is dead air. **Known gap:** when the first useful text *requires* a tool, streaming can't help and
-there's no first-class "filler" primitive (2026.7) — mitigate with an early preamble + shallow voice
-turns.
+is dead air. **Confirmed:** with streaming TTS (HA 2025.10+, Voice Chapter 11), streamed deltas
+synthesize chunk-by-chunk → **~0.5 s time-to-first-audio** (down from >5 s). **Known gap:** when the
+first useful text *requires* a tool, streaming can't help and there's no first-class "filler"
+primitive (2026.7) — mitigate with an early preamble + shallow voice turns.
+
+**Bonus (confirmed):** because the shim is a real `ConversationEntity`, the **built-in Assist chat
+renders the conversation for free** — its `ChatLog` content streams as `INTENT_PROGRESS`/`INTENT_END`
+pipeline events consumed by `ha-assist-chat.ts`. No extra work.
 
 ---
 
@@ -131,17 +150,15 @@ integration reimplements stock code for no gain.
 
 ## Open decisions still needing the owner's call
 
-1. **(D6)** SSE vs WebSocket transport (lean SSE).
-2. **(D8)** LLM client: ported adapters vs official SDKs vs LangChain.
-3. **(D2)** Deep agents now (autonomous capability) or later.
-4. **(D4)** Shim's home: fold into `LLM-Home-Controller` vs new HACS repo.
-5. **Backend matrix:** which of llama-swap / Ollama / vLLM / LiteLLM / Anthropic are first-class; which
+*Shim-side decisions are settled by the build: SSE-over-HTTP transport, pure passthrough (no HA-side
+tools), a single config entry, and its own HACS repo (`LLM-Middleman`). The rest concern the
+**external agent**:*
+
+1. **(D8)** LLM client: ported adapters vs official SDKs vs LangChain.
+2. **(D2)** Deep agents now (autonomous capability) or later.
+3. **Backend matrix:** which of llama-swap / Ollama / vLLM / LiteLLM / Anthropic are first-class; which
    reliably support tool-calling + structured output.
-6. **Memory:** per-session only vs cross-restart persistence.
-7. **HA-side tool exposure:** pure passthrough (all tools via MCP) vs. shim *also* exposing Assist
-   tools locally.
-8. **Repo restructure:** if building the *shim* in `LLM-Middleman`, it must move to a HACS
-   `custom_components/` layout (the current scaffold is a FastAPI service, i.e. the *middleman*).
+4. **Memory:** per-session only vs cross-restart persistence.
 
 ---
 

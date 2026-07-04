@@ -1,8 +1,9 @@
-# Knowledge Base — HA passthrough shim + middleman
+# Knowledge Base — the `llm_middleman` HA shim
 
-The complete knowledge dump from the research and design sessions that led to this project. Purpose:
-let anyone (human or agent) build the **passthrough shim** (HA Voice → external agent) and the
-**middleman** service from the ground up with full context — no need to re-derive anything.
+The complete knowledge dump from the research and design sessions behind this project. Purpose: let
+anyone (human or agent) understand and extend the **shim** — the HA-side text-only conversation agent
+(`custom_components/llm_middleman/`) that forwards Assist turns to an external agent — plus the spec
+for that **external agent** it talks to, with full context and no need to re-derive anything.
 
 ## Read in this order
 
@@ -18,23 +19,25 @@ let anyone (human or agent) build the **passthrough shim** (HA Voice → externa
 ## Related docs in this repo
 
 - [`../plans/middleman-implementation-brief.md`](../plans/middleman-implementation-brief.md) — the
-  concrete build brief for the **middleman service** (this repo's scaffold), with the same contract.
+  build spec for the **external agent** the shim forwards to (a *separate* service, not this repo).
 
 ## The one-paragraph summary
 
-Home Assistant's voice front-end (mics, wake word, STT, TTS) stays as-is. A thin **shim**
-(`ConversationEntity`, in a HACS integration) forwards each recognized utterance to an external
-**middleman** service. The middleman runs an LLM agent loop over OpenAI-compatible and/or Anthropic
-backends, controls the home by calling back into HA via its stock **`mcp_server`** (MCP client), and
-**streams** the reply text back to the shim → TTS. This keeps heavy agent dependencies (e.g.
-LangGraph deep agents) out of HA, and is the clean place to run them. Streaming is mandatory (voice
-latency); voice turns stay shallow; long-horizon autonomy goes to a non-voice/AI-Task path.
+Home Assistant's voice front-end (mics, wake word, STT, TTS) stays as-is. **`LLM-Middleman` is the
+shim** — a thin, text-only `ConversationEntity` (`custom_components/llm_middleman/`) that forwards
+each recognized utterance to a **separate external agent** and streams the reply text back → TTS.
+That external agent (spec'd in `../plans/middleman-implementation-brief.md`) runs the LLM agent loop
+over OpenAI-compatible/Anthropic backends and controls the home via HA's stock **`mcp_server`** — it
+lives in its own repo, keeping heavy agent deps (e.g. LangGraph) out of HA. Text-only (audio
+passthrough isn't supported in Assist 2026.7); streaming is mandatory and, since HA's streaming TTS
+(Voice Chapter 11, Oct 2025), gives ~0.5 s time-to-first-audio. The built-in Assist chat renders the
+conversation for free because the shim is a real `ConversationEntity` writing to `ChatLog`.
 
 ## Status & caveats
 
-- This is **captured knowledge + plans**, not code. No shim/middleman logic is written yet.
+- **The shim is built.** `custom_components/llm_middleman/` is a working HACS conversation-agent
+  integration (gate green). These docs are the design/knowledge behind it; the **external agent** it
+  forwards to is a separate, not-yet-built component (see `../plans/middleman-implementation-brief.md`).
 - Several load-bearing facts are marked **(verify live)** — see `06` §3 and `01`'s "Least confident"
-  section. Confirm against a running HA 2026.7 before depending on them.
-- **Structural note:** the shim (a HA integration) needs a HACS `custom_components/` layout; this
-  repo is currently a FastAPI **service** scaffold (the *middleman*). Decide where the shim lives
-  (`05` Decision 4) before building it here.
+  section. Confirm against a running HA 2026.7 before depending on them (esp. a real voice smoke test
+  and hassfest).

@@ -3,11 +3,14 @@
 Everything we worked out about **the shim**: the thin Home Assistant conversation agent that plugs
 into Assist/Voice and *forwards* each turn to an external agent instead of running an LLM in-process.
 
-> **Terminology.** Across our sessions "the shim" and "the middleman" got used loosely. Precisely:
-> - **Shim** = the HA-side `ConversationEntity` (this doc). It lives in a **HACS custom integration**
->   (`custom_components/<domain>/`). It is thin: it owns HA plumbing, not intelligence.
-> - **Middleman** = the external **FastAPI service** (the brain). See `docs/plans/middleman-implementation-brief.md`.
-> - The **contract** between them is §4 below (and repeated in the middleman brief so both sides match).
+> **Terminology.** `LLM-Middleman` (this repo) IS **the shim** — the HA-side `ConversationEntity`
+> described here; domain `llm_middleman`. It's thin: it owns HA plumbing, not intelligence. The
+> **external agent** ("the brain") it forwards to is a **separate** service (spec'd in
+> `docs/plans/middleman-implementation-brief.md`, where it's called "the middleman" for historical
+> reasons — same word, different thing). The **contract** between them is §4.
+>
+> **Text-only.** The shim forwards *text* (HA does STT/TTS). An audio-passthrough / speech-to-speech
+> mode was evaluated and **dropped** — it isn't supported in Assist 2026.7 (see `05` Decision "Text-only").
 
 ---
 
@@ -29,32 +32,28 @@ at (the voice front-end); the brain lives where it can't bloat or destabilize HA
 
 ---
 
-## 2. Where the shim lives (HACS structural reality)
+## 2. Repo layout (the built shim)
 
-A HA integration **must** be a `custom_components/<domain>/` package with a `manifest.json`. It
-cannot be a FastAPI service. And **HACS enforces exactly one integration per repository** (verbatim:
-*"There must only be one integration per repository … only the first one will be managed"*).
-
-Consequences for *this* project:
-- The shim needs a **HACS-structured home** — either its own repo, or folded into the
-  `LLM-Home-Controller` rewrite as a new *passthrough agent type* (recommended, since two related
-  integrations can't share one HACS repo). See `05` §"Where the shim lives".
-- **The current `LLM-Middleman` repo is a FastAPI `service` scaffold** (the middleman). If you intend
-  to build the *HA shim* here, the repo would need restructuring to `custom_components/<domain>/` +
-  HACS layout — a different archetype than what was scaffolded. Flag/confirm this before building.
-
-Minimal shim integration layout (once it has a HACS home):
+`LLM-Middleman` **is** the shim — a HACS conversation-agent integration (domain `llm_middleman`),
+built and gate-green. Actual layout:
 ```
-custom_components/<shim_domain>/
-  __init__.py        # entry setup; store aiohttp session + middleman config in runtime_data
-  manifest.json      # domain, name, version (required for custom), integration_type, codeowners,
-                     # dependencies: ["conversation"], iot_class: local_push
-  config_flow.py     # ConfigFlow (+ ConfigSubentryFlow if multiple agents) — middleman URL, auth token
-  const.py
-  conversation.py    # the ConversationEntity shim (the core of this doc)
+custom_components/llm_middleman/
+  __init__.py        # entry setup/unload; runtime_data = aiohttp ClientSession; PLATFORMS = (CONVERSATION,)
+  const.py           # DOMAIN, CONF_URL/CONF_TOKEN/CONF_SYSTEM_PROMPT, CONVERSE_PATH, DEFAULT_TIMEOUT, ERROR_MESSAGE
+  config_flow.py     # single ConfigFlow (name / external URL / token / system_prompt) + reconfigure
+  conversation.py    # LLMMiddlemanConversationEntity — the forwarding agent (core of this doc)
+  manifest.json      # domain llm_middleman, integration_type "service", dependencies ["conversation"],
+                     #   requirements ["aiohttp"], iot_class "local_push", config_flow true, version 0.1.0
   strings.json / translations/en.json
   brand/             # icons (local brand folder, HA 2026.3+)
+tests/               # conftest (MockChatLog + fixtures), test_conversation / test_config_flow / test_init
 ```
+Tooling (pyproject with **no `[build-system]`**, ruff/basedpyright/pytest, `justfile`, `lint.yml` +
+`validate.yml` hassfest CI) is modeled on the sibling `LLM-Home-Controller`.
+
+**HACS note (why its own repo):** a HA integration must be `custom_components/<domain>/`, and **HACS
+allows exactly one integration per repository** — so the shim gets its own repo. The external agent
+(a service) lives in yet another repo.
 
 ---
 
@@ -83,6 +82,10 @@ The HA API facts below are the load-bearing ones; full detail + exact signatures
   explicitly if the API allows.
 - **`ConverseError`** is for **pre-flight** failures only (won't be stored in history). Mid-turn
   failures should surface as visible assistant/tool content, or a graceful fallback message.
+- **Built-in Assist chat renders for free.** Because the shim is a real `ConversationEntity`, the
+  content it writes to `ChatLog` streams out as the pipeline's `INTENT_PROGRESS`/`INTENT_END` events,
+  which `ha-assist-chat.ts` renders — the frontend neither knows nor cares that the agent is a proxy.
+  Confirmed against core + frontend source (see `06`); no extra work needed to show the conversation.
 
 ---
 
@@ -138,7 +141,11 @@ The whole value proposition is acceptable voice UX with an agentic brain. What w
 - **Stream text deltas** the instant they arrive. HA starts feeding TTS after
   `STREAM_RESPONSE_CHARS = 60` accumulated characters **if** `_attr_supports_streaming = True` *and*
   the TTS engine supports streaming input — so the assistant can speak before the tool loop finishes.
-  **Set `_attr_supports_streaming = True` on the shim entity.**
+  **Set `_attr_supports_streaming = True` on the shim entity.** (It is set.)
+- **Confirmed good news (HA 2025.10+, Voice Chapter 11):** streamed deltas synthesize chunk-by-chunk
+  into a streaming TTS engine, cutting time-to-first-audio from >5 s to **~0.5 s** — so a streaming
+  passthrough gets genuinely low voice latency. Also confirmed: HA STT returns a **single final
+  transcript** (no interim words), so the shim forwards one complete text per turn.
 - **The unavoidable gap:** when the *first* useful text requires a tool result (e.g. "what's the
   temperature?"), streaming can't help — the model must call the tool before it can say anything.
   There is **no first-class "filler utterance" primitive** in HA 2026.7. Mitigations: have the
@@ -172,5 +179,4 @@ The whole value proposition is acceptable voice UX with an agentic brain. What w
    and keeps one control path.
 3. **Single agent vs subentries:** one shim entity, or a subentry pattern for multiple middleman
    endpoints/personas.
-4. **Where it lives:** own HACS repo vs. folded into the `LLM-Home-Controller` rewrite as a
-   passthrough agent type.
+4. **Where it lives:** ✅ resolved — its own HACS repo (`LLM-Middleman`).

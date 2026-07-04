@@ -1,9 +1,13 @@
-# 04 — The Passthrough Plan (the original shim idea, end-to-end)
+# 04 — The Passthrough Plan (the shim idea, end-to-end)
 
-This is the detailed plan we arrived at for the passthrough idea — the "HA Voice front-end + external
-agent brain" design — captured end-to-end so a from-scratch build has the whole picture in one place.
-The middleman-service specifics are expanded in `docs/plans/middleman-implementation-brief.md`; this
-doc is the **system-level** plan spanning both halves.
+This is the detailed plan for the passthrough idea — the "HA Voice front-end + external agent brain"
+design — captured end-to-end so the whole picture is in one place. This doc is the **system-level**
+plan spanning both halves.
+
+> **Naming + status.** `LLM-Middleman` (this repo) = the **shim** (HA side), **built**. The external
+> **agent/brain** it forwards to = a *separate* component (`../plans/middleman-implementation-brief.md`),
+> not yet built. The plan is **text-only** — audio passthrough was dropped (unsupported in Assist
+> 2026.7; see `05`). Below, "middleman" in prose means that external brain.
 
 ---
 
@@ -73,6 +77,9 @@ result back into the loop.
 
 Each phase is independently testable.
 
+> **Status:** the **shim** (this repo) is built — skeleton + forwarding + tests done (≈ step 2
+> below). Remaining steps build the **external agent**.
+
 1. **Contract skeleton (middleman).** pydantic settings + `POST /v1/converse` returning a *stubbed*
    SSE stream (echo input as `text_delta`s + `done`). Wire the shared-secret auth. Contract test on
    the SSE event shapes. *(No LLM yet.)*
@@ -96,10 +103,11 @@ Each phase is independently testable.
 
 ## 6. Where each half is built
 
-- **Middleman** → this repo (`LLM-Middleman`, python-template `service` scaffold, already created).
-- **Shim** → a HACS-structured home (own repo, or folded into the `LLM-Home-Controller` rewrite as a
-  passthrough agent type). **Cannot** share the middleman's service repo (HACS one-integration-per-repo;
-  and a FastAPI service isn't a HA integration). See `03` §2 and `05`.
+- **Shim** → **this repo** (`LLM-Middleman`) — the HACS conversation-agent integration
+  (`custom_components/llm_middleman/`), built and gate-green. See `03` §2.
+- **External agent ("the brain")** → a **separate** repo/deployment (spec:
+  `../plans/middleman-implementation-brief.md`). It cannot share the shim's repo (HACS
+  one-integration-per-repo; and a service isn't a HA integration).
 
 ---
 
@@ -107,6 +115,7 @@ Each phase is independently testable.
 
 - **Voice latency.** A network hop + tool round-trips + a multi-step agent = dead air. Mitigate with
   streaming, shallow voice turns, an early preamble, and routing long-horizon work off the voice path.
+  Confirmed: HA streaming TTS (2025.10+) gives ~0.5 s time-to-first-audio when the shim streams deltas.
 - **Reliability coupling.** HA voice is degraded when the middleman is down. The shim must fall back;
   the middleman must degrade `/readyz` fast.
 - **Security blast radius.** The middleman holds an HA long-lived token = full control of exposed

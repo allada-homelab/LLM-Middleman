@@ -1,7 +1,11 @@
 # 02 — LLM Backends & Provider Layer
 
+> **Applies to the EXTERNAL agent, not the shim.** `LLM-Middleman` (the shim) has **no LLM client** —
+> it forwards text to the external agent, which is what talks to the backends below. Read this when
+> building that external agent (see `../plans/middleman-implementation-brief.md`), not the shim.
+
 Everything we learned about talking to LLM backends for agentic, multi-tool control —
-distilled to what the middleman/agent needs. Deeper HA-side context is in
+distilled to what the external agent needs. Deeper HA-side context is in
 `01-home-assistant-reference.md` §4–§5; the *prior* implementation's provider code (a working,
 reviewed reference) lives in the sibling repo at
 `LLM-Home-Controller/custom_components/llm_home_controller/providers/`.

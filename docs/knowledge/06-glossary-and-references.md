@@ -29,6 +29,15 @@
   `ChatSession` each call; the home for structured-output / autonomous jobs.
 - **`AITaskEntity` / `AITaskEntityFeature`** — base class + feature flags (`GENERATE_DATA`,
   `SUPPORT_ATTACHMENTS`, `GENERATE_IMAGE`).
+- **Streaming TTS / `TTSAudioRequest`/`TTSAudioResponse`** — a TTS entity that accepts streamed text
+  chunks (`message_gen`) and returns streamed audio (`data_gen`); since Voice Chapter 11 (2025.10)
+  gives ~0.5 s time-to-first-audio.
+- **`PipelineEvent` / `INTENT_PROGRESS` / `INTENT_END`** — the Assist pipeline's event stream; the
+  agent's `ChatLog` deltas surface as `INTENT_PROGRESS`, the final reply as `INTENT_END`.
+- **`ha-assist-chat` (`ha-assist-chat.ts`)** — the frontend Assist chat component; renders the pipeline
+  event stream — this is what makes the built-in chat show the shim's conversation.
+- **STT streaming** — HA STT accepts a streamed audio input but returns a **single final transcript**
+  (no interim words).
 
 **LLM helper framework**
 - **`llm.API` / `AssistAPI` / `APIInstance`** — HA's tool-exposure abstraction. `AssistAPI`
@@ -46,10 +55,13 @@
 - **`mcp`** (stock HA) — makes HA an MCP **client** (wraps remote MCP tools as `llm.Tool`s).
 
 **This project**
-- **Shim** — the HA-side passthrough `ConversationEntity` (forwards turns; no LLM). HACS integration.
-- **Middleman** — the external FastAPI service (the brain: agent loop, LLM providers, MCP client to
-  HA). This repo.
-- **Provider / adapter** — per-backend wire-format translator (OpenAI-compatible, Anthropic).
+- **Shim** — the HA-side passthrough `ConversationEntity` (forwards turns; no LLM). **This repo**,
+  `LLM-Middleman`, domain `llm_middleman`; a HACS integration.
+- **External agent ("the brain"; "the middleman" in older prose)** — the *separate* service the shim
+  forwards to (agent loop, LLM providers, MCP client to HA). Its own repo; spec in the brief. **Not
+  this repo**, despite the repo name.
+- **Provider / adapter** — per-backend wire-format translator (OpenAI-compatible, Anthropic); used by
+  the external agent, not the shim.
 
 **Backends**
 - **llama-swap / Ollama / vLLM / LiteLLM** — OpenAI-compatible self-hosted LLM servers.
@@ -99,6 +111,11 @@
 - Config Subentries (arch #1070) — https://github.com/home-assistant/architecture/discussions/1070
 - Standardize ChatSession (arch #1191) — https://github.com/home-assistant/architecture/discussions/1191
 - TTS streaming (disc #2277) — https://github.com/orgs/home-assistant/discussions/2277
+- Streaming TTS shipped — Voice Chapter 11 (2025.10) — https://www.home-assistant.io/blog/2025/10/22/voice-chapter-11/
+- Streaming TTS entity API (arch #1205) — https://github.com/home-assistant/architecture/discussions/1205
+- Speech-to-speech / "Speech Processors" **rejected** (arch #1223) — https://github.com/home-assistant/architecture/discussions/1223
+- Built-in chat: `conversation/http.py` (chat_log subscribe) — https://github.com/home-assistant/core/blob/dev/homeassistant/components/conversation/http.py
+- Built-in chat: `ha-assist-chat.ts` — https://github.com/home-assistant/frontend/blob/dev/src/components/ha-assist-chat.ts
 - HACS integration publishing — https://www.hacs.xyz/docs/publish/integration/
 - pytest-homeassistant-custom-component — https://github.com/MatthewFlamm/pytest-homeassistant-custom-component
 
@@ -109,20 +126,25 @@
 
 ---
 
-## 3. Live-verification list (assumptions to confirm against running HA 2026.7)
+## 3. Verification status (against HA 2026.7)
 
-These are **inferred / not run** and load-bearing — verify before building on them:
+**Resolved this project:**
+- ✅ **Audio passthrough (Mode A) is infeasible** in Assist 2026.7 — no audio-in/audio-out extension
+  point; maintainers rejected pipeline complexity (arch #1223). → text-only.
+- ✅ **Streaming TTS gives ~0.5 s TTFA** (Voice Chapter 11, 2025.10+) when the agent streams deltas.
+- ✅ **The built-in Assist chat renders the forwarding shim for free** (ChatLog → `INTENT_PROGRESS`/
+  `INTENT_END` → `ha-assist-chat.ts`); the "inject a turn without being the agent" bypass is
+  unsupported but moot for text-only.
+- ✅ **`async_provide_llm_data` is the right call** (`async_update_llm_data` now raises) — used in the
+  built shim; type-checks.
 
-1. **`mcp_server` SSE endpoint path + auth mechanism** (application-credentials OAuth vs plain
-   long-lived token) for the pinned HA version. Drives the middleman's MCP client.
-2. **End-to-end early-TTS latency** of streaming a custom agent's deltas through the pipeline — real
-   voice test, not just unit tests.
-3. **Streaming-TTS maturity** (does TTS actually start on the first sentence?).
-4. **Which local OpenAI-compatible backends** honor tool-calling / `response_format: json_schema`
-   reliably vs silently ignore it (probe each target).
-5. **`ChatLog.async_update_llm_data` raises** (use `async_provide_llm_data`) — confirm at the pinned
-   HA version.
-6. **Anthropic extended-thinking signature replay** requirement — confirm against current Anthropic
-   docs before relying on the round-trip.
-7. **Exact current `MockChatLog` shape** (moved in PR #138112) — re-diff before vendoring for tests.
-8. **`continue_conversation` plumbing** through the shim → pipeline for multi-turn voice.
+**Still open (verify against a running HA, or when building the external agent):**
+- **Real-HA voice smoke test** of the built shim (full STT → shim → TTS path) — NOT run.
+- **hassfest** on the shim manifest — NOT run here (no HA core checkout); runs in `validate.yml` CI.
+- **`mcp_server` SSE endpoint + auth** (application-credentials vs long-lived token) — for the
+  external agent's MCP client.
+- **Which local OpenAI-compatible backends** honor tool-calling / `response_format: json_schema` — for
+  the external agent.
+- **Anthropic extended-thinking signature replay** — for the external agent.
+- **`continue_conversation`** — the shim does not propagate it in v1 (HA computes it from the reply
+  ending in `?`); wire explicitly if reliable voice follow-ups are needed.

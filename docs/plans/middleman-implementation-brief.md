@@ -1,31 +1,25 @@
-# LLM Middleman — Implementation Brief
+# External Agent Service — Implementation Brief
 
-> **Audience:** the Claude Code session that will implement this service.
-> **Status:** scaffold created (python-template `service` archetype, gate green). No middleman
-> logic written yet. This document is the full context + contract you need to build it.
-> **Sibling repo:** `LLM-Home-Controller` (the Home Assistant custom integration being rewritten).
-> Deeper HA research lives there at `docs/research/ha-2026.7-rewrite-research.md` and `research.md`
-> — but this brief is written to be **self-contained** on everything you need.
+> **⚠️ NAMING — read first.** This document specs the **external agent ("the brain")** that the
+> shim forwards to — a **separate service in its own repo/deployment, NOT this repo.**
+> `LLM-Middleman` (this repo) is the **HA-side shim** (a text-only conversation agent — see
+> `docs/knowledge/03-the-shim.md`), which is already built. For historical reasons the prose below
+> calls the external brain "the middleman"; do not confuse it with the repo of the same name.
+> **Audience:** whoever builds the external agent service.
+> **Interface:** the shim POSTs each turn to this service over the `/v1/converse` SSE contract (§4).
+> **Sibling repo:** `LLM-Home-Controller` — HA LLM-integration prior-art (provider/adapter patterns).
 
 ---
 
-## 0. Read this first — scope & interpretation (CONFIRM WITH OWNER)
+## 0. Read this first — where this fits
 
-This division of responsibilities was **inferred** from the design discussion. If any of it is
-wrong, stop and confirm before building — it shapes everything:
-
-- **This repo (`LLM-Middleman`) = the external "brain" service.** A FastAPI service that receives a
-  recognized voice/text turn from Home Assistant, runs an LLM agent loop, controls the home, and
-  streams a reply back. This is what you build.
-- **This repo is NOT a Home Assistant integration.** HA custom integrations live in a HACS repo
-  under `custom_components/<domain>/`; a FastAPI service cannot be one. **HACS enforces exactly one
-  integration per repository** (verbatim from the HACS docs: *"There must only be one integration
-  per repository … If there are more than one, only the first one will be managed."*). So the HA
-  side cannot live here.
-- **The HA-side "shim" is a separate deliverable** (a thin `ConversationEntity`), expected to be
-  folded into the `LLM-Home-Controller` rewrite as a new *passthrough agent type*. You do **not**
-  build it here — but this brief **defines the contract** between it and this service so both sides
-  match.
+- **`LLM-Middleman` (this repo) = the HA-side shim** — a text-only `ConversationEntity` (domain
+  `llm_middleman`) that forwards each Assist turn to this external agent and streams the reply back.
+  It is **built and verified**; it runs no LLM and owns no tools. See `docs/knowledge/03-the-shim.md`.
+- **This document = the external agent ("the brain")** — a **separate** service that receives the
+  turn over `/v1/converse`, runs the LLM agent loop, controls the home (e.g. via HA's `mcp_server`),
+  and streams the reply back. It lives in its own repo/deployment, **not in `LLM-Middleman`.**
+- If you scaffold it from `python-template`, use the `service` archetype — in a *different* repo.
 
 ---
 
@@ -220,7 +214,10 @@ data: {"code": "backend_unavailable", "message": "…"}
 
 ---
 
-## 7. What the scaffold already gives you (python-template `service` tier)
+## 7. Scaffolding the external service (python-template `service` tier)
+
+> This section is about the **external agent's own** repo if you build it from `python-template`'s
+> `service` archetype — not `LLM-Middleman` (which is the shim, a HACS integration).
 
 - **FastAPI `create_app()`** app-factory with a fail-soft lifespan; **`/healthz`** (always 200) and
   **`/readyz`** (degraded reporting). Add your `/v1/converse` router here.
@@ -234,10 +231,10 @@ data: {"code": "backend_unavailable", "message": "…"}
   `CI_RUNNER` variable (no file edits) if this repo is public / lacks those runners.
 - **Toolchain**: uv + PEP 735 groups; ruff broad ruleset; **basedpyright strict**; pytest with
   `filterwarnings=["error"]` + `asyncio_mode=auto`. Python floor **3.11**, default **3.13**.
-- **`include_mcp_server = false`** — we intentionally did **not** scaffold a FastMCP *server*. This
-  service is an MCP **client** to HA, not a server. Add MCP-client deps yourself (`mcp` or
-  `langchain-mcp-adapters`). If you later want to *expose* tools via MCP, re-render with the toggle
-  or add FastMCP manually.
+- **MCP client, not server** — the external agent is an MCP **client** to HA (to reach home-control
+  tools via `mcp_server`); it does not need to *expose* a FastMCP server. If scaffolding from
+  python-template, leave `include_mcp_server = false` and add MCP-client deps (`mcp` or
+  `langchain-mcp-adapters`).
 
 ---
 
@@ -302,14 +299,13 @@ In parallel (separate repo): the HA **shim** is built to the §4 contract.
 
 ---
 
-## 12. Known scaffold follow-ups
+## 12. Notes for the external service's own scaffold
 
-- **`.copier-answers.yml` `_src_path`** currently points at the local template path
-  (`/home/vscode/LLM-Middleman`) and `_commit: 4aa4927`. For `copier update` to pull future
-  python-template improvements, repoint it at the canonical upstream
-  (`gh:allada-homelab/python-template`) and align `_commit` to a real upstream tag.
-- **`include_mcp_server` was left `false`** by design (we're an MCP client). Revisit only if you
-  decide to *expose* MCP tools from this service.
+- If built from `python-template`, set `.copier-answers.yml` `_src_path` to the canonical upstream
+  (`gh:allada-homelab/python-template`) so `copier update` tracks template improvements.
+- Leave `include_mcp_server = false` — the external agent is an MCP *client* to HA, not a server.
+
+*(These no longer apply to `LLM-Middleman` itself, which is now the HACS shim, not a service.)*
 
 ---
 
