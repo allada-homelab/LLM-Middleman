@@ -46,9 +46,6 @@ DEFAULT_TIMEOUT = 60
 
 # --- v1 re-architecture (LLMM-005) ---
 
-# Parent config-entry data key selecting the backend preset (BACKEND_TO_CLS key).
-CONF_BACKEND_TYPE = "backend_type"
-
 # Per-agent (conversation subentry) option keys.
 CONF_TIMEOUT = "timeout"
 CONF_MEMORY_SCOPE = "memory_scope"
