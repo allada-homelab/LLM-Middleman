@@ -1,7 +1,7 @@
 ---
 id: LLMM-001
 title: Tooling & manifest housekeeping (py3.14, strict pyright, typecheck in CI, manifest/hacs floors)
-status: todo
+status: in-review
 phase: 1
 depends_on: []
 ---
@@ -31,7 +31,7 @@ This is a **HACS custom integration, not a pip package** — there is intentiona
   the typecheck gate it currently omits.
 - `custom_components/llm_middleman/manifest.json`: drop the `"requirements": ["aiohttp"]`
   entry (aiohttp ships in HA core's requirements — a custom integration must not
-  re-declare it); set `iot_class` `local_push` → `local_polling`; confirm `codeowners` is
+  redeclare it); set `iot_class` `local_push` → `local_polling`; confirm `codeowners` is
   a real GitHub handle.
 - `hacs.json`: bump `homeassistant` `"2025.1.0"` → `"2025.8.0"` (the subentry-safe floor;
   `plan.md §Verified constraints`).
@@ -74,17 +74,32 @@ This is a **HACS custom integration, not a pip package** — there is intentiona
 - **hacs.json** (current `homeassistant: "2025.1.0"`): → `"2025.8.0"`.
 
 ## Acceptance criteria
-- [ ] `pyproject.toml`: ruff `target-version = "py314"` and `requires-python = ">=3.14"`
+- [x] `pyproject.toml`: ruff `target-version = "py314"` and `requires-python = ">=3.14"`
       (comment updated).
-- [ ] `pyrightconfig.json`: `typeCheckingMode = "strict"`, `pythonVersion = "3.14"`; no new
+- [x] `pyrightconfig.json`: `typeCheckingMode = "strict"`, `pythonVersion = "3.14"`; no new
       global rule suppressions were added to mask errors.
-- [ ] `.github/workflows/lint.yml` runs `uv run basedpyright` in the uv job.
-- [ ] `manifest.json`: no `aiohttp` requirement; `iot_class = "local_polling"`;
+- [x] `.github/workflows/lint.yml` runs `uv run basedpyright` in the uv job.
+- [x] `manifest.json`: no `aiohttp` requirement; `iot_class = "local_polling"`;
       `codeowners` confirmed a real GitHub handle.
-- [ ] `hacs.json`: `homeassistant = "2025.8.0"`.
-- [ ] `uv lock --check` passes (lock regenerated with `uv lock` if the `requires-python`
+- [x] `hacs.json`: `homeassistant = "2025.8.0"`.
+- [x] `uv lock --check` passes (lock regenerated with `uv lock` if the `requires-python`
       bump required it; the regenerated `uv.lock` is committed, not hand-edited).
-- [ ] Gates green: `just check` + `just typecheck`.
+- [x] Gates green: `just check` + `just typecheck`.
+
+## Implementation notes (as-built, LLMM-001)
+- Strict flip surfaced **33** errors (not 34) across **five** v0 files — the ticket's baseline
+  named four; `config_flow.py` also carries 2 (`reportUnknownVariableType` on
+  `TemplateSelector`/`TextSelector`). All resolved with per-line, rule-scoped
+  `# pyright: ignore[...]  # LLMM-00N replaces this` tags (LLMM-004 conftest, LLMM-005
+  conversation + its test, LLMM-006 config_flow + its test) per the locked decision — no
+  global config weakening.
+- The `target-version = py314` bump made `ruff format` rewrite one line in `config_flow.py`
+  to PEP 758 unparenthesized form (`except aiohttp.ClientConnectionError, TimeoutError:`);
+  accepted via `just fmt` as an in-scope "make the gate green" consequence. Valid on the
+  ≥3.14 floor; 18 tests pass on Python 3.14.6.
+- `requires-python` bump invalidated `uv.lock`; regenerated with `uv lock` (214 pkgs) and
+  committed. `codeowners @allada-homelab` confirmed real via the `origin` remote
+  (`git@github.com:allada-homelab/LLM-Middleman.git`).
 
 ## Verification
 - `uv run basedpyright` exits 0 locally (strict). **Baseline first:** the current tree has

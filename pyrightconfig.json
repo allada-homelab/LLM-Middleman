@@ -1,6 +1,6 @@
 {
-  "typeCheckingMode": "standard",
-  "pythonVersion": "3.13",
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.14",
   "venvPath": ".",
   "venv": ".venv",
   "include": ["custom_components/llm_middleman", "tests"],

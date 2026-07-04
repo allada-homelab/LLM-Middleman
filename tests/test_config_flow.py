@@ -19,14 +19,14 @@ from custom_components.llm_middleman.const import (
 async def test_user_flow_success(hass: HomeAssistant) -> None:
     """A reachable endpoint creates the config entry."""
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
+    assert result["type"] is FlowResultType.FORM  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
+    assert result["step_id"] == "user"  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
 
     with patch(
         "custom_components.llm_middleman.config_flow._async_check_reachable",
         return_value=True,
     ):
-        result = await hass.config_entries.flow.async_configure(
+        result = await hass.config_entries.flow.async_configure(  # pyright: ignore[reportUnknownMemberType]  # LLMM-006 replaces this
             result["flow_id"],
             {
                 CONF_NAME: "My Agent",
@@ -35,10 +35,10 @@ async def test_user_flow_success(hass: HomeAssistant) -> None:
             },
         )
 
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "My Agent"
-    assert result["data"][CONF_URL] == "http://middleman.local:8000"
-    assert result["data"][CONF_TOKEN] == "secret"
+    assert result["type"] is FlowResultType.CREATE_ENTRY  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
+    assert result["title"] == "My Agent"  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
+    assert result["data"][CONF_URL] == "http://middleman.local:8000"  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
+    assert result["data"][CONF_TOKEN] == "secret"  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
 
 
 async def test_user_flow_cannot_connect(hass: HomeAssistant) -> None:
@@ -49,13 +49,13 @@ async def test_user_flow_cannot_connect(hass: HomeAssistant) -> None:
         "custom_components.llm_middleman.config_flow._async_check_reachable",
         return_value=False,
     ):
-        result = await hass.config_entries.flow.async_configure(
+        result = await hass.config_entries.flow.async_configure(  # pyright: ignore[reportUnknownMemberType]  # LLMM-006 replaces this
             result["flow_id"],
             {CONF_NAME: "My Agent", CONF_URL: "http://unreachable.local"},
         )
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "cannot_connect"}
+    assert result["type"] is FlowResultType.FORM  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
+    assert result["errors"] == {"base": "cannot_connect"}  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
 
 
 async def test_user_flow_duplicate_aborts(hass: HomeAssistant) -> None:
@@ -74,10 +74,10 @@ async def test_user_flow_duplicate_aborts(hass: HomeAssistant) -> None:
         "custom_components.llm_middleman.config_flow._async_check_reachable",
         return_value=True,
     ):
-        result = await hass.config_entries.flow.async_configure(
+        result = await hass.config_entries.flow.async_configure(  # pyright: ignore[reportUnknownMemberType]  # LLMM-006 replaces this
             result["flow_id"],
             {CONF_NAME: "Dup", CONF_URL: "http://middleman.local:8000/"},
         )
 
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "already_configured"
+    assert result["type"] is FlowResultType.ABORT  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
+    assert result["reason"] == "already_configured"  # pyright: ignore[reportTypedDictNotRequiredAccess]  # LLMM-006 replaces this
