@@ -1,7 +1,7 @@
 ---
 id: LLMM-004
 title: Test harness port (MockChatLog conftest + fake-stream helpers)
-status: in-review
+status: done
 phase: 1
 depends_on: []
 ---
