@@ -8,22 +8,32 @@ filesystem before trusting any specific claim below.
 
 ## What this is
 
-Passthrough middleman service bridging Home Assistant Assist/Voice to an external LLM agent.
+**LLM Middleman is the Home Assistant "shim" integration** — a thin, text-only conversation agent
+(a HACS custom integration, domain `llm_middleman`) that plugs into HA Assist/Voice and **forwards
+each recognized turn to an external LLM agent** over the `/v1/converse` SSE contract, streaming the
+reply back into the pipeline (→ TTS and the built-in Assist chat). It runs **no LLM and owns no
+tools** — all intelligence lives in the external agent. This repo is **built and verified**.
 
-> **START HERE:** `docs/plans/middleman-implementation-brief.md` is the full implementation
-> brief — architecture, the HA-shim ⇄ middleman contract, responsibilities, build order, and
-> open decisions. Read it before writing any service logic. No middleman logic exists yet; only
-> the python-template `service` scaffold.
+> **START HERE:** `docs/knowledge/03-the-shim.md` — the shim's design (what it is, the HA plumbing,
+> the shim⇄external-agent contract). `docs/knowledge/` is the full knowledge base (HA reference,
+> decisions, glossary). The integration lives in `custom_components/llm_middleman/`.
+>
+> **NOT this repo:** `docs/plans/middleman-implementation-brief.md` and `docs/external-agent-handoff/`
+> spec the *external* agent (the "brain") the shim forwards to — a **separate** service in its own
+> repo. Don't build that here.
 
-A Python service. The importable package is `llm_middleman`.
-Versions, dependencies, and tool config are declared in `pyproject.toml` — read it
-there, never hardcode version numbers in prose or code.
+This is a **HACS custom integration, not a pip package** — there is intentionally no `[build-system]`.
+Runtime deps are declared in `custom_components/llm_middleman/manifest.json` (`requirements`); dev
+tooling in `pyproject.toml`.
 
 ## Where things live
 
-- `src/llm_middleman/` — package source.
-- `tests/` — pytest suite (unit by default; integration tests are marked and deselected unless opted in).
-- `pyproject.toml` — dependencies, dependency groups, and tool config (ruff, basedpyright, pytest, coverage).
+- `custom_components/llm_middleman/` — the integration. `conversation.py` = the forwarding entity;
+  plus `config_flow.py`, `__init__.py`, `const.py`, `manifest.json`, `strings.json`, `translations/`, `brand/`.
+- `tests/` — pytest + `pytest-homeassistant-custom-component` (MockChatLog pattern).
+- `docs/knowledge/` — the shim + system knowledge base; `docs/external-agent-handoff/` — the
+  self-contained bundle for building the *external* agent (destined for its own repo).
+- `pyproject.toml` — dev dependencies and tool config (ruff, basedpyright, pytest).
 - `justfile` — the task runner; every routine command has a recipe.
 - `.claude/` — project hooks and settings (committed, except `settings.local.json`).
 
