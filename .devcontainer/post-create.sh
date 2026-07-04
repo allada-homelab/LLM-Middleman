@@ -11,6 +11,9 @@ git config --global init.defaultBranch &>/dev/null || git config --global init.d
 git config --global core.editor &>/dev/null || git config --global core.editor "vim"
 git config --global --add safe.directory '*'
 
+echo "==> Installing just (task runner)..."
+uv tool install rust-just
+
 echo "==> Installing Python dependencies (all dev groups)..."
 uv sync --all-groups
 

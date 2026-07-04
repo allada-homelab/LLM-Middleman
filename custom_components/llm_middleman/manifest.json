@@ -6,8 +6,7 @@
     "dependencies": ["conversation"],
     "documentation": "https://github.com/allada-homelab/LLM-Middleman",
     "integration_type": "service",
-    "iot_class": "local_push",
+    "iot_class": "local_polling",
     "issue_tracker": "https://github.com/allada-homelab/LLM-Middleman/issues",
-    "requirements": ["aiohttp"],
     "version": "0.1.0"
 }
