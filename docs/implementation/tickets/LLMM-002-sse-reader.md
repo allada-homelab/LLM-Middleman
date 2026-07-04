@@ -1,7 +1,7 @@
 ---
 id: LLMM-002
 title: Spec-compliant SSE reader (`backends/_sse.py`) + raw-byte test harness
-status: todo
+status: in-review
 phase: 1
 depends_on: []
 ---
@@ -85,20 +85,20 @@ Byte-by-byte iteration is fine — voice payloads are small; do **not** use
 and `BackendStreamError` are the only public names besides `async_iter_sse`.
 
 ## Acceptance criteria
-- [ ] `ServerSentEvent(event, data)`, `BackendStreamError`, and `async_iter_sse(stream, *,
+- [x] `ServerSentEvent(event, data)`, `BackendStreamError`, and `async_iter_sse(stream, *,
       max_line_bytes=65536)` exist with the signatures above; `_sse.py` imports nothing from
       `base.py` (no cycle).
-- [ ] Consecutive `data:` lines accumulate and are joined with `\n`; the event dispatches on
+- [x] Consecutive `data:` lines accumulate and are joined with `\n`; the event dispatches on
       the blank line; an empty data buffer dispatches nothing.
-- [ ] `LF`, `CR`, and `CRLF` line endings all frame correctly, **including a `CRLF` split
+- [x] `LF`, `CR`, and `CRLF` line endings all frame correctly, **including a `CRLF` split
       across two chunks** and a stream fed one byte at a time.
-- [ ] `:`-prefixed comment lines and non-`event`/`data` fields are ignored; a single leading
+- [x] `:`-prefixed comment lines and non-`event`/`data` fields are ignored; a single leading
       space after `data:` is stripped (two spaces → value keeps one).
-- [ ] Invalid UTF-8 bytes are replaced (no exception); a single line exceeding
+- [x] Invalid UTF-8 bytes are replaced (no exception); a single line exceeding
       `max_line_bytes` raises `BackendStreamError`.
-- [ ] A stream that ends mid-event (no trailing blank line) dispatches nothing for the
+- [x] A stream that ends mid-event (no trailing blank line) dispatches nothing for the
       partial event and does not raise.
-- [ ] Gates green: `just check` + `just typecheck`.
+- [x] Gates green: `just check` + `just typecheck`.
 
 ## Verification
 Write `tests/test_sse.py`. Drive **raw bytes** through the real `async_iter_sse` — never
