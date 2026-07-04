@@ -1,0 +1,34 @@
+"""Tests for the FastAPI app factory (httpx ASGI transport — fully typed)."""
+
+import httpx
+
+from llm_middleman.app import create_app, lifespan
+
+
+async def test_healthz_ok() -> None:
+    transport = httpx.ASGITransport(app=create_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+async def test_readyz_not_ready_before_lifespan() -> None:
+    transport = httpx.ASGITransport(app=create_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/readyz")
+    assert resp.status_code == 503
+
+
+async def test_lifespan_marks_ready() -> None:
+    # NOTE: only one test may enter the real lifespan — with the MCP server mounted,
+    # the FastMCP session manager runs once per process (a second entry raises).
+    app = create_app()
+    async with lifespan(app):
+        assert app.state.ready
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.get("/readyz")
+            assert resp.status_code == 200

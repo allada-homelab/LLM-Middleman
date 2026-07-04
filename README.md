@@ -1,53 +1,32 @@
-# python-template
+# LLM Middleman
 
-A [Copier](https://copier.readthedocs.io/) template for new Python projects — a robust always-on
-base plus optional, opt-out features, for two archetypes:
+[![CI](https://github.com/allada-homelab/LLM-Middleman/actions/workflows/ci.yml/badge.svg)](https://github.com/allada-homelab/LLM-Middleman/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-- **library** — a packaged Python library (`src/` layout, hatchling + dynamic version, PyPI Trusted
-  Publishing, mkdocs site).
-- **service** — everything in library **plus** a FastAPI app shell, Dockerfile, and compose.
+Passthrough middleman service bridging Home Assistant Assist/Voice to an external LLM agent
 
-## Usage
+## Development
+
+This project uses [uv](https://docs.astral.sh/uv/) and [just](https://just.systems/).
 
 ```bash
-uvx copier copy gh:allada-homelab/python-template my-project
-# or, with copier installed:  copier copy gh:allada-homelab/python-template my-project
-cd my-project && just install
+just install     # uv sync --all-groups + pre-commit install
+just test        # run unit tests
+just lint        # ruff check
+just fmt         # ruff format
+just typecheck   # basedpyright
 ```
 
-You'll be prompted for project identity, the `project_type` (library/service), Python versions, and a
-set of `include_*` feature toggles (all default **on** — decline what you don't want; copier simply
-won't render those files). Re-render against template updates with `copier update`.
+> Generated from [allada-homelab/python-template](https://github.com/allada-homelab/python-template).
+> Re-render with `copier update`.
 
-## What you get
+## GitHub setup after generation
 
-**Base (always):** uv + PEP 735 dependency groups, ruff (broad ruleset) lint+format, basedpyright
-(strict), strict pytest + coverage gate, pre-commit (local ruff via uv), `just` task runner, editor +
-git hygiene, base CI (lint/type/test matrix, `uv audit`, pre-commit), hardened Dependabot, a Dev
-Container, `CLAUDE.md` + curated `.claude/` tooling with guardrail hooks, an ADR scaffold, and a
-Keep-a-Changelog `CHANGELOG`.
+Some features need a one-time GitHub setting before their workflows go green:
 
-**Optional toggles:** docs site (mkdocs-material + Pages), PyPI publish (library) / GHCR publish
-(service), hadolint, conventional-commit PR-title check, integration tests (testcontainers), contract
-tests, shipped test helpers, Renovate, MCP server (service).
-
-## Quality gate
-
-Every rendered project passes `just install && just lint && just typecheck && just test` (ruff,
-basedpyright, pytest, coverage ≥ 80%). The template's own `render-test` workflow renders the
-`library`/`service` × all-on/all-off cells and runs that gate on each, plus a no-dead-variable check.
-
-## CI runners
-
-Generated workflows default to `${{ vars.CI_RUNNER || 'homelab-runners' }}`. Set the `CI_RUNNER`
-repository/organization variable to `ubuntu-latest` to use GitHub-hosted runners.
-
-A **public** repo must set `CI_RUNNER=ubuntu-latest`: GitHub blocks self-hosted runners on public
-repositories, so inheriting the `homelab-runners` default would leave jobs stuck with no runner.
-
-## Repo layout
-
-- `copier.yml` — the template schema (questions, toggles, gating).
-- `template/` — the rendered project tree (`_subdirectory`, `.jinja`-suffix rendering).
-- `docs/plans/` — design and dev-environment planning docs.
-- `repos/` — vendored prior-art reference copies (not part of any render).
+- **CI runner** — workflows run on `${{ vars.CI_RUNNER || 'homelab-runners' }}`. If this repo has no self-hosted runners, set a `CI_RUNNER` repository/organization variable (e.g. `ubuntu-latest`) or CI won't start.
+- **Docs (Pages)** — Settings → Pages → Source: **GitHub Actions** (the `docs` workflow deploys there).
+- **Discussions** — Settings → General → Features → enable **Discussions** (for the question-form template).
+- **PR labeler** — the labels referenced in `.github/labeler.yml` must exist (create them under Issues → Labels).
+- **GHCR image** — `docker-publish` pushes to GHCR via `GITHUB_TOKEN`; make the package public in the repo's Packages settings if you want anonymous pulls.

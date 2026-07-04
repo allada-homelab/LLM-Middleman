@@ -1,0 +1,9 @@
+# Dev overrides (applied automatically by `docker compose up`).
+services:
+  app:
+    environment:
+      LLM_MIDDLEMAN_DEBUG: "true"
+    volumes:
+      # Host-absolute for docker-outside-of-docker dev containers; "." fallback
+      # on the host (see secrets note in compose.yml).
+      - ${LOCAL_WORKSPACE_FOLDER:-.}/src:/app/src:ro

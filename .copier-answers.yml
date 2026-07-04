@@ -1,0 +1,31 @@
+# Changes here will be overwritten by Copier; NEVER edit manually.
+# Re-render with `copier update`.
+_commit: 4aa4927
+_src_path: /home/vscode/LLM-Middleman
+author_email: davidanilallada@gmail.com
+author_name: David Allada
+ci_runner_default: homelab-runners
+description: Passthrough middleman service bridging Home Assistant Assist/Voice to
+    an external LLM agent
+include_contract_tests: true
+include_devcontainer: true
+include_discussions: true
+include_docker_publish: true
+include_docs_site: true
+include_extras_example: true
+include_hadolint: true
+include_image_scan: true
+include_integration_tests: true
+include_mcp_server: false
+include_pr_labeler: true
+include_pr_title_check: true
+include_renovate: true
+include_test_helpers: true
+license: MIT
+pkg_dist_name: llm-middleman
+project_name: LLM Middleman
+project_type: service
+python_default: '3.13'
+python_min: '3.11'
+repo_name: LLM-Middleman
+repo_owner: allada-homelab

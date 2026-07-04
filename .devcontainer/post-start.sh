@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if docker info >/dev/null 2>&1; then
-    echo "==> Docker socket: OK (service cells + integration tests will work)"
+if docker info > /dev/null 2>&1; then
+    echo "==> Docker socket: OK"
 else
-    echo "WARNING: Docker socket not accessible — service-cell compose/boot and integration tests will fail."
+    echo "WARNING: Docker socket not accessible. Integration-test containers will not work."
 fi
 
-echo "==> Template dev container ready!"
+echo "==> Dev container ready!"

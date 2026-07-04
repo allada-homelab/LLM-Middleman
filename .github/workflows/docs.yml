@@ -1,0 +1,51 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ${{ vars.CI_RUNNER || 'homelab-runners' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --group docs
+      - run: uv run mkdocs build --strict
+      - uses: actions/configure-pages@v6
+        continue-on-error: true
+      - uses: actions/upload-pages-artifact@v4
+        continue-on-error: true
+        with:
+          path: site
+
+  deploy:
+    runs-on: ${{ vars.CI_RUNNER || 'homelab-runners' }}
+    needs: build
+    continue-on-error: true
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+        continue-on-error: true

@@ -1,0 +1,29 @@
+"""Worked example of an optional capability gated behind an extra.
+
+Pattern: import the optional dependency *lazily* (inside the function), and turn a
+missing extra into a clear, actionable ImportError naming the extra to install —
+instead of a bare ModuleNotFoundError surfacing somewhere confusing. The base
+package stays importable with zero optional deps installed.
+"""
+
+import io
+
+
+def render_pretty(text: str) -> str:
+    """Render *text* through rich, requiring the optional ``pretty`` extra.
+
+    Raises:
+        ImportError: if the ``pretty`` extra is not installed.
+    """
+    try:
+        from rich.console import Console
+    except ImportError as exc:
+        msg = (
+            "The 'pretty' feature requires the optional extra. Install it with: "
+            "pip install llm-middleman[pretty]  (or: uv sync --extra pretty)"
+        )
+        raise ImportError(msg) from exc
+
+    buffer = io.StringIO()
+    Console(file=buffer, force_terminal=False).print(text)
+    return buffer.getvalue()

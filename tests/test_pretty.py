@@ -1,0 +1,26 @@
+"""Tests for the optional ``pretty`` extra example.
+
+Robust to whether the extra is actually installed: the guard test simulates
+absence, and the happy-path test is skipped when rich isn't available.
+"""
+
+import sys
+
+import pytest
+
+from llm_middleman.pretty import render_pretty
+
+
+def test_render_pretty_raises_clear_error_without_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Force `from rich.console import ...` to fail regardless of the dev env.
+    monkeypatch.setitem(sys.modules, "rich.console", None)
+    with pytest.raises(ImportError, match="pretty"):
+        render_pretty("hello")
+
+
+def test_render_pretty_works_when_extra_installed() -> None:
+    pytest.importorskip("rich")
+    out = render_pretty("hello world")
+    assert "hello world" in out

@@ -1,8 +1,0 @@
-"""Smoke tests — verify the package imports and exposes a version."""
-
-import {{ package_name }}
-
-
-def test_version_is_nonempty_string() -> None:
-    assert isinstance({{ package_name }}.__version__, str)
-    assert {{ package_name }}.__version__

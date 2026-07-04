@@ -1,28 +1,56 @@
-# Python
+# Byte-compiled / optimized
 __pycache__/
-*.pyc
-.venv/
-.ruff_cache/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage / type / lint caches
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.ruff_cache/
 .mypy_cache/
+.basedpyright/
+.hypothesis/
 
-# Node (bun workspace hoists node_modules to the repo root)
-node_modules/
+# Environments
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+!.env.example.jinja
 
-# Local render output (`just render`/`matrix` write rendered cells here)
-.render/
+# Docker secrets-as-files (real secrets stay local; .example is committed)
+secrets/*
+!secrets/*.example
 
 # Logs
 *.log
 
+# Local databases (services often create these at runtime)
+*.db
+*.sqlite
+*.sqlite3
+
+# Misc caches / notebooks
+.cache/
+.ipynb_checkpoints/
+
 # Editor / OS
-.DS_Store
-Thumbs.db
+.vscode/*.local
 .idea/
+.DS_Store
+*.swp
 
-# Secrets
-.env
-
-# Claude / tooling state
-.remember/
-.superpowers/
+# Agentic CLI local state (project .claude/settings.json + hooks ARE committed)
+.claude/settings.local.json
+.codex/
+.aider*

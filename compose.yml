@@ -1,0 +1,48 @@
+name: llm-middleman
+
+# Secrets-as-files: values are file-mounted at /run/secrets/<name> (read by
+# config.py), never baked into the image or exposed in `docker inspect`/env.
+secrets:
+  app_secret:
+    # Host-absolute so docker-outside-of-docker dev containers resolve the bind
+    # source against the host filesystem. LOCAL_WORKSPACE_FOLDER is set inside
+    # the dev container (see .devcontainer); unset on the host, where it falls
+    # back to "." (compose-file-relative) — identical to a plain relative path.
+    file: ${LOCAL_WORKSPACE_FOLDER:-.}/secrets/app_secret.txt
+
+services:
+  app:
+    build:
+      context: .
+      target: runtime
+    image: llm-middleman:latest
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    secrets:
+      - app_secret
+    environment:
+      LLM_MIDDLEMAN_DEBUG: "false"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status == 200 else 1)
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped

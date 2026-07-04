@@ -1,0 +1,30 @@
+name: image-scan
+
+on:
+  push:
+    branches: [main]
+    paths: ["Dockerfile", "pyproject.toml", "uv.lock"]
+  pull_request:
+    paths: ["Dockerfile", "pyproject.toml", "uv.lock"]
+  schedule:
+    - cron: "0 7 * * 1"   # weekly — catch newly-disclosed CVEs in pinned layers
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trivy:
+    runs-on: ${{ vars.CI_RUNNER || 'homelab-runners' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build -t llm-middleman:scan .
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: llm-middleman:scan
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL

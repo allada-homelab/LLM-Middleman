@@ -1,10 +1,5 @@
 {
-  // Dev container for developing the TEMPLATE itself. Plain .json (not .jinja):
-  // it lives at the repo root, above _subdirectory: template, so it is never
-  // rendered. Consumers get template/.devcontainer/ instead. Toolchain here is
-  // wider than a consumer's — Docker (service cells run `docker compose config`;
-  // full `just boot` is host-only), just, shellcheck, copier — you drive renders.
-  "name": "python-template (template dev)",
+  "name": "LLM Middleman",
   "image": "mcr.microsoft.com/devcontainers/python:3.13",
   "init": true,
 
@@ -14,27 +9,25 @@
   "initializeCommand": ".devcontainer/initialize",
 
   "mounts": [
-    // HOME ‖ USERPROFILE so Windows hosts don't bind the filesystem root
-    // (one of the two env vars is always empty per OS).
+    // HOME ‖ USERPROFILE form so Windows hosts don't bind the filesystem
+    // root (one of the two env vars is always empty per OS).
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,readonly",
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/home/vscode/.gitconfig.host,type=bind,readonly",
-    // Shared uv cache — copier renders + `uv sync` reuse it across rebuilds.
-    "source=python-template-dev-uv-cache,target=/home/vscode/.cache/uv,type=volume",
-    // Agentic CLI state, scoped per devcontainer so sibling worktrees don't clash.
-    "source=python-template-dev-claude-${devcontainerId},target=/home/vscode/.claude,type=volume",
-    "source=python-template-dev-codex-${devcontainerId},target=/home/vscode/.codex,type=volume"
+    // Shared uv cache (cross-worktree reuse) — survives rebuilds.
+    "source=llm-middleman-uv-cache,target=/home/vscode/.cache/uv,type=volume",
+    // Per-worktree named volumes for agentic CLI state. Survives rebuilds,
+    // isolated per worktree, no host↔container token / transcript leak.
+    // Volume names are scoped with ${devcontainerId} so sibling worktrees
+    // don't clobber each other.
+    "source=llm-middleman-claude-${devcontainerId},target=/home/vscode/.claude,type=volume",
+    "source=llm-middleman-codex-${devcontainerId},target=/home/vscode/.codex,type=volume"
   ],
 
   "features": {
-    // Service cells run `docker compose config` here; full `just boot` (up +
-    // probe) is host-only — with docker-outside-of-docker, compose bind paths and
-    // published ports resolve to the host, not the container.
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false },
     "ghcr.io/va-h/devcontainers-features/uv:1": { "shellautocompletion": true },
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
-  // `just` + `pre-commit` are installed as uv tools in post-create (see post-create.sh) —
-  // uv-native instead of a third-party feature, matching the repo's toolchain.
 
   "remoteUser": "vscode",
 
@@ -46,17 +39,20 @@
     "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
   },
 
-  "onCreateCommand": "sudo chown vscode:vscode /home/vscode/.claude /home/vscode/.codex /home/vscode/.cache /home/vscode/.cache/uv && .devcontainer/post-create.sh",
+  "onCreateCommand": "sudo chown vscode:vscode /workspaces /home/vscode/.claude /home/vscode/.codex /home/vscode/.cache /home/vscode/.cache/uv && .devcontainer/post-create.sh",
+  "updateContentCommand": "uv sync --all-groups",
   "postStartCommand": ".devcontainer/post-start.sh",
 
   "customizations": {
     "vscode": {
       "extensions": [
         "anthropic.claude-code",
-        "samuelcolvin.jinjahtml",
-        "redhat.vscode-yaml",
-        "timonwong.shellcheck",
-        "nefrob.vscode-just-syntax",
+        "ms-python.python",
+        "ms-python.debugpy",
+        "detachhead.basedpyright",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "mikestead.dotenv",
         "ms-azuretools.vscode-docker",
         "eamodio.gitlens"
       ],
