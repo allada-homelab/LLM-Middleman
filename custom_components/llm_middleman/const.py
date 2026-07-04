@@ -37,6 +37,13 @@ N8N_AUTH_NONE = "none"
 N8N_AUTH_BASIC = "basic"
 N8N_AUTH_HEADER = "custom_header"
 
+# v1 per-agent subentry option keys (LLMM-008 OpenAI-compatible agent options).
+CONF_MODEL = "model"
+CONF_MAX_HISTORY = "max_history"
+CONF_TEMPERATURE = "temperature"
+CONF_TOP_P = "top_p"
+CONF_MAX_TOKENS = "max_tokens"
+
 # The streaming converse endpoint appended to the configured base URL.
 CONVERSE_PATH = "/v1/converse"
 

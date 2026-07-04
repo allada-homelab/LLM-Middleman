@@ -13,8 +13,9 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
-        # hass = Home Assistant object/domain term (not "hash").
-        args: ["-L", "hass"]
+        # hass = Home Assistant object/domain term (not "hash");
+        # hel = truncated streaming-delta token ("Hel"+"lo") in SSE test fixtures.
+        args: ["-L", "hass,hel"]
         additional_dependencies: ["tomli"]
 
   # Local hooks invoke the project's pinned ruff via uv, so the hook, CI, and
