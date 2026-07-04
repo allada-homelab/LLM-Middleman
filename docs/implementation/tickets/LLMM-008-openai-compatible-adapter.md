@@ -1,7 +1,7 @@
 ---
 id: LLMM-008
 title: OpenAI-compatible adapter (text-only)
-status: in-review
+status: done
 phase: 1
 depends_on: [LLMM-002, LLMM-003, LLMM-004]
 ---
