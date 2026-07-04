@@ -10,8 +10,8 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
-    TemplateSelector,
-    TextSelector,
+    TemplateSelector,  # pyright: ignore[reportUnknownVariableType]  # LLMM-006 replaces this
+    TextSelector,  # pyright: ignore[reportUnknownVariableType]  # LLMM-006 replaces this
     TextSelectorConfig,
     TextSelectorType,
 )
@@ -40,7 +40,7 @@ async def _async_check_reachable(hass: Any, url: str) -> bool:
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)):
             return True
-    except (aiohttp.ClientConnectionError, TimeoutError):
+    except aiohttp.ClientConnectionError, TimeoutError:
         return False
     except aiohttp.ClientError:
         # An HTTP-level error means the host answered — treat as reachable.

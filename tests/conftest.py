@@ -41,25 +41,25 @@ async def setup_ha_components(hass: HomeAssistant) -> None:
 class MockChatLog(conversation.ChatLog):
     """Mock ChatLog that allows controlling tool results (HA core test pattern)."""
 
-    _mock_tool_results: dict = field(default_factory=dict)
+    _mock_tool_results: dict = field(default_factory=dict)  # pyright: ignore[reportMissingTypeArgument, reportUnknownVariableType]  # LLMM-004 replaces this
 
-    def mock_tool_results(self, results: dict) -> None:
+    def mock_tool_results(self, results: dict) -> None:  # pyright: ignore[reportMissingTypeArgument, reportUnknownParameterType]  # LLMM-004 replaces this
         """Set mock tool results."""
         self._mock_tool_results = results
 
     @property
-    def llm_api(self):
+    def llm_api(self):  # pyright: ignore[reportUnknownParameterType]  # LLMM-004 replaces this
         """Return the LLM API."""
-        return self._llm_api
+        return self._llm_api  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # LLMM-004 replaces this
 
     @llm_api.setter
-    def llm_api(self, value):
+    def llm_api(self, value):  # pyright: ignore[reportIncompatibleVariableOverride, reportMissingParameterType, reportUnknownParameterType]  # LLMM-004 replaces this
         """Set LLM API."""
-        self._llm_api = value
+        self._llm_api = value  # pyright: ignore[reportUnknownMemberType]  # LLMM-004 replaces this
 
 
 @pytest.fixture
-async def mock_chat_log(hass: HomeAssistant) -> Generator[MockChatLog]:
+async def mock_chat_log(hass: HomeAssistant) -> Generator[MockChatLog]:  # pyright: ignore[reportInvalidTypeForm]  # LLMM-004 replaces this
     """Return a real (mocked-class) chat log within a chat session."""
     with (
         patch(
@@ -67,9 +67,9 @@ async def mock_chat_log(hass: HomeAssistant) -> Generator[MockChatLog]:
             MockChatLog,
         ),
         chat_session.async_get_chat_session(hass, "mock-conversation-id") as session,
-        conversation.async_get_chat_log(hass, session) as chat_log,
+        conversation.async_get_chat_log(hass, session) as chat_log,  # pyright: ignore[reportUnknownMemberType]  # LLMM-004 replaces this
     ):
-        yield chat_log
+        yield chat_log  # pyright: ignore[reportReturnType]  # LLMM-004 replaces this
 
 
 @pytest.fixture
