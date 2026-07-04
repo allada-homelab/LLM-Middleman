@@ -5,7 +5,7 @@ design — captured end-to-end so the whole picture is in one place. This doc is
 plan spanning both halves.
 
 > **Naming + status.** `LLM-Middleman` (this repo) = the **shim** (HA side), **built**. The external
-> **agent/brain** it forwards to = a *separate* component (`../plans/middleman-implementation-brief.md`),
+> **agent/brain** it forwards to = a *separate* component (`../external-agent-handoff/implementation-brief.md`),
 > not yet built. The plan is **text-only** — audio passthrough was dropped (unsupported in Assist
 > 2026.7; see `05`). Below, "middleman" in prose means that external brain.
 
@@ -106,7 +106,7 @@ Each phase is independently testable.
 - **Shim** → **this repo** (`LLM-Middleman`) — the HACS conversation-agent integration
   (`custom_components/llm_middleman/`), built and gate-green. See `03` §2.
 - **External agent ("the brain")** → a **separate** repo/deployment (spec:
-  `../plans/middleman-implementation-brief.md`). It cannot share the shim's repo (HACS
+  `../external-agent-handoff/implementation-brief.md`). It cannot share the shim's repo (HACS
   one-integration-per-repo; and a service isn't a HA integration).
 
 ---

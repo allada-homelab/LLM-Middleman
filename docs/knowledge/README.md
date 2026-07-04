@@ -18,7 +18,7 @@ for that **external agent** it talks to, with full context and no need to re-der
 
 ## Related docs in this repo
 
-- [`../plans/middleman-implementation-brief.md`](../plans/middleman-implementation-brief.md) — the
+- [`../external-agent-handoff/implementation-brief.md`](../external-agent-handoff/implementation-brief.md) — the
   build spec for the **external agent** the shim forwards to (a *separate* service, not this repo).
 
 ## The one-paragraph summary
@@ -26,7 +26,7 @@ for that **external agent** it talks to, with full context and no need to re-der
 Home Assistant's voice front-end (mics, wake word, STT, TTS) stays as-is. **`LLM-Middleman` is the
 shim** — a thin, text-only `ConversationEntity` (`custom_components/llm_middleman/`) that forwards
 each recognized utterance to a **separate external agent** and streams the reply text back → TTS.
-That external agent (spec'd in `../plans/middleman-implementation-brief.md`) runs the LLM agent loop
+That external agent (spec'd in `../external-agent-handoff/implementation-brief.md`) runs the LLM agent loop
 over OpenAI-compatible/Anthropic backends and controls the home via HA's stock **`mcp_server`** — it
 lives in its own repo, keeping heavy agent deps (e.g. LangGraph) out of HA. Text-only (audio
 passthrough isn't supported in Assist 2026.7); streaming is mandatory and, since HA's streaming TTS
@@ -37,7 +37,7 @@ conversation for free because the shim is a real `ConversationEntity` writing to
 
 - **The shim is built.** `custom_components/llm_middleman/` is a working HACS conversation-agent
   integration (gate green). These docs are the design/knowledge behind it; the **external agent** it
-  forwards to is a separate, not-yet-built component (see `../plans/middleman-implementation-brief.md`).
+  forwards to is a separate, not-yet-built component (see `../external-agent-handoff/implementation-brief.md`).
 - Several load-bearing facts are marked **(verify live)** — see `06` §3 and `01`'s "Least confident"
   section. Confirm against a running HA 2026.7 before depending on them (esp. a real voice smoke test
   and hassfest).

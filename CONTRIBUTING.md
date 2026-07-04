@@ -67,10 +67,11 @@ in `pyproject.toml`). Install all of them for development with
 
 ## Release process
 
-Releases are SemVer and tag-triggered. To cut a release:
+This is a HACS custom integration — there is no build backend and no PyPI
+publish. Releases are SemVer and tag-based (HACS surfaces GitHub tags/releases
+as installable versions). To cut a release:
 
-1. Bump the version in `src/llm_middleman/__version__.py` (the build backend
-   reads it from there).
+1. Bump `"version"` in `custom_components/llm_middleman/manifest.json`.
 2. Update `CHANGELOG.md`.
 3. Land both on the default branch.
 4. Tag the release commit with a matching `vX.Y.Z` tag and push it:
@@ -80,8 +81,7 @@ Releases are SemVer and tag-triggered. To cut a release:
    git push origin v1.2.3
    ```
 
-The `vX.Y.Z` tag triggers the release workflows. Keep the tag in sync with
-`__version__.py`.
+Keep the tag in sync with the `manifest.json` version.
 
 ## Architecture Decision Records (ADRs)
 

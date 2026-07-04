@@ -18,9 +18,8 @@ tools** — all intelligence lives in the external agent. This repo is **built a
 > the shim⇄external-agent contract). `docs/knowledge/` is the full knowledge base (HA reference,
 > decisions, glossary). The integration lives in `custom_components/llm_middleman/`.
 >
-> **NOT this repo:** `docs/plans/middleman-implementation-brief.md` and `docs/external-agent-handoff/`
-> spec the *external* agent (the "brain") the shim forwards to — a **separate** service in its own
-> repo. Don't build that here.
+> **NOT this repo:** `docs/external-agent-handoff/` specs the *external* agent (the "brain") the
+> shim forwards to — a **separate**, self-contained service in its own repo. Don't build that here.
 
 This is a **HACS custom integration, not a pip package** — there is intentionally no `[build-system]`.
 Runtime deps are declared in `custom_components/llm_middleman/manifest.json` (`requirements`); dev

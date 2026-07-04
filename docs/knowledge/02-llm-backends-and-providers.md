@@ -2,7 +2,7 @@
 
 > **Applies to the EXTERNAL agent, not the shim.** `LLM-Middleman` (the shim) has **no LLM client** —
 > it forwards text to the external agent, which is what talks to the backends below. Read this when
-> building that external agent (see `../plans/middleman-implementation-brief.md`), not the shim.
+> building that external agent (see `../external-agent-handoff/implementation-brief.md`), not the shim.
 
 Everything we learned about talking to LLM backends for agentic, multi-tool control —
 distilled to what the external agent needs. Deeper HA-side context is in

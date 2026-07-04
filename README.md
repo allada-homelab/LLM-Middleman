@@ -24,7 +24,7 @@ Per turn, the entity:
 
 The shim exposes **no** Home Assistant tools itself — the external agent is responsible
 for all tool calling (e.g. via Home Assistant's `mcp_server`). See
-`docs/knowledge/03-the-shim.md` for the design and `docs/plans/middleman-implementation-brief.md`
+`docs/knowledge/03-the-shim.md` for the design and `docs/external-agent-handoff/implementation-brief.md`
 for the full `/v1/converse` contract.
 
 ## Installation (HACS)

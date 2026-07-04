@@ -6,7 +6,7 @@ into Assist/Voice and *forwards* each turn to an external agent instead of runni
 > **Terminology.** `LLM-Middleman` (this repo) IS **the shim** — the HA-side `ConversationEntity`
 > described here; domain `llm_middleman`. It's thin: it owns HA plumbing, not intelligence. The
 > **external agent** ("the brain") it forwards to is a **separate** service (spec'd in
-> `docs/plans/middleman-implementation-brief.md`, where it's called "the middleman" for historical
+> `docs/external-agent-handoff/implementation-brief.md`, where it's called "the middleman" for historical
 > reasons — same word, different thing). The **contract** between them is §4.
 >
 > **Text-only.** The shim forwards *text* (HA does STT/TTS). An audio-passthrough / speech-to-speech
