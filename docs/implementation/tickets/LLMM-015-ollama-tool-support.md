@@ -1,7 +1,7 @@
 ---
 id: LLMM-015
 title: Ollama tool support (native tool_calls + malformed-args repair)
-status: todo
+status: done
 phase: 3
 depends_on: [LLMM-010, LLMM-014]
 ---
@@ -95,16 +95,25 @@ LLMM-010 already imports.
 
 ## Acceptance criteria
 
-- [ ] `OllamaAdapter.supports_ha_tools` is `True`; the `CONF_LLM_HASS_API` multi-select
-      now appears in the Ollama conversation subentry form.
-- [ ] Adapter sends a `tools` array when an LLM API is configured, and `None` otherwise.
-- [ ] Native `message.tool_calls` chunks become `llm.ToolInput` deltas, with
+- [x] `OllamaAdapter.supports_ha_tools` is `True`; the `CONF_LLM_HASS_API` multi-select
+      now appears in the Ollama conversation subentry form. (Flag flipped at
+      `backends/ollama.py:174`; the config-flow gate keys generically off
+      `adapter_cls.supports_ha_tools` at `config_flow.py:397`, covered by
+      `test_llm_hass_api_gated`.)
+- [x] Adapter sends a `tools` array when an LLM API is configured, and `None` otherwise.
+      (`test_tools_field_sent_when_llm_api_set`, `test_tools_field_absent_without_llm_api`.)
+- [x] Native `message.tool_calls` chunks become `llm.ToolInput` deltas, with
       `_parse_tool_args` dropping `None`/`""` args and repairing stringified-JSON args.
-- [ ] Prior `AssistantContent.tool_calls` and `ToolResultContent` are replayed into the
+      (`test_native_tool_call_extraction`, `test_malformed_tool_args_repaired`.)
+- [x] Prior `AssistantContent.tool_calls` and `ToolResultContent` are replayed into the
       Ollama `messages` array (tool-result serialized with `default=str`/`json_dumps`),
       and the LLMM-014 loop drives Ollama tool turns to completion.
-- [ ] Text-only Ollama turns (no LLM API configured) are unchanged (LLMM-010 tests green).
-- [ ] Gates green: `just check` + `just typecheck`.
+      (`test_history_replays_tool_calls_and_results_default_str`,
+      `test_ollama_tool_loop_round_trip`.)
+- [x] Text-only Ollama turns (no LLM API configured) are unchanged (LLMM-010 tests green).
+      (All pre-existing `test_ollama.py` NDJSON/option/probe tests still pass.)
+- [x] Gates green: `just lint` + `just fmt-check` + `just typecheck` + `just test` +
+      `just lock-check` (see Verification).
 
 ## Verification
 
@@ -125,6 +134,51 @@ objects per chunk), asserting on `MockChatLog` content:
    yields text and breaks; assert 2 iterations and the replayed message list contains a
    `role: "tool"` message with the serialized result.
 4. **Config-flow gating** — Ollama parent now offers `CONF_LLM_HASS_API`.
+
+### Verification evidence (executed 2026-07-04)
+
+Tests added: `test_native_tool_call_extraction`, `test_malformed_tool_args_repaired`,
+`test_tools_field_sent_when_llm_api_set`, `test_tools_field_absent_without_llm_api`,
+`test_history_replays_tool_calls_and_results_default_str` (all
+`tests/backends/test_ollama.py`), `test_ollama_tool_loop_round_trip`
+(`tests/test_conversation.py`). Existing `test_registration_and_classvars` updated to
+assert `supports_ha_tools is True`.
+
+```
+$ just typecheck
+0 errors, 0 warnings, 0 notes
+
+$ just lint
+All checks passed!
+
+$ just fmt-check
+29 files already formatted
+
+$ just lock-check
+uv lock --check
+Resolved 214 packages in 0.87ms
+
+$ just test
+======================= 218 passed, 2 warnings in 5.94s ========================
+```
+
+The 2 warnings are the pre-existing aiohttp `BasicAuth` deprecations in the n8n backend
+(unrelated to this ticket). Baseline was 212 passed; +6 = the six new tests above.
+
+Verification scenarios 1-4 mapped to tests:
+
+```
+$ uv run pytest <verification tests> -v
+tests/backends/test_ollama.py::test_native_tool_call_extraction PASSED
+tests/backends/test_ollama.py::test_malformed_tool_args_repaired PASSED
+tests/backends/test_ollama.py::test_tools_field_sent_when_llm_api_set PASSED
+tests/backends/test_ollama.py::test_tools_field_absent_without_llm_api PASSED
+tests/backends/test_ollama.py::test_history_replays_tool_calls_and_results_default_str PASSED
+tests/backends/test_ollama.py::test_registration_and_classvars PASSED
+tests/test_conversation.py::test_ollama_tool_loop_round_trip PASSED
+tests/test_config_flow.py::test_llm_hass_api_gated PASSED
+============================== 8 passed in 0.40s ===============================
+```
 
 ## Risks / open questions
 
