@@ -1,7 +1,7 @@
 ---
 id: LLMM-006
 title: Parent config flow (backend-type menu, per-backend connection steps, probes)
-status: in-review
+status: done
 phase: 1
 depends_on: [LLMM-003]
 ---
