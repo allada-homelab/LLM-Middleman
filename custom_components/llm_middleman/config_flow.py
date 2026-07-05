@@ -221,8 +221,16 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
         return await steps[self._backend_type]()
 
     async def async_step_openai_compat(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """OpenAI-compatible connection step."""
-        return await self._async_connection_step(_openai_compat_schema(), url_key=CONF_BASE_URL, user_input=user_input)
+        """OpenAI-compatible connection step.
+
+        The adapter hardcodes the ``/v1`` prefix, so it wants the server *root*. Users
+        routinely paste the conventional OpenAI-style ``…/v1`` base URL (that is OpenAI's
+        own base URL); left as-is it double-paths to ``/v1/v1/models`` and 404s. Strip a
+        trailing ``/v1`` so both the root and the ``/v1`` form resolve.
+        """
+        return await self._async_connection_step(
+            _openai_compat_schema(), url_key=CONF_BASE_URL, user_input=user_input, strip_v1_suffix=True
+        )
 
     async def async_step_langgraph(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """LangGraph connection step."""
@@ -246,21 +254,27 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
         *,
         url_key: str | None,
         user_input: dict[str, Any] | None,
+        strip_v1_suffix: bool = False,
     ) -> ConfigFlowResult:
         """Shared per-backend connection handler: normalize, probe, create/update.
 
         ``url_key`` names the base-URL field to strip a trailing slash from (a slash
         double-slashes ``/v1//models`` → 404); ``None`` leaves an opaque URL (n8n
-        webhook) untouched. Validation calls the adapter's real-endpoint probe and
-        maps its typed errors; ``BackendAuthError`` subclasses ``BackendConnectionError``
-        so it is caught first.
+        webhook) untouched. ``strip_v1_suffix`` additionally drops one trailing ``/v1``
+        for backends that hardcode the ``/v1`` prefix (openai_compat), so the stored
+        base URL is always the server root. Validation calls the adapter's real-endpoint
+        probe and maps its typed errors; ``BackendAuthError`` subclasses
+        ``BackendConnectionError`` so it is caught first.
         """
         errors: dict[str, str] = {}
 
         if user_input is not None:
             data = dict(user_input)
             if url_key is not None:
-                data[url_key] = str(data[url_key]).rstrip("/")
+                normalized = str(data[url_key]).rstrip("/")
+                if strip_v1_suffix:
+                    normalized = normalized.removesuffix("/v1")
+                data[url_key] = normalized
 
             adapter_cls = BACKEND_TO_CLS[self._backend_type]
             try:

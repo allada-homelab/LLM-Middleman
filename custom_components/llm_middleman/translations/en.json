@@ -19,7 +19,7 @@
                     "api_key": "API key"
                 },
                 "data_description": {
-                    "base_url": "Base URL of the server, including the /v1 path (a trailing slash is stripped automatically).",
+                    "base_url": "Server root, e.g. http://host:8000 or https://api.openai.com. The /v1 path is added automatically, so a trailing /v1 (or slash) is stripped.",
                     "api_key": "Optional. Many \"OpenAI-compatible\" servers still require a non-empty dummy key."
                 }
             },
