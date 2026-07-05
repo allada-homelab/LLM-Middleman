@@ -13,24 +13,39 @@ Assist/Voice as a streaming text-only `ConversationEntity` and **forwards each r
 turn to an external backend**, streaming the reply back into the pipeline (→ streaming TTS
 and the Assist chat). It runs **no LLM of its own** — intelligence lives in the backend.
 
-**Current state (2026-07): mid-rewrite.** The code on `main` is **v0** — a single-backend
-shim speaking one bespoke `/v1/converse` SSE contract. An approved **v1 re-architecture**
-replaces it with **backend presets**: OpenAI-compatible, LangGraph, custom `/v1/converse`
-(the v0 contract survives as one preset), Ollama native, and n8n — behind a common adapter
-layer, a parent-entry + conversation-subentry config model, per-agent memory scopes, and an
-optional HA tool loop (`CONF_LLM_HASS_API`) for tool-capable backends. v0 code is reference
-material for the rewrite, not a base to extend.
+**Current state (2026-07): v1 shipped — maintenance mode.** The v1 multi-backend
+re-architecture is **complete and released as `v1.0.0`** (tag `v1.0.0`, `manifest.json`
+version `1.0.0`). The code on `main` is the v1 architecture, not the old v0 shim. What
+shipped:
 
-> **START HERE:** `docs/implementation/plan.md` — the approved v1 architecture of record —
-> and `docs/implementation/README.md` — ticket conventions, workflow rules, and the phased
-> ticket index (LLMM-001…019) with dependency graph. Implementation work happens ticket by
-> ticket; do not freelance outside a ticket's scope.
+- **Five backend presets** behind a common adapter layer, dispatched by
+  `backends/BACKEND_TO_CLS` (`get_backend_cls`): `converse` (the old v0 `/v1/converse`
+  contract, now one preset among many), `openai_compat`, `ollama` (native), `langgraph`,
+  and `n8n`. Each adapter subclasses `BackendAdapter` (`backends/base.py`).
+- **Parent-entry + conversation-subentry config model** — a connection (backend type, URL,
+  auth) is the parent entry; each conversation agent (name, prompt, options) is a
+  `conversation` subentry.
+- **HA tool loop** (`CONF_LLM_HASS_API`) for the tool-capable presets — `openai_compat` and
+  `ollama` set `supports_ha_tools = True`; the others are `False`.
+- **Per-agent memory scopes** for the stateful presets, **v0→v1 config-entry migration**
+  (`async_migrate_entry`, entry version 2), and **redacted diagnostics** (`diagnostics.py`).
+
+Every ticket (LLMM-001…017) is merged; LLMM-018 (live E2E matrix) and LLMM-019 (release)
+are effectively done — the five-preset + HACS-packaging dress rehearsal passed against real
+backends (`docs/implementation/e2e-results/`, MATRIX.md first) and the release is cut. The
+only work left is **owner-run** (live-HA HACS install, tool-call rows against a capable
+model, voice-hardware checks) — see `docs/implementation/HANDOFF.md`.
+
+> **START HERE for background:** `docs/implementation/plan.md` — the architecture of record
+> that v1 was built to — and `docs/implementation/README.md`, whose ticket index (with a
+> **fast-follow roadmap** for post-v1 features) and workflow rules still govern new work.
 >
 > `docs/knowledge/` is background research (HA reference, decisions, glossary) — mostly
-> sound but partly stale relative to the v1 plan. **Caution:** `docs/knowledge/01-*.md` is
-> retained verbatim from the sibling LLM-Home-Controller repo and describes code that does
-> NOT exist here. `docs/external-agent-handoff/` specs a *separate* external-agent service
-> (its own repo); the v1 plan demotes its "frozen" `/v1/converse` contract to one preset.
+> sound but partly stale relative to the shipped code. **Caution:** `docs/knowledge/01-*.md`
+> is retained verbatim from the sibling LLM-Home-Controller repo and describes code that
+> does NOT exist here. `docs/external-agent-handoff/` specs a *separate* external-agent
+> service (its own repo); its "frozen" `/v1/converse` contract is just the `converse` preset
+> here. **When any doc conflicts with the code, the code wins — fix the doc.**
 
 This is a **HACS custom integration, not a pip package** — there is intentionally no
 `[build-system]`. Runtime deps are declared in `custom_components/llm_middleman/manifest.json`
@@ -38,26 +53,45 @@ This is a **HACS custom integration, not a pip package** — there is intentiona
 
 ## Where things live
 
-- `custom_components/llm_middleman/` — the integration (currently v0; v1 adds a
-  `backends/` adapter package per the plan).
-- `tests/` — pytest + `pytest-homeassistant-custom-component` (MockChatLog pattern).
-- `docs/implementation/` — **the project-management home for the v1 rewrite**: plan of
-  record, ticket briefs (`tickets/LLMM-###-*.md`), statuses, dependency graph.
+- `custom_components/llm_middleman/` — the integration. Key modules: `conversation.py`
+  (the backend-agnostic entity + never-hangs guard), `config_flow.py` (parent flow +
+  conversation subentry flow), `__init__.py` (setup, update listener, `async_migrate_entry`),
+  `diagnostics.py`, `const.py`, and `backends/` — the adapter package (`base.py`,
+  `BACKEND_TO_CLS` in `__init__.py`, one module per preset, plus `_sse.py`/`_history.py`).
+- `tests/` — pytest + `pytest-homeassistant-custom-component` (MockChatLog pattern);
+  `tests/backends/` holds the per-adapter suites.
+- `docs/implementation/` — the project-management home: `plan.md` (architecture of record),
+  `README.md` (ticket index + fast-follow roadmap), ticket briefs (`tickets/LLMM-###-*.md`),
+  `HANDOFF.md` (current owner-run remainder), and `e2e-results/` (the live E2E dress-rehearsal
+  evidence — `MATRIX.md` first).
+- `scripts/e2e/` — the throwaway-HA E2E regression rig: `README.md` (the repeatable recipe
+  for re-running the preset matrix after an HA bump), `converse_sse_stub.py` (the converse
+  backend stub), `E2E-ENABLEMENT-GUIDE.md` (what the owner must provide for owner-gated rows).
 - `docs/knowledge/` — background knowledge base; `docs/external-agent-handoff/` — spec
   bundle for the separate external-agent service (don't build that here).
-- `pyproject.toml` — dev dependencies and tool config (ruff, basedpyright, pytest).
+- `pyproject.toml` — dev dependencies and tool config (ruff, basedpyright, pytest);
+  `pyrightconfig.json` scopes the type-check to `custom_components/llm_middleman` + `tests`.
 - `justfile` — the task runner; every routine command has a recipe.
 - `.claude/` — project hooks and settings (committed, except `settings.local.json`).
 
-## Implementation workflow (v1 rewrite)
+## Workflow (post-v1 maintenance)
 
-1. Work is ticketed: one ticket → one branch (`llmm-###-slug`) → one PR referencing the
-   ticket ID. Ticket briefs are self-contained; read the ticket + `plan.md` before coding.
-2. Update the ticket's `status` field in the same PR that changes its state; `done`
-   requires all acceptance criteria checked and the ticket's Verification section actually
-   executed, with evidence in the PR.
-3. Scope discovered mid-ticket: small → amend the ticket in the same PR; large → file a
-   new ticket. Never silently expand.
+v1 is released, so most work now is bug fixes, dependency bumps, and the **fast-follow**
+features listed at the bottom of `docs/implementation/README.md` (AI Task subentry, token
+stats, external tool-activity surfacing, more presets).
+
+1. **Small fixes** (bug, dep bump, doc fix): branch (`fix/…` or a short slug) → PR → merge
+   only on a green gate. No ticket required, but keep the change surgical.
+2. **New features** stay ticketed: pick a fast-follow item (or file a new ticket following
+   the conventions in `docs/implementation/README.md`), one ticket → one branch
+   (`llmm-###-slug`) → one PR referencing the ticket ID. Read the ticket + `plan.md` first.
+3. Update a ticket's `status` in the same PR that changes its state; `done` requires all
+   acceptance criteria checked and its Verification section actually executed, with evidence
+   in the PR.
+4. Scope discovered mid-change: small → fold it into the same PR; large → file a new ticket.
+   Never silently expand.
+5. Re-running the live E2E matrix (e.g. after an HA version bump) is a maintenance task, not
+   a rewrite — follow `scripts/e2e/README.md`.
 
 ## Common tasks (`just`)
 
