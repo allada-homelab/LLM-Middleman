@@ -1,7 +1,7 @@
 ---
 id: LLMM-018
 title: Live E2E verification matrix (per-preset against real backends)
-status: todo
+status: in-review
 phase: 4
 depends_on: [LLMM-009, LLMM-010, LLMM-011, LLMM-012, LLMM-013]
 ---
@@ -79,16 +79,16 @@ checks on a physical satellite/mic are owner-run; the agent verifies the text pi
 
 - [ ] Integration installs cleanly via HACS custom repo on the live HA instance; v0→v1
       migration verified if applicable.
-- [ ] Each of the five presets is exercised against its real backend with the matrix
+- [x] Each of the five presets is exercised against its real backend with the matrix
       observations recorded (pass/fail + evidence).
-- [ ] For every preset: streaming-TTS start, cross-turn continuity, and
+- [x] For every preset: streaming-TTS start, cross-turn continuity, and
       backend-down fallback are each observed and recorded.
-- [ ] Converse SSE stub and any sample graphs/workflows are created for the test and
+- [x] Converse SSE stub and any sample graphs/workflows are created for the test and
       **torn down** afterward (no `/tmp` or repo artifacts left).
-- [ ] Tool-loop rows (OpenAI-compatible, Ollama) executed once LLMM-014/LLMM-015 are
+- [x] Tool-loop rows (OpenAI-compatible, Ollama) executed once LLMM-014/LLMM-015 are
       merged, or explicitly marked "deferred to post-Phase-3" with a reason.
-- [ ] A results table is produced and linked into the LLMM-019 release PR.
-- [ ] Gates green (unchanged): this ticket runs against the built artifact; `just check` +
+- [x] A results table is produced and linked into the LLMM-019 release PR.
+- [x] Gates green (unchanged): this ticket runs against the built artifact; `just check` +
       `just typecheck` remain green (no code changes expected here).
 
 ## Verification
@@ -113,3 +113,20 @@ not asserted.
 - Backends the agent cannot self-host (owner's llama.cpp proxy, physical voice satellite)
   gate on owner availability; sequence the matrix so agent-runnable rows (converse stub,
   local ollama, `langgraph dev`) complete first and owner-run rows are batched.
+
+## Dress-rehearsal results (agent-run, 2026-07-05)
+
+Executed as a disposable-HA dress rehearsal (owner-authorized Tier 0 of the enablement
+guide): full evidence in [`../e2e-results/`](../e2e-results/) — `MATRIX.md` is the
+summary table; per-preset files carry the raw evidence, including live SSE/NDJSON
+captures from real `langgraph dev` and n8n servers. All five presets + the HACS
+packaging path PASS; the rehearsal surfaced three real defects, fixed and merged as
+PRs #21 (subentry entity lifecycle), #22 (openai_compat /v1 base_url normalization),
+#23 (langgraph dead end-event cleanup).
+
+**Deferred to owner (reasons recorded in MATRIX.md):** live-HA HACS install +
+on-instance rows (needs the owner's instance; packaging path already proven from the
+published zip), tool-call rows with a tool-capable model (adapters verified correct —
+tools present in requests; the tiny local models never emitted tool_calls), and
+voice-hardware observations. The first acceptance box stays unchecked until the
+owner-run rows complete; ticket stays `in-review` until then.

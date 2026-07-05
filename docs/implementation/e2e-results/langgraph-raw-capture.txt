@@ -1,0 +1,63 @@
+=== POST /threads response (full JSON) ===
+{
+  "thread_id": "019f3000-6e1b-7070-8ba9-1d84580a58c8",
+  "created_at": "2026-07-05T01:59:22.395345+00:00",
+  "updated_at": "2026-07-05T01:59:22.395345+00:00",
+  "state_updated_at": "2026-07-05T01:59:22.395345+00:00",
+  "metadata": {},
+  "status": "idle",
+  "config": {},
+  "values": null
+}
+
+thread_id = 019f3000-6e1b-7070-8ba9-1d84580a58c8
+
+=== POST /threads/<id>/runs/stream request body ===
+{
+  "assistant_id": "agent",
+  "input": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello from e2e"
+      }
+    ]
+  },
+  "stream_mode": "messages-tuple"
+}
+
+=== RAW SSE bytes (repr per readline, exact wire framing) ===
+HTTP 200
+Content-Type: text/event-stream; charset=utf-8
+
+b'event: metadata\r'
+b'data: {"run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","attempt":1}\r'
+b'\r'
+b'event: messages\r'
+b'data: [{"content":"LangGraph","additional_kwargs":{},"response_metadata":{},"type":"AIMessageChunk","name":null,"id":"lc_run--019f3000-7152-72f1-b8d8-307739892b50","tool_calls":[],"invalid_tool_calls":[],"usage_metadata":null,"tool_call_chunks":[],"chunk_position":null},{"created_by":"system","graph_id":"agent","assistant_id":"fe096781-5601-53d2-b2f6-0d3403f7e9ca","run_attempt":1,"langgraph_version":"1.2.7","langgraph_api_version":"0.10.0","langgraph_plan":"enterprise","langgraph_host":"self-hosted","langgraph_api_url":"http://0.0.0.0:2024","run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","thread_id":"019f3000-6e1b-7070-8ba9-1d84580a58c8","ls_integration":"langchain_chat_model","langgraph_step":1,"langgraph_node":"respond","langgraph_triggers":["branch:to:respond"],"langgraph_path":["__pregel_pull","respond"],"langgraph_checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","ls_provider":"genericfakechatmodel","ls_model_type":"chat","lc_versions":{"langchain-core":"1.4.8"}}]\r'
+b'\r'
+b'event: messages\r'
+b'data: [{"content":" ","additional_kwargs":{},"response_metadata":{},"type":"AIMessageChunk","name":null,"id":"lc_run--019f3000-7152-72f1-b8d8-307739892b50","tool_calls":[],"invalid_tool_calls":[],"usage_metadata":null,"tool_call_chunks":[],"chunk_position":null},{"created_by":"system","graph_id":"agent","assistant_id":"fe096781-5601-53d2-b2f6-0d3403f7e9ca","run_attempt":1,"langgraph_version":"1.2.7","langgraph_api_version":"0.10.0","langgraph_plan":"enterprise","langgraph_host":"self-hosted","langgraph_api_url":"http://0.0.0.0:2024","run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","thread_id":"019f3000-6e1b-7070-8ba9-1d84580a58c8","ls_integration":"langchain_chat_model","langgraph_step":1,"langgraph_node":"respond","langgraph_triggers":["branch:to:respond"],"langgraph_path":["__pregel_pull","respond"],"langgraph_checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","ls_provider":"genericfakechatmodel","ls_model_type":"chat","lc_versions":{"langchain-core":"1.4.8"}}]\r'
+b'\r'
+b'event: messages\r'
+b'data: [{"content":"echo:","additional_kwargs":{},"response_metadata":{},"type":"AIMessageChunk","name":null,"id":"lc_run--019f3000-7152-72f1-b8d8-307739892b50","tool_calls":[],"invalid_tool_calls":[],"usage_metadata":null,"tool_call_chunks":[],"chunk_position":null},{"created_by":"system","graph_id":"agent","assistant_id":"fe096781-5601-53d2-b2f6-0d3403f7e9ca","run_attempt":1,"langgraph_version":"1.2.7","langgraph_api_version":"0.10.0","langgraph_plan":"enterprise","langgraph_host":"self-hosted","langgraph_api_url":"http://0.0.0.0:2024","run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","thread_id":"019f3000-6e1b-7070-8ba9-1d84580a58c8","ls_integration":"langchain_chat_model","langgraph_step":1,"langgraph_node":"respond","langgraph_triggers":["branch:to:respond"],"langgraph_path":["__pregel_pull","respond"],"langgraph_checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","ls_provider":"genericfakechatmodel","ls_model_type":"chat","lc_versions":{"langchain-core":"1.4.8"}}]\r'
+b'\r'
+b'event: messages\r'
+b'data: [{"content":" ","additional_kwargs":{},"response_metadata":{},"type":"AIMessageChunk","name":null,"id":"lc_run--019f3000-7152-72f1-b8d8-307739892b50","tool_calls":[],"invalid_tool_calls":[],"usage_metadata":null,"tool_call_chunks":[],"chunk_position":null},{"created_by":"system","graph_id":"agent","assistant_id":"fe096781-5601-53d2-b2f6-0d3403f7e9ca","run_attempt":1,"langgraph_version":"1.2.7","langgraph_api_version":"0.10.0","langgraph_plan":"enterprise","langgraph_host":"self-hosted","langgraph_api_url":"http://0.0.0.0:2024","run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","thread_id":"019f3000-6e1b-7070-8ba9-1d84580a58c8","ls_integration":"langchain_chat_model","langgraph_step":1,"langgraph_node":"respond","langgraph_triggers":["branch:to:respond"],"langgraph_path":["__pregel_pull","respond"],"langgraph_checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","ls_provider":"genericfakechatmodel","ls_model_type":"chat","lc_versions":{"langchain-core":"1.4.8"}}]\r'
+b'\r'
+b'event: messages\r'
+b'data: [{"content":"hello","additional_kwargs":{},"response_metadata":{},"type":"AIMessageChunk","name":null,"id":"lc_run--019f3000-7152-72f1-b8d8-307739892b50","tool_calls":[],"invalid_tool_calls":[],"usage_metadata":null,"tool_call_chunks":[],"chunk_position":null},{"created_by":"system","graph_id":"agent","assistant_id":"fe096781-5601-53d2-b2f6-0d3403f7e9ca","run_attempt":1,"langgraph_version":"1.2.7","langgraph_api_version":"0.10.0","langgraph_plan":"enterprise","langgraph_host":"self-hosted","langgraph_api_url":"http://0.0.0.0:2024","run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","thread_id":"019f3000-6e1b-7070-8ba9-1d84580a58c8","ls_integration":"langchain_chat_model","langgraph_step":1,"langgraph_node":"respond","langgraph_triggers":["branch:to:respond"],"langgraph_path":["__pregel_pull","respond"],"langgraph_checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","ls_provider":"genericfakechatmodel","ls_model_type":"chat","lc_versions":{"langchain-core":"1.4.8"}}]\r'
+b'\r'
+b'event: messages\r'
+b'data: [{"content":" ","additional_kwargs":{},"response_metadata":{},"type":"AIMessageChunk","name":null,"id":"lc_run--019f3000-7152-72f1-b8d8-307739892b50","tool_calls":[],"invalid_tool_calls":[],"usage_metadata":null,"tool_call_chunks":[],"chunk_position":null},{"created_by":"system","graph_id":"agent","assistant_id":"fe096781-5601-53d2-b2f6-0d3403f7e9ca","run_attempt":1,"langgraph_version":"1.2.7","langgraph_api_version":"0.10.0","langgraph_plan":"enterprise","langgraph_host":"self-hosted","langgraph_api_url":"http://0.0.0.0:2024","run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","thread_id":"019f3000-6e1b-7070-8ba9-1d84580a58c8","ls_integration":"langchain_chat_model","langgraph_step":1,"langgraph_node":"respond","langgraph_triggers":["branch:to:respond"],"langgraph_path":["__pregel_pull","respond"],"langgraph_checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","ls_provider":"genericfakechatmodel","ls_model_type":"chat","lc_versions":{"langchain-core":"1.4.8"}}]\r'
+b'\r'
+b'event: messages\r'
+b'data: [{"content":"from","additional_kwargs":{},"response_metadata":{},"type":"AIMessageChunk","name":null,"id":"lc_run--019f3000-7152-72f1-b8d8-307739892b50","tool_calls":[],"invalid_tool_calls":[],"usage_metadata":null,"tool_call_chunks":[],"chunk_position":null},{"created_by":"system","graph_id":"agent","assistant_id":"fe096781-5601-53d2-b2f6-0d3403f7e9ca","run_attempt":1,"langgraph_version":"1.2.7","langgraph_api_version":"0.10.0","langgraph_plan":"enterprise","langgraph_host":"self-hosted","langgraph_api_url":"http://0.0.0.0:2024","run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","thread_id":"019f3000-6e1b-7070-8ba9-1d84580a58c8","ls_integration":"langchain_chat_model","langgraph_step":1,"langgraph_node":"respond","langgraph_triggers":["branch:to:respond"],"langgraph_path":["__pregel_pull","respond"],"langgraph_checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","ls_provider":"genericfakechatmodel","ls_model_type":"chat","lc_versions":{"langchain-core":"1.4.8"}}]\r'
+b'\r'
+b'event: messages\r'
+b'data: [{"content":" ","additional_kwargs":{},"response_metadata":{},"type":"AIMessageChunk","name":null,"id":"lc_run--019f3000-7152-72f1-b8d8-307739892b50","tool_calls":[],"invalid_tool_calls":[],"usage_metadata":null,"tool_call_chunks":[],"chunk_position":null},{"created_by":"system","graph_id":"agent","assistant_id":"fe096781-5601-53d2-b2f6-0d3403f7e9ca","run_attempt":1,"langgraph_version":"1.2.7","langgraph_api_version":"0.10.0","langgraph_plan":"enterprise","langgraph_host":"self-hosted","langgraph_api_url":"http://0.0.0.0:2024","run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","thread_id":"019f3000-6e1b-7070-8ba9-1d84580a58c8","ls_integration":"langchain_chat_model","langgraph_step":1,"langgraph_node":"respond","langgraph_triggers":["branch:to:respond"],"langgraph_path":["__pregel_pull","respond"],"langgraph_checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","ls_provider":"genericfakechatmodel","ls_model_type":"chat","lc_versions":{"langchain-core":"1.4.8"}}]\r'
+b'\r'
+b'event: messages\r'
+b'data: [{"content":"e2e","additional_kwargs":{},"response_metadata":{},"type":"AIMessageChunk","name":null,"id":"lc_run--019f3000-7152-72f1-b8d8-307739892b50","tool_calls":[],"invalid_tool_calls":[],"usage_metadata":null,"tool_call_chunks":[],"chunk_position":"last"},{"created_by":"system","graph_id":"agent","assistant_id":"fe096781-5601-53d2-b2f6-0d3403f7e9ca","run_attempt":1,"langgraph_version":"1.2.7","langgraph_api_version":"0.10.0","langgraph_plan":"enterprise","langgraph_host":"self-hosted","langgraph_api_url":"http://0.0.0.0:2024","run_id":"019f3000-6e1c-76e0-a086-378bcc587a1e","thread_id":"019f3000-6e1b-7070-8ba9-1d84580a58c8","ls_integration":"langchain_chat_model","langgraph_step":1,"langgraph_node":"respond","langgraph_triggers":["branch:to:respond"],"langgraph_path":["__pregel_pull","respond"],"langgraph_checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","checkpoint_ns":"respond:5ff3f37a-f38e-635c-f9d8-91e54a822638","ls_provider":"genericfakechatmodel","ls_model_type":"chat","lc_versions":{"langchain-core":"1.4.8"}}]\r'
+b'\r'
+b''
