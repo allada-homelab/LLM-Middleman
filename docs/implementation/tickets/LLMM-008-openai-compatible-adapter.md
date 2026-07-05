@@ -152,3 +152,7 @@ The 21 new tests drive raw bytes through the real `_sse` reader + adapter:
   `async_add_delta_content_stream` delta shape against the pinned HA source before
   finalizing (the entity wiring in LLMM-005 owns the loop; this adapter must yield exactly
   the dict keys that loop consumes).
+- **Post-E2E fix (LLMM-018):** the adapter hardcodes `/v1`, so entering the conventional
+  OpenAI-style `…/v1` base URL double-pathed to `/v1/v1/...` → opaque `cannot_connect`; the
+  openai_compat flow step now strips one trailing `/v1` (after the slash strip) and the
+  field description says the server root is expected.
