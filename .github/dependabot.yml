@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Keep the SHA-pinned actions in .github/workflows/ current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  # Reads pyproject.toml + uv.lock; keeps pytest-homeassistant-custom-component
+  # (which tracks HA releases) fresh so the suite stays on a current HA.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
