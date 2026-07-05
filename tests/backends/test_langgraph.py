@@ -5,10 +5,10 @@ adapter via the conftest harness (arbitrary chunk boundaries, CRLF), and thread 
 persistence is exercised against a real ``helpers.storage.Store`` backed by the
 ``hass_storage`` fixture.
 
-The captured frame shape here is derived from LangGraph's documented tuple/metadata
-streaming contract (``[message_chunk, metadata]`` with ``metadata.langgraph_node``); the
-live ``langgraph dev`` capture that pins the exact wire event names is an outstanding
-acceptance item (see the ticket's Risks / LLMM-018 E2E).
+The frame shape (``[message_chunk, metadata]`` with ``metadata.langgraph_node``) and
+EOF-based termination match a live ``langgraph-api`` 0.10.0 capture (LLMM-018 E2E): a
+successful run streams ``messages`` frames and closes on EOF with no terminal ``event:
+end``. Mock streams here likewise terminate by byte exhaustion, never a terminal event.
 """
 
 from __future__ import annotations
@@ -170,24 +170,18 @@ def test_parse_messages_frame_shapes() -> None:
 
 
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
-async def test_happy_path_concatenates_and_stops_on_end(hass: HomeAssistant, newline: bytes) -> None:
-    blob = sse_bytes(_msg_frame("Hello "), _msg_frame("world"), ("end", "[DONE]"), newline=newline)
+async def test_happy_path_concatenates_tokens(hass: HomeAssistant, newline: bytes) -> None:
+    # A successful run terminates by SSE EOF (byte exhaustion), no terminal event.
+    blob = sse_bytes(_msg_frame("Hello "), _msg_frame("world"), newline=newline)
     deltas = await _run_stateless(hass, blob)
     assert deltas[0] == {"role": "assistant"}
     assert _text_of(deltas) == "Hello world"
-
-
-async def test_end_event_stops_stream(hass: HomeAssistant) -> None:
-    # Frames after `event: end` are never emitted.
-    blob = sse_bytes(_msg_frame("kept"), ("end", "[DONE]"), _msg_frame("dropped"))
-    assert _text_of(await _run_stateless(hass, blob)) == "kept"
 
 
 async def test_node_filter_emits_only_matching_node(hass: HomeAssistant) -> None:
     blob = sse_bytes(
         _msg_frame("tool-chatter ", node="tools"),
         _msg_frame("Answer", node="agent"),
-        ("end", "[DONE]"),
     )
     deltas = await _run_stateless(hass, blob, options={"response_node_filter": "agent"})
     assert deltas == [{"role": "assistant"}, {"content": "Answer"}]
@@ -199,18 +193,19 @@ async def test_error_event_raises_backend_stream_error(hass: HomeAssistant) -> N
         await _run_stateless(hass, blob)
 
 
-async def test_done_with_no_delta_emits_nothing(hass: HomeAssistant) -> None:
-    assert await _run_stateless(hass, sse_bytes(("end", "[DONE]"))) == []
+async def test_non_token_only_stream_emits_nothing(hass: HomeAssistant) -> None:
+    # A stream carrying no token frames (here just metadata, then EOF) yields no deltas.
+    assert await _run_stateless(hass, sse_bytes(("metadata", '{"run_id": "r1"}'))) == []
 
 
-async def test_silent_stream_end_yields_collected_tokens(hass: HomeAssistant) -> None:
-    # EOF without a terminal `end` event: the generator simply returns.
+async def test_eof_terminates_stream_cleanly(hass: HomeAssistant) -> None:
+    # The success path: EOF (byte exhaustion) ends the run; the generator simply returns.
     deltas = await _run_stateless(hass, sse_bytes(_msg_frame("Hi")))
     assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
 
 
 async def test_malformed_json_frame_is_skipped(hass: HomeAssistant) -> None:
-    blob = sse_bytes(("messages", "{not json"), _msg_frame("ok"), ("end", "[DONE]"))
+    blob = sse_bytes(("messages", "{not json"), _msg_frame("ok"))
     assert _text_of(await _run_stateless(hass, blob)) == "ok"
 
 
@@ -222,7 +217,7 @@ async def test_oversized_line_raises_backend_stream_error(hass: HomeAssistant) -
 
 async def test_non_token_events_ignored(hass: HomeAssistant) -> None:
     # metadata/values frames (non "messages") contribute no deltas.
-    blob = sse_bytes(("metadata", '{"run_id": "r1"}'), _msg_frame("Hi"), ("end", "[DONE]"))
+    blob = sse_bytes(("metadata", '{"run_id": "r1"}'), _msg_frame("Hi"))
     assert _text_of(await _run_stateless(hass, blob)) == "Hi"
 
 
@@ -236,7 +231,7 @@ async def test_run_body_and_headers(hass: HomeAssistant) -> None:
         captured["url"] = url
         captured["data"] = kwargs["data"]
         captured["headers"] = kwargs["headers"]
-        return _StreamResp(chunk_bytes(sse_bytes(_msg_frame("ok"), ("end", "[DONE]")), 8))
+        return _StreamResp(chunk_bytes(sse_bytes(_msg_frame("ok")), 8))
 
     session = MagicMock()
     session.post = MagicMock(side_effect=post_handler)
@@ -262,7 +257,7 @@ async def test_no_api_key_omits_header(hass: HomeAssistant) -> None:
 
     def post_handler(url: str, **kwargs: Any) -> _StreamResp:
         captured["headers"] = kwargs["headers"]
-        return _StreamResp(chunk_bytes(sse_bytes(("end", "[DONE]")), 8))
+        return _StreamResp(chunk_bytes(sse_bytes(_msg_frame("ok")), 8))
 
     session = MagicMock()
     session.post = MagicMock(side_effect=post_handler)
@@ -293,7 +288,7 @@ def _threaded_session(run_blob: bytes) -> tuple[MagicMock, dict[str, Any]]:
 
 
 async def test_device_scope_reuses_and_creates_threads(hass: HomeAssistant) -> None:
-    run_blob = sse_bytes(_msg_frame("ok"), ("end", "[DONE]"))
+    run_blob = sse_bytes(_msg_frame("ok"))
     session, state = _threaded_session(run_blob)
     adapter = _adapter(hass, session)
     opts: dict[str, Any] = {"memory_scope": "device"}
@@ -310,7 +305,7 @@ async def test_device_scope_reuses_and_creates_threads(hass: HomeAssistant) -> N
 
 
 async def test_stateless_toggle_never_creates_thread(hass: HomeAssistant) -> None:
-    session = _stateless_session(sse_bytes(_msg_frame("ok"), ("end", "[DONE]")), chunk=8)
+    session = _stateless_session(sse_bytes(_msg_frame("ok")), chunk=8)
     adapter = _adapter(hass, session)
     await _collect(
         adapter.stream_turn(_chat_log(), _input(), TurnContext(options={"stateless_runs": True}, memory_key="k"))
@@ -321,7 +316,7 @@ async def test_stateless_toggle_never_creates_thread(hass: HomeAssistant) -> Non
 
 
 async def test_rejected_thread_is_recreated(hass: HomeAssistant) -> None:
-    run_blob = sse_bytes(_msg_frame("recovered"), ("end", "[DONE]"))
+    run_blob = sse_bytes(_msg_frame("recovered"))
     state: dict[str, Any] = {"threads": 0}
 
     def post_handler(url: str, **kwargs: Any) -> _JsonResp | _StreamResp:
@@ -357,7 +352,7 @@ async def test_run_http_error_raises_backend_stream_error(hass: HomeAssistant) -
 
 
 async def test_device_map_persists_across_restart(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
-    run_blob = sse_bytes(_msg_frame("ok"), ("end", "[DONE]"))
+    run_blob = sse_bytes(_msg_frame("ok"))
 
     session1, state1 = _threaded_session(run_blob)
     adapter1 = _adapter(hass, session1)
@@ -381,7 +376,7 @@ async def test_device_map_persists_across_restart(hass: HomeAssistant, hass_stor
 
 
 async def test_conversation_scope_is_not_persisted(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
-    run_blob = sse_bytes(_msg_frame("ok"), ("end", "[DONE]"))
+    run_blob = sse_bytes(_msg_frame("ok"))
     session, _state = _threaded_session(run_blob)
     adapter = _adapter(hass, session)
     # Default scope is conversation.
