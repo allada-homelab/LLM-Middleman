@@ -133,6 +133,11 @@ against a live `langgraph dev` capture before the parser is finalized (plan
   the terminal event names are version-specific — the live-capture acceptance criterion
   exists precisely to de-risk this. If the capture disagrees with the notes above, the
   capture wins; update the ticket in-PR.
+  - **Post-E2E (LLMM-018, langgraph-api 0.10.0):** the live capture confirms a successful
+    run emits `event: metadata` + `event: messages` frames and terminates by SSE EOF — **no
+    `event: end` is ever sent** (raw capture: `/home/vscode/llmm-e2e/results/langgraph-raw-capture.txt`).
+    The dead `_EVENT_END` branch was removed and termination re-documented as EOF-based;
+    `event: error` stays as the real failure signal.
 - `GET /ok` availability varies by deployment (dev vs cloud vs self-hosted) — hence the
   `/assistants/search` fallback; confirm both against the target during E2E.
 - Persisted thread IDs can outlive server-side threads (TTL/GC) — the re-create-on-404 path

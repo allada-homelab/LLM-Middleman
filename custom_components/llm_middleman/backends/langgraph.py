@@ -9,8 +9,9 @@ self-hosted, and cloud deployments.
 Streaming uses ``stream_mode=messages-tuple`` over SSE (framed by :mod:`._sse`): each
 token frame carries a ``[message_chunk, metadata]`` JSON array; token text is read from
 the chunk's ``content`` and the emitting node from ``metadata.langgraph_node``. A
-configured ``response_node_filter`` restricts spoken output to one node. The run ends on
-``event: end`` (success) or ``event: error`` (raise -> entity guard fallback).
+configured ``response_node_filter`` restricts spoken output to one node. A successful run
+terminates by **SSE EOF** — the server simply closes the stream; there is no terminal
+``event: end`` frame. An ``event: error`` frame raises (-> entity guard fallback).
 
 Thread continuity: ``session_key -> thread_id`` is held in-memory for ``conversation``
 scope (HA rotates ``conversation_id`` after its 5-minute TTL, so a stale key just makes a
@@ -18,11 +19,11 @@ new thread) and persisted via ``helpers.storage.Store`` for ``device``/``agent``
 long-lived threads survive HA restarts. A thread the server has GC'd (404) is transparently
 re-created.
 
-.. warning::
-   The exact ``messages-tuple`` frame shape and terminal event names are LangGraph's
-   researcher-flagged least-confident item. This adapter is derived from the documented
-   tuple/metadata shape; a live ``langgraph dev`` capture (LLMM-011 acceptance / LLMM-018
-   E2E) must still confirm the wire event names before the parser is considered final.
+.. note::
+   The ``messages-tuple`` frame shape and stream-termination behaviour were confirmed
+   against a live self-hosted ``langgraph-api`` 0.10.0 capture (LLMM-018 E2E): a
+   successful run emits ``event: metadata`` then ``event: messages`` frames and closes on
+   EOF — no ``event: end`` is ever sent. ``event: error`` remains the failure signal.
 """
 
 from __future__ import annotations
@@ -79,8 +80,8 @@ _SCOPE_CONVERSATION = "conversation"
 _SCOPE_DEVICE = "device"
 _SCOPE_AGENT = "agent"
 
-# Wire event names (see module warning — verify against a live capture).
-_EVENT_END = "end"
+# Wire event names (confirmed against a live langgraph-api 0.10.0 capture — see module
+# note). Success terminates by SSE EOF, so there is no terminal event to match here.
 _EVENT_ERROR = "error"
 _EVENT_MESSAGES = "messages"
 
@@ -332,8 +333,7 @@ class LangGraphAdapter(BackendAdapter):
                 raise BackendStreamError(f"LangGraph run failed: HTTP {resp.status}")
             role_sent = False
             async for event in async_iter_sse(resp.content.iter_any()):
-                if event.event == _EVENT_END:
-                    return
+                # Success terminates by SSE EOF (loop exhaustion), not a terminal event.
                 if event.event == _EVENT_ERROR:
                     raise BackendStreamError(f"LangGraph error event: {event.data[:200]}")
                 if not (event.event == _EVENT_MESSAGES or event.event.startswith(f"{_EVENT_MESSAGES}/")):
