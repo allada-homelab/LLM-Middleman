@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from unittest.mock import patch
 
 import pytest
+from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import CONF_PROMPT
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -134,6 +136,49 @@ async def test_zero_subentries_zero_entities(hass: HomeAssistant) -> None:
         if ent.config_entry_id == entry.entry_id and ent.domain == "conversation"
     ]
     assert entities == []
+
+
+async def test_runtime_subentry_add_creates_entity_without_reload(hass: HomeAssistant) -> None:
+    """Adding a conversation subentry at runtime creates its entity live, no manual reload.
+
+    Regression for BUG-1: without the entry update listener, the conversation platform's
+    async_setup_entry only enumerates subentries at initial load, so an agent added after
+    setup (the UI subentry flow's async_add_subentry) got no entity until the user reloaded
+    the entry. The listener registered in async_setup_entry makes async_add_subentry trigger
+    an automatic reload — this test never calls async_reload itself.
+    """
+    entry = build_config_entry(hass, backend_type="fake", subentry_count=0)
+    registry = er.async_get(hass)
+
+    with patch.dict(_PATCH_FACTORY, {"fake": FakeAdapter}):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # No conversation subentries yet → no entities.
+        assert _conversation_entity_ids(registry, entry) == set()
+
+        # Add an agent at runtime exactly as the subentry-creation flow does. The
+        # framework fires the entry's update listeners, which auto-reload the entry.
+        subentry = ConfigSubentry(
+            data=MappingProxyType({CONF_NAME: "Runtime Agent", CONF_SYSTEM_PROMPT: ""}),
+            subentry_type=SUBENTRY_TYPE_CONVERSATION,
+            title="Runtime Agent",
+            unique_id=None,
+        )
+        hass.config_entries.async_add_subentry(entry, subentry)
+        await hass.async_block_till_done()
+
+        # The entity exists WITHOUT any manual reload call in this test.
+        assert _conversation_entity_ids(registry, entry) == {subentry.subentry_id}
+
+
+def _conversation_entity_ids(registry: er.EntityRegistry, entry: MockConfigEntry) -> set[str]:
+    """Return the unique_ids of the entry's conversation entities."""
+    return {
+        ent.unique_id
+        for ent in registry.entities.values()
+        if ent.config_entry_id == entry.entry_id and ent.domain == "conversation"
+    }
 
 
 async def test_migrate_v0_entry(hass: HomeAssistant) -> None:
