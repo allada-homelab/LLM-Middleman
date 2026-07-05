@@ -19,7 +19,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-homeassistant-custom-component",
-    "pyturbojpeg==1.8.0",  # HA camera component dep (pinned to match HA); pulled in transitively by the HA test harness
+    "pyturbojpeg==2.4.0",  # HA camera component dep (pinned to match HA); pulled in transitively by the HA test harness
     "ruff>=0.9",
 ]
 
