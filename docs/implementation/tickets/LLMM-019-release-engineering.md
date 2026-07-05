@@ -1,7 +1,7 @@
 ---
 id: LLMM-019
 title: Release engineering (hassfest, brands, HACS release)
-status: todo
+status: in-review
 phase: 4
 depends_on: [LLMM-016, LLMM-017, LLMM-018]
 ---

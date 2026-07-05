@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.0.0] - 2026-07-05
+
 ### Added
 
 - **Multi-backend presets.** Pick a backend type in the config UI — **OpenAI-compatible**,
@@ -16,7 +20,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   parent entry; each conversation agent (name, system prompt, per-agent options) is a
   subentry, so one connection can host several agents.
 - **Optional Home Assistant tool loop.** Per-agent `llm_hass_api` multi-select for
-  tool-capable presets (OpenAI-compatible), pulling in device control plus any HA
+  tool-capable presets (OpenAI-compatible, Ollama), pulling in device control plus any HA
   MCP-client tools, with `ConversationEntityFeature.CONTROL` and a bounded iteration cap.
 - **Per-agent memory scope** (`conversation` / `device` / `agent`) for stateful backends,
   and **per-agent timeouts** (total deadline plus an idle-read timeout).
