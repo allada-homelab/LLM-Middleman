@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_LLM_HASS_API, CONF_NAME, CONF_PROMPT
@@ -102,7 +103,11 @@ async def test_user_step_lists_backends(hass: HomeAssistant) -> None:
 
 
 async def test_full_flow_openai_creates_entry(hass: HomeAssistant) -> None:
-    """Picking openai and passing the probe creates an entry with the type + stripped URL."""
+    """Picking openai and passing the probe creates an entry with the type + root URL.
+
+    The adapter hardcodes the ``/v1`` prefix, so a submitted ``…/v1/`` is normalized
+    down to the server root (trailing slash *and* one trailing ``/v1`` stripped).
+    """
     with patch(_REGISTRY_PATH, _registry()):
         form = await _init_backend_step(hass, BACKEND_OPENAI_COMPAT)
         assert form["type"] is FlowResultType.FORM
@@ -116,8 +121,41 @@ async def test_full_flow_openai_creates_entry(hass: HomeAssistant) -> None:
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_BACKEND_TYPE] == BACKEND_OPENAI_COMPAT
-    assert result["data"][CONF_BASE_URL] == "http://backend.local:8000/v1"
+    assert result["data"][CONF_BASE_URL] == "http://backend.local:8000"
     assert result["data"][CONF_API_KEY] == "secret"
+
+
+@pytest.mark.parametrize(
+    "submitted",
+    [
+        "http://backend.local:8000/v1",
+        "http://backend.local:8000/v1/",
+    ],
+)
+async def test_openai_compat_strips_v1_suffix(hass: HomeAssistant, submitted: str) -> None:
+    """A base_url entered with a trailing /v1 (or /v1/) is stored as the server root.
+
+    The openai_compat adapter appends ``/v1/...`` itself, so the conventional
+    OpenAI-style ``…/v1`` base URL must be normalized to the root or requests
+    double-path to ``/v1/v1/...`` and 404. This proves the stored entry data is the
+    root, from which the adapter's probe URL (``{root}/v1/models``) is well-formed.
+    """
+    with patch(_REGISTRY_PATH, _registry()):
+        form = await _init_backend_step(hass, BACKEND_OPENAI_COMPAT)
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: submitted})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_BASE_URL] == "http://backend.local:8000"
+
+
+async def test_openai_compat_root_unchanged(hass: HomeAssistant) -> None:
+    """A clean server root (no /v1) is stored verbatim — only a real /v1 suffix is stripped."""
+    with patch(_REGISTRY_PATH, _registry()):
+        form = await _init_backend_step(hass, BACKEND_OPENAI_COMPAT)
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://backend.local:8000"})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_BASE_URL] == "http://backend.local:8000"
 
 
 async def test_probe_connection_failure_shows_cannot_connect(hass: HomeAssistant) -> None:

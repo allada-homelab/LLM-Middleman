@@ -53,7 +53,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry)
     connection_data = {**entry.data, "entry_id": entry.entry_id}
     entry.runtime_data = adapter_cls(hass, async_create_clientsession(hass), connection_data)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # Reload on any entry/subentry change so an agent added or reconfigured at runtime
+    # takes effect live — without this listener the conversation platform's
+    # async_setup_entry only runs at initial load and never sees later subentries, so a
+    # new agent's entity would not appear until a manual reload. Mirrors core
+    # ollama/openai_conversation exactly (the framework fires update_listeners from
+    # async_add_subentry → _async_save_and_notify).
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
     return True
+
+
+async def async_update_options(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> None:
+    """Reload the entry when its data/options/subentries change (core pattern)."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> bool:

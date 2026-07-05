@@ -165,3 +165,29 @@ check.
 - **`CONF_LLM_HASS_API` gate:** keeping the key defined-but-unrendered is deliberate
   (LLMM-014 flips it). Ensure no stored default leaks a truthy value that would silently
   enable tools before the loop exists.
+
+## Post-E2E fix (LLMM-018 BUG-1) — subentry add did not create its entity live
+
+- **Bug:** adding a conversation subentry (agent) at runtime did not create its
+  `conversation.*` entity until the config entry was manually reloaded/HA restarted — the
+  new agent was invisible in the UI. (Reconfiguring a subentry's options had the same latency
+  for the same reason.)
+- **Cause:** `__init__.py::async_setup_entry` forwarded the platform but registered **no**
+  config-entry update listener. The conversation platform's `async_setup_entry` enumerates
+  `entry.subentries` only at initial load; core's `ConfigEntries.async_add_subentry`
+  (`_async_update_entry` → `_async_save_and_notify`) fires the entry's `update_listeners`, but
+  this integration had registered none, so nothing reloaded the entry and the platform never
+  re-ran for the new subentry.
+- **Fix:** register `entry.async_on_unload(entry.add_update_listener(async_update_options))`
+  in `async_setup_entry`, where `async_update_options` calls
+  `hass.config_entries.async_reload(entry.entry_id)` — mirroring core `ollama` /
+  `openai_conversation` exactly (no bespoke subentry-added signal). This reloads the whole
+  entry (all platforms/entities torn down and recreated) on every entry/subentry change, which
+  is the idiomatic core behavior, not a shortcut. Regression:
+  `tests/test_init.py::test_runtime_subentry_add_creates_entity_without_reload` (fails on the
+  pre-fix code; asserts the entity appears after `async_add_subentry` with no manual reload).
+- **Live re-verified (2026-07-05, HA 2026.7.1, `llmm-e2e-ha`):** created a converse parent
+  entry against the SSE stub, added a conversation subentry via the subentry flow, and the
+  entity `conversation.bug1_recheck_agent` was present in the entity registry immediately
+  (entities before subentry: `[]`; after, with no reload call: `['conversation.bug1_recheck_agent']`).
+  Test entry deleted; status stays `done`.
