@@ -1,0 +1,71 @@
+==============================================================================
+LLMM-018 E2E — n8n RAW PROTOCOL CAPTURE
+Captured 2026-07-05T02:04:38.878193
+n8n n8nio/n8n v2.28.6 @ bridge 172.17.0.9:5678  (>= 1.103.0, StructuredChunk streaming present)
+Model: qwen3:0.6b via ollama OpenAI-compat http://172.17.0.8:11434/v1
+Direct POST to production Chat Trigger webhook: {action:sendMessage, sessionId, chatInput}
+Adapter under test: custom_components/llm_middleman/backends/n8n.py
+==============================================================================
+
+##############################################################################
+# CAPTURE 1 — STREAM-ENABLED workflow (Chat Trigger responseMode=streaming,
+#             AI Agent enableStreaming=true).  webhook=999fa770-2d53-4e2a-9a5f-fbfd2b61966c
+##############################################################################
+HTTP 200 · Content-Type: application/json; charset=utf-8 · 28363 bytes · 172 NDJSON lines
+Line-type histogram: begin=1, item=170, end=1, error=0, malformed=0
+First line type = 'begin'; last line type = 'end'; assembled item content = 'Hi there!'
+
+--- first 6 raw NDJSON lines (verbatim) ---
+{"type":"begin","metadata":{"nodeId":"8da06c3e-2423-4665-9c47-20a58ea090a4","nodeName":"AI Agent","itemIndex":0,"runIndex":0,"timestamp":1783216924075}}
+{"type":"item","content":"","metadata":{"nodeId":"8da06c3e-2423-4665-9c47-20a58ea090a4","nodeName":"AI Agent","itemIndex":0,"runIndex":0,"timestamp":1783216930541}}
+{"type":"item","content":"","metadata":{"nodeId":"8da06c3e-2423-4665-9c47-20a58ea090a4","nodeName":"AI Agent","itemIndex":0,"runIndex":0,"timestamp":1783216930543}}
+{"type":"item","content":"","metadata":{"nodeId":"8da06c3e-2423-4665-9c47-20a58ea090a4","nodeName":"AI Agent","itemIndex":0,"runIndex":0,"timestamp":1783216930543}}
+{"type":"item","content":"","metadata":{"nodeId":"8da06c3e-2423-4665-9c47-20a58ea090a4","nodeName":"AI Agent","itemIndex":0,"runIndex":0,"timestamp":1783216930578}}
+{"type":"item","content":"","metadata":{"nodeId":"8da06c3e-2423-4665-9c47-20a58ea090a4","nodeName":"AI Agent","itemIndex":0,"runIndex":0,"timestamp":1783216930599}}
+--- ... 164 more item lines (most content="" — qwen3 thinking deltas) ... ---
+--- last 3 raw NDJSON lines (verbatim) ---
+{"type":"item","content":"!","metadata":{"nodeId":"8da06c3e-2423-4665-9c47-20a58ea090a4","nodeName":"AI Agent","itemIndex":0,"runIndex":0,"timestamp":1783216936925}}
+{"type":"item","content":"","metadata":{"nodeId":"8da06c3e-2423-4665-9c47-20a58ea090a4","nodeName":"AI Agent","itemIndex":0,"runIndex":0,"timestamp":1783216937101}}
+{"type":"end","metadata":{"nodeId":"8da06c3e-2423-4665-9c47-20a58ea090a4","nodeName":"AI Agent","itemIndex":0,"runIndex":0,"timestamp":1783216937125}}
+
+>> ADAPTER EXPECTATION CHECK (n8n.py _sniff_mode / _line_contents / _iter_deltas):
+   field 'type'      : present, values in {begin,item,end,error}  -> MATCH (frozenset L63)
+   first line 'begin': obj.get('type')=='begin' in _STRUCTURED_CHUNK_TYPES -> sniff='ndjson' (L91) MATCH
+   'item'.content    : str, accumulated & streamed delta-by-delta (L286-289) -> MATCH
+   'begin'/'end'     : yield nothing, NOT terminal (L283 unknown/segment) -> MATCH (170 items across 1 begin/1 end)
+   terminator        : EOF closes stream = true done (L233-238) -> MATCH (no reliance on 'end')
+   Content-Type      : 'application/json' (NOT ndjson) — sniff still ndjson via first-line 'type' -> MATCH
+   VERDICT: streaming framing matches backends/n8n.py field-by-field. NO mismatch.
+
+##############################################################################
+# CAPTURE 2 — NOT-stream-enabled workflow (Chat Trigger responseMode=lastNode).
+#             webhook=3eeeb69f-1e11-4607-9068-438286aac82b
+##############################################################################
+HTTP 200 · Content-Type: application/json; charset=utf-8 · 22 bytes · single JSON object · ~48.7s
+--- raw body (verbatim) ---
+{"output":"Hi there!"}
+
+>> ADAPTER EXPECTATION CHECK:
+   single JSON object, no 'type' key -> _loads_object ok, type not in set -> sniff='blocking' (L90-95) MATCH
+   output_field 'output' present -> _blocking_deltas reads obj['output']='Hi there!' (L257-267) MATCH
+   NOTE latency: blocking reply took ~48.7s (qwen3 emits all thinking before returning).
+        N8N_DEFAULT_TIMEOUT=30 in n8n.py would time this out -> HA subentry CONF_TIMEOUT raised to 180 for the
+        wrong-mode HA test. This is a test-rig timing note, not an adapter defect.
+
+##############################################################################
+# CAPTURE 3 — MISSING-OUTPUT-FIELD workflow (Chat Trigger lastNode -> Edit Fields).
+#             webhook=6e3fef69-2dd7-4fa4-9413-d59ac55cdce5
+##############################################################################
+HTTP 200 · Content-Type: application/json; charset=utf-8 · single JSON object
+--- raw body (verbatim) ---
+{"wrongField":"surprise, no output field here"}
+
+>> ADAPTER EXPECTATION CHECK:
+   sniff='blocking'; obj.get('output')=None, obj.get('text'/N8N_OUTPUT_FIELD_FALLBACK)=None
+   -> _blocking_deltas raises BackendStreamError "n8n reply missing 'output'/'text' field" (L259-263)
+   -> adapter NEVER json.dumps the whole body; HA surfaces the error, never speaks raw JSON. MATCH
+
+==============================================================================
+OVERALL: all three raw shapes conform to backends/n8n.py. No field-level mismatch -> no LLMM-012 bug from
+the wire protocol. The only caveat is timing (blocking latency > default 30s), handled by config, not code.
+==============================================================================
