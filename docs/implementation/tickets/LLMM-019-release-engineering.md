@@ -92,18 +92,18 @@ consumer-path proof (distinct from LLMM-018's development install).
 
 ## Acceptance criteria
 
-- [ ] hassfest (`validate.yml`) is green on the release commit; any violations fixed at
+- [x] hassfest (`validate.yml`) is green on the release commit; any violations fixed at
       the source (not suppressed).
-- [ ] A `home-assistant/brands` PR adding the `llm_middleman` icon/logo is open (or
+- [x] A `home-assistant/brands` PR adding the `llm_middleman` icon/logo is open (or
       merged), passing that repo's CI.
-- [ ] `manifest.json` `version` is the chosen v1 SemVer; `codeowners` resolves to a real
+- [x] `manifest.json` `version` is the chosen v1 SemVer; `codeowners` resolves to a real
       GitHub account; `iot_class` decision recorded.
-- [ ] `hacs.json` HA-version floor is consistent with the manifest and with the versions
+- [x] `hacs.json` HA-version floor is consistent with the manifest and with the versions
       E2E validated; `requirements` no longer lists `aiohttp` (confirming LLMM-001).
-- [ ] A GitHub **release** (tag + notes) is cut from the merged release commit on `main`.
+- [x] A GitHub **release** (tag + notes) is cut from the merged release commit on `main`.
 - [ ] A clean HACS custom-repo install of the released version loads on the live HA
       instance and a config entry can be created.
-- [ ] Gates green: `just check` + `just typecheck` (+ hassfest).
+- [x] Gates green: `just check` + `just typecheck` (+ hassfest).
 
 ## Verification
 
@@ -133,3 +133,20 @@ consumer-path proof (distinct from LLMM-018's development install).
   pick the honest value and note the reasoning. Non-blocking for hassfest.
 - The v1 version string (e.g. `1.0.0` vs `0.x`) is the owner's release call; confirm
   before tagging so the CHANGELOG heading (LLMM-017) and the tag agree.
+
+## Release evidence (2026-07-05, owner-approved recommendations)
+
+- **Release**: v1.0.0 cut from `main` (`ccdad83`, PR #25) — tag + notes from the
+  CHANGELOG's 1.0.0 section; `gh api .../releases/latest` returns `v1.0.0`.
+  Rollback (if ever needed): delete release + tag.
+- **hassfest**: green on the release commit (PR #25 checks).
+- **Brands**: home-assistant/brands PR #10693 open, all its CI green (icons 256/512,
+  logos 512x128/1024x256 accepted); awaiting upstream review — icon-only cosmetic
+  until merged.
+- **Manifest/HACS**: version 1.0.0; codeowners `@allada-homelab` resolves (GitHub org);
+  `iot_class: local_polling` (honest for a request/response forwarding shim);
+  hacs.json floor 2025.8.0; no `requirements` key (LLMM-001 confirmed).
+- **E2E evidence**: linked dress-rehearsal matrix `docs/implementation/e2e-results/`
+  (PR #24).
+- **Remaining before `done`**: owner-run clean HACS install of the released v1.0.0 on
+  the live HA (last acceptance box) — batched with the LLMM-018 owner rows.
