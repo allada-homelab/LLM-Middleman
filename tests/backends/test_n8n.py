@@ -280,9 +280,8 @@ async def test_auth_basic_sets_basicauth_and_redacts(hass: HomeAssistant, caplog
             ),
             _ctx(),
         )
-    auth = session.post.call_args.kwargs["auth"]
-    assert isinstance(auth, aiohttp.BasicAuth)
-    assert auth == aiohttp.BasicAuth("user", "s3cret")
+    headers = session.post.call_args.kwargs["headers"]
+    assert headers["Authorization"] == aiohttp.encode_basic_auth("user", "s3cret")
     assert "s3cret" not in caplog.text
 
 
@@ -304,7 +303,7 @@ async def test_auth_header_sets_header_and_redacts(hass: HomeAssistant, caplog: 
         )
     headers = session.post.call_args.kwargs["headers"]
     assert headers["X-Api-Key"] == "tok-42"
-    assert session.post.call_args.kwargs["auth"] is None
+    assert "Authorization" not in headers
     assert "tok-42" not in caplog.text
 
 

@@ -139,7 +139,6 @@ class N8nAdapter(BackendAdapter):
         url = self.connection_data[CONF_WEBHOOK_URL]
         body = self._request_body(user_input, ctx)
         headers = self._request_headers()
-        auth = self._request_auth()
         timeout = ctx.options.get(CONF_TIMEOUT, N8N_DEFAULT_TIMEOUT)
         # Log the auth *type* only — never the credential value.
         _LOGGER.debug("n8n POST %s (auth=%s)", url, self._auth_type())
@@ -148,7 +147,6 @@ class N8nAdapter(BackendAdapter):
                 url,
                 data=json.dumps(body, default=str),
                 headers=headers,
-                auth=auth,
                 timeout=aiohttp.ClientTimeout(total=timeout, sock_read=IDLE_TIMEOUT),
             ) as response:
                 async for delta in self._iter_deltas(response, ctx):
@@ -173,19 +171,19 @@ class N8nAdapter(BackendAdapter):
 
     def _request_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json-lines, application/json"}
-        if self._auth_type() == N8N_AUTH_HEADER:
+        auth_type = self._auth_type()
+        if auth_type == N8N_AUTH_HEADER:
             name = self.connection_data.get(CONF_HEADER_NAME)
             value = self.connection_data.get(CONF_HEADER_VALUE)
             if name and value:
                 headers[name] = value
-        return headers
-
-    def _request_auth(self) -> aiohttp.BasicAuth | None:
-        if self._auth_type() == N8N_AUTH_BASIC:
+        elif auth_type == N8N_AUTH_BASIC:
             username = self.connection_data.get(CONF_USERNAME, "")
             password = self.connection_data.get(CONF_PASSWORD, "")
-            return aiohttp.BasicAuth(username, password)
-        return None
+            # aiohttp.BasicAuth is deprecated (removed in 4.0); encode_basic_auth
+            # yields the identical "Basic <base64>" header value.
+            headers["Authorization"] = aiohttp.encode_basic_auth(username, password)
+        return headers
 
     async def _iter_deltas(self, response: aiohttp.ClientResponse, ctx: TurnContext) -> DeltaStream:
         """Sniff the real response mode, then stream NDJSON deltas or parse a blocking body."""
