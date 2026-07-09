@@ -81,7 +81,12 @@ Phase milestones match `plan.md` §Implementation phases. `⇐` = depends on.
 | LLMM-018 | Live E2E verification matrix (per-preset against real backends) | Phase 2 complete |
 | LLMM-019 | Release engineering (hassfest, brands, HACS release) | LLMM-016, LLMM-017, LLMM-018 |
 
+### Phase 5 — Fast-follow adapters
+| ID | Title | ⇐ |
+|---|---|---|
+| LLMM-020 | Dify adapter (chat/agent/chatflow apps, SSE streaming, server-side memory) | LLMM-003, LLMM-004 |
+
 ### Fast-follow (roadmap, not v1 — file tickets when picked up)
 AI Task `generate_data` subentry type · token stats via `chat_log.async_trace` · external
-tool-activity surfacing (`ToolInput(external=True)`) · AG-UI / Dify / Anthropic /
+tool-activity surfacing (`ToolInput(external=True)`) · AG-UI / Anthropic /
 Responses-toggle presets.

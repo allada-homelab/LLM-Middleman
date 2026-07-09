@@ -34,6 +34,7 @@ from custom_components.llm_middleman.config_flow import (
 )
 from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
+    BACKEND_DIFY,
     BACKEND_N8N,
     BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
@@ -190,6 +191,33 @@ async def test_no_duplicate_abort(hass: HomeAssistant) -> None:
             assert result["type"] is FlowResultType.CREATE_ENTRY
 
     assert len(hass.config_entries.async_entries(DOMAIN)) == 2
+
+
+@pytest.mark.parametrize(
+    "submitted",
+    [
+        "https://api.dify.ai",
+        "https://api.dify.ai/",
+        "https://api.dify.ai/v1",
+        "https://api.dify.ai/v1/",
+    ],
+)
+async def test_dify_appends_v1_suffix(hass: HomeAssistant, submitted: str) -> None:
+    """A Dify base_url is normalized to the /v1 root whether or not /v1 was entered.
+
+    The adapter posts against ``{base}/chat-messages`` under the Dify ``/v1`` convention,
+    so both ``https://host`` and ``https://host/v1`` must store the same ``…/v1`` root.
+    """
+    registry = {BACKEND_DIFY: _fake_adapter()}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_DIFY)
+        assert form["step_id"] == BACKEND_DIFY
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: submitted, CONF_API_KEY: "app-xyz"})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_BACKEND_TYPE] == BACKEND_DIFY
+    assert result["data"][CONF_BASE_URL] == "https://api.dify.ai/v1"
+    assert result["data"][CONF_API_KEY] == "app-xyz"
 
 
 async def test_n8n_webhook_not_normalized(hass: HomeAssistant) -> None:

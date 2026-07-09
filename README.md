@@ -24,6 +24,7 @@ Pick one preset per connection. Each streams the reply token-by-token
 | **LangGraph** | a LangGraph deployment (`langgraph dev` / self-hosted / cloud) | SSE, `messages-tuple` | No² |
 | **Custom `/v1/converse`** | your own external agent speaking the v0 SSE contract | SSE, `text_delta`/`done`/`error` | No² |
 | **n8n** | an n8n Chat Trigger / Webhook workflow | NDJSON `StructuredChunk` (with a blocking fallback) | No² |
+| **Dify** | a Dify chat / agent / chatflow app (`/chat-messages`) | SSE, `agent_message`/`message`/`message_end` | No² |
 
 ¹ The Ollama adapter's native protocol carries tool calls; wiring them into the HA tool
 loop is tracked separately and not enabled in this build.
@@ -50,7 +51,7 @@ Per-agent options that appear only when the chosen backend supports them:
   call. Offered only for tool-capable presets (see the table above). Selecting at least one
   makes the agent claim device commands (`ConversationEntityFeature.CONTROL`) so the
   pipeline's local-intent fallback does not also handle them.
-- **Memory scope** — for stateful backends (LangGraph, custom `/v1/converse`, n8n),
+- **Memory scope** — for stateful backends (LangGraph, custom `/v1/converse`, n8n, Dify),
   controls the session key sent to the backend: `conversation` (default; the HA
   conversation, reset after HA's ~5-minute session timeout), `device` (one long-lived
   thread per satellite/room), or `agent` (one continuous thread for the whole agent).

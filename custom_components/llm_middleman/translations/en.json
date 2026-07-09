@@ -82,6 +82,18 @@
                     "header_name": "Header name (when authentication is a custom header).",
                     "header_value": "Header value (when authentication is a custom header)."
                 }
+            },
+            "dify": {
+                "title": "Dify connection",
+                "description": "Connect to a Dify chat, agent, or chatflow app. The app's prompt, model, and tools are configured inside Dify itself and are not set here.",
+                "data": {
+                    "base_url": "Base URL",
+                    "api_key": "API key"
+                },
+                "data_description": {
+                    "base_url": "Dify API root including /v1, e.g. https://api.dify.ai/v1 (a trailing slash is stripped, and /v1 is appended if you omit it).",
+                    "api_key": "The Dify app's API key (starts with app-). Required."
+                }
             }
         },
         "error": {
@@ -141,7 +153,8 @@
                 "langgraph": "LangGraph",
                 "ollama": "Ollama",
                 "converse": "Custom /v1/converse",
-                "n8n": "n8n"
+                "n8n": "n8n",
+                "dify": "Dify"
             }
         },
         "target_type": {

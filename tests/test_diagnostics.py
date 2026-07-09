@@ -27,6 +27,7 @@ from pytest_homeassistant_custom_component.typing import (
 
 from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
+    BACKEND_DIFY,
     BACKEND_LANGGRAPH,
     BACKEND_N8N,
     BACKEND_OLLAMA,
@@ -108,6 +109,10 @@ _PARENT_DATA: dict[str, dict[str, object]] = {
         CONF_HEADER_NAME: _NON_SECRET_HEADER_NAME,
         CONF_HEADER_VALUE: _SECRETS["header_value"],
     },
+    BACKEND_DIFY: {
+        CONF_BASE_URL: _SECRETS["base_url"],
+        CONF_API_KEY: _SECRETS["api_key"],
+    },
 }
 
 # Secret keys expected to be redacted in each preset's parent data.
@@ -122,6 +127,7 @@ _REDACTED_KEYS: dict[str, set[str]] = {
         CONF_PASSWORD,
         CONF_HEADER_VALUE,
     },
+    BACKEND_DIFY: {CONF_BASE_URL, CONF_API_KEY},
 }
 
 
@@ -159,6 +165,7 @@ def _build_entry(hass: HomeAssistant, backend_type: str) -> MockConfigEntry:
         BACKEND_OLLAMA,
         BACKEND_CONVERSE,
         BACKEND_N8N,
+        BACKEND_DIFY,
     ],
 )
 async def test_diagnostics_redacts_every_secret_per_preset(hass: HomeAssistant, backend_type: str) -> None:

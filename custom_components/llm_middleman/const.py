@@ -29,6 +29,7 @@ BACKEND_LANGGRAPH = "langgraph"
 BACKEND_OLLAMA = "ollama"
 BACKEND_CONVERSE = "converse"
 BACKEND_N8N = "n8n"
+BACKEND_DIFY = "dify"
 
 # n8n connection choices (CONF_TARGET_TYPE / CONF_AUTH_TYPE option values).
 N8N_TARGET_CHAT_TRIGGER = "chat_trigger"
