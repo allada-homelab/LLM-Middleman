@@ -12,6 +12,13 @@ makes one preset cover all three app types. ``message_end`` terminates; an in-st
 are debug-logged; a moderation ``message_replace`` cannot un-speak already-streamed text,
 so it is never applied retroactively).
 
+Model reasoning is **not** a separate field: Dify 1.x injects it inline into ``answer``
+as ``<think>\\n...\\n</think>`` (plugin SDK ``_wrap_thinking_by_reasoning_content``), split
+across deltas. :class:`_ThinkFilter` routes those spans to HA ``thinking_content`` deltas
+(never spoken/shown as the reply, matching the ollama adapter) and strips the wrapper's
+leading whitespace from the first real content. Dify 0.15.x's legacy ``<details ...>``
+reasoning wrapper is not filtered.
+
 Dify owns conversation memory server-side: the first turn returns a ``conversation_id``
 on every event, and echoing it back continues the conversation → stateful
 (``supports_memory_scope = True``). Unlike LangGraph the server id is only known
@@ -89,6 +96,66 @@ _LOGGED_IGNORED_EVENTS = frozenset({"agent_thought", "message_replace"})
 
 class _ConversationNotFound(Exception):
     """Internal signal: the echoed ``conversation_id`` was rejected (404) — recreate it."""
+
+
+# Reasoning wrapper Dify 1.x injects inline into the answer stream (plugin SDK
+# ``_wrap_thinking_by_reasoning_content``). Dify 0.15.x used a ``<details ...>`` HTML
+# wrapper instead — that legacy shape is not filtered here.
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _partial_tag_suffix(buf: str, tag: str) -> int:
+    """Length of the longest strict prefix of ``tag`` that ``buf`` ends with."""
+    for length in range(min(len(tag) - 1, len(buf)), 0, -1):
+        if tag.startswith(buf[-length:]):
+            return length
+    return 0
+
+
+class _ThinkFilter:
+    """Split streamed answer text into content vs ``<think>`` reasoning spans.
+
+    The wrapper arrives split across SSE deltas (``<think>\\n`` glued to the first
+    reasoning delta, ``\\n</think>`` to a later one), and literal-token models can
+    split the tag string itself across deltas — so the filter carries a mode flag
+    plus a held-back tail for a partial tag at a chunk boundary. A stray close tag
+    with no open tag is ordinary text (only the mode's own tag is searched for).
+    """
+
+    def __init__(self) -> None:
+        self._thinking = False
+        self._tail = ""
+
+    def feed(self, text: str) -> list[tuple[bool, str]]:
+        """Return ``(is_thinking, span)`` pairs for ``text``, withholding partial tags."""
+        buf = self._tail + text
+        self._tail = ""
+        spans: list[tuple[bool, str]] = []
+        while buf:
+            tag = _THINK_CLOSE if self._thinking else _THINK_OPEN
+            idx = buf.find(tag)
+            if idx >= 0:
+                if idx:
+                    spans.append((self._thinking, buf[:idx]))
+                self._thinking = not self._thinking
+                buf = buf[idx + len(tag) :]
+                continue
+            keep = _partial_tag_suffix(buf, tag)
+            if keep:
+                self._tail = buf[-keep:]
+                buf = buf[:-keep]
+            if buf:
+                spans.append((self._thinking, buf))
+            break
+        return spans
+
+    def flush(self) -> tuple[bool, str] | None:
+        """Return the withheld partial tag (real text after all), or ``None``."""
+        if not self._tail:
+            return None
+        tail, self._tail = self._tail, ""
+        return (self._thinking, tail)
 
 
 def _parse_data(raw: str) -> dict[str, Any] | None:
@@ -216,7 +283,10 @@ class DifyAdapter(BackendAdapter):
         timeout: aiohttp.ClientTimeout,
         state: dict[str, str | None],
     ) -> DeltaStream:
-        """POST one turn and yield role-first content deltas from the SSE reply.
+        """POST one turn and yield role-first content/thinking deltas from the SSE reply.
+
+        Inline ``<think>`` reasoning spans in ``answer`` are re-routed to
+        ``thinking_content`` deltas via :class:`_ThinkFilter`.
 
         Captures ``conversation_id`` from the first event carrying it and persists it
         (mid-stream, since the id is unknown before the POST), and records the ``task_id``
@@ -237,7 +307,9 @@ class DifyAdapter(BackendAdapter):
             body["conversation_id"] = conversation_id
 
         role_sent = False
+        content_started = False
         captured = False
+        think = _ThinkFilter()
         async with self.session.post(
             f"{self._base_url}/chat-messages",
             data=json.dumps(body),
@@ -287,13 +359,24 @@ class DifyAdapter(BackendAdapter):
                         if cid != conversation_id:
                             await self._remember(session_key, cid, persist)
                 if event == _EVENT_MESSAGE_END:
-                    return
-                answer = payload.get("answer")
-                if isinstance(answer, str) and answer:
+                    flushed = think.flush()
+                    spans = [flushed] if flushed is not None else []
+                else:
+                    answer = payload.get("answer")
+                    spans = think.feed(answer) if isinstance(answer, str) and answer else []
+                for is_thinking, span in spans:
+                    if not is_thinking and not content_started:
+                        # Drop the wrapper's leading whitespace ("\n\n" after </think>).
+                        span = span.lstrip()
+                        if not span:
+                            continue
+                        content_started = True
                     if not role_sent:
                         yield {"role": "assistant"}
                         role_sent = True
-                    yield {"content": answer}
+                    yield {"thinking_content": span} if is_thinking else {"content": span}
+                if event == _EVENT_MESSAGE_END:
+                    return
 
     # --- best-effort stop -------------------------------------------------------
 

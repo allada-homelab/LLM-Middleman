@@ -178,6 +178,76 @@ async def test_in_stream_error_event_raises(hass: HomeAssistant) -> None:
         await _run(hass, blob, chunk=5)
 
 
+# --- reasoning (<think>) filtering -------------------------------------------
+# Dify injects model reasoning inline into the answer stream as <think>\n...\n</think>
+# (plugin SDK _wrap_thinking_by_reasoning_content); the adapter must route those spans
+# to HA's thinking_content channel so they are never spoken/shown as the reply.
+
+
+def _thinking_of(deltas: list[conversation.AssistantContentDeltaDict]) -> str:
+    return "".join(delta.get("thinking_content") or "" for delta in deltas)
+
+
+async def test_think_block_routed_to_thinking_content(hass: HomeAssistant) -> None:
+    # Wrapper shape on the wire: "<think>\n" opens on the first reasoning delta, the
+    # body streams bare, "\n</think>" closes glued to the first answer text.
+    blob = sse_bytes(
+        _msg("<think>\nLet me reason"),
+        _msg(" about it"),
+        _msg("\n</think>\n\nThe answer"),
+        _msg(" is 4."),
+        _end(),
+    )
+    deltas = await _run(hass, blob, chunk=9)
+    assert deltas[0] == {"role": "assistant"}
+    assert _thinking_of(deltas) == "\nLet me reason about it\n"
+    assert _text_of(deltas) == "The answer is 4."
+
+
+async def test_think_tag_split_across_answer_deltas(hass: HomeAssistant) -> None:
+    # Models emitting literal <think> tokens can split the tag string itself across
+    # deltas; the filter must carry state (and a partial-tag tail) across chunks.
+    blob = sse_bytes(_msg("<thi"), _msg("nk>pondering</th"), _msg("ink>Answer"), _end())  # codespell:ignore thi
+    deltas = await _run(hass, blob, chunk=1)
+    assert deltas[0] == {"role": "assistant"}
+    assert _thinking_of(deltas) == "pondering"
+    assert _text_of(deltas) == "Answer"
+
+
+async def test_think_block_within_single_delta(hass: HomeAssistant) -> None:
+    deltas = await _run(hass, sse_bytes(_msg("<think>hmm</think>Yes."), _end()), chunk=6)
+    assert _thinking_of(deltas) == "hmm"
+    assert _text_of(deltas) == "Yes."
+
+
+async def test_multiple_think_blocks_interleaved(hass: HomeAssistant) -> None:
+    blob = sse_bytes(_msg("<think>a</think>one "), _msg("<think>b</think>two"), _end())
+    deltas = await _run(hass, blob, chunk=8)
+    assert _thinking_of(deltas) == "ab"
+    assert _text_of(deltas) == "one two"
+
+
+async def test_unclosed_think_block_stays_thinking(hass: HomeAssistant) -> None:
+    # A stream that ends mid-reasoning must not leak the reasoning as content.
+    deltas = await _run(hass, sse_bytes(_msg("<think>never closed"), _end()), chunk=5)
+    assert deltas[0] == {"role": "assistant"}
+    assert _thinking_of(deltas) == "never closed"
+    assert _text_of(deltas) == ""
+
+
+async def test_partial_tag_tail_flushed_as_content_at_end(hass: HomeAssistant) -> None:
+    # A withheld partial-tag suffix that never completes is real text — flush it.
+    deltas = await _run(hass, sse_bytes(_msg("Answer <thi"), _end()), chunk=4)  # codespell:ignore thi
+    assert _text_of(deltas) == "Answer <thi"  # codespell:ignore thi
+
+
+async def test_stray_close_tag_passes_through_as_content(hass: HomeAssistant) -> None:
+    # An unbalanced </think> with no open tag is ordinary text, not a mode switch.
+    deltas = await _run(hass, sse_bytes(_msg("ok</think>done"), _end()), chunk=5)
+    assert _thinking_of(deltas) == ""
+    assert _text_of(deltas) == "ok</think>done"
+
+
 # --- request shape ----------------------------------------------------------
 
 

@@ -31,6 +31,10 @@ loop is tracked separately and not enabled in this build.
 ² These backends run their own tools server-side — the integration passes text through and
 does not expose Home Assistant's tools to them.
 
+Reasoning models behind Dify stream their thinking inline as `<think>…</think>`; the
+integration routes those spans to Home Assistant's thinking channel, so they are never
+spoken or shown as the reply.
+
 ## Configuration model
 
 Configuration follows Home Assistant's parent-entry + subentries pattern (the same model
