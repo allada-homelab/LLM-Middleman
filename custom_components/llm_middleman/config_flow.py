@@ -45,6 +45,7 @@ from .backends import BACKEND_TO_CLS
 from .backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
 from .const import (
     BACKEND_CONVERSE,
+    BACKEND_DIFY,
     BACKEND_LANGGRAPH,
     BACKEND_N8N,
     BACKEND_OLLAMA,
@@ -92,6 +93,7 @@ _BACKEND_TITLES = {
     BACKEND_OLLAMA: "Ollama",
     BACKEND_CONVERSE: "Custom /v1/converse",
     BACKEND_N8N: "n8n",
+    BACKEND_DIFY: "Dify",
 }
 
 
@@ -138,6 +140,16 @@ def _converse_schema() -> vol.Schema:
         {
             vol.Required(CONF_BASE_URL): _url_field(),
             vol.Optional(CONF_TOKEN): _password_field(),
+        }
+    )
+
+
+def _dify_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            # Unlike the other presets, Dify's app key is mandatory, not optional.
+            vol.Required(CONF_BASE_URL): _url_field(),
+            vol.Required(CONF_API_KEY): _password_field(),
         }
     )
 
@@ -217,6 +229,7 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
             BACKEND_OLLAMA: self.async_step_ollama,
             BACKEND_CONVERSE: self.async_step_converse,
             BACKEND_N8N: self.async_step_n8n,
+            BACKEND_DIFY: self.async_step_dify,
         }
         return await steps[self._backend_type]()
 
@@ -248,6 +261,17 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
         """n8n connection step. The webhook URL is opaque and stored verbatim."""
         return await self._async_connection_step(_n8n_schema(), url_key=None, user_input=user_input)
 
+    async def async_step_dify(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Dify connection step.
+
+        The API root includes ``/v1`` (Dify Cloud is ``https://api.dify.ai/v1``); accept
+        both the root and the ``/v1`` form by appending ``/v1`` when absent, so the stored
+        base URL is always the ``/v1`` root the adapter posts against.
+        """
+        return await self._async_connection_step(
+            _dify_schema(), url_key=CONF_BASE_URL, user_input=user_input, append_v1_suffix=True
+        )
+
     async def _async_connection_step(
         self,
         schema: vol.Schema,
@@ -255,6 +279,7 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
         url_key: str | None,
         user_input: dict[str, Any] | None,
         strip_v1_suffix: bool = False,
+        append_v1_suffix: bool = False,
     ) -> ConfigFlowResult:
         """Shared per-backend connection handler: normalize, probe, create/update.
 
@@ -262,8 +287,10 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
         double-slashes ``/v1//models`` → 404); ``None`` leaves an opaque URL (n8n
         webhook) untouched. ``strip_v1_suffix`` additionally drops one trailing ``/v1``
         for backends that hardcode the ``/v1`` prefix (openai_compat), so the stored
-        base URL is always the server root. Validation calls the adapter's real-endpoint
-        probe and maps its typed errors; ``BackendAuthError`` subclasses
+        base URL is always the server root; ``append_v1_suffix`` is the inverse — it
+        adds ``/v1`` when absent, so the stored base URL is always the ``/v1`` root
+        (dify, whose API convention includes ``/v1``). Validation calls the adapter's
+        real-endpoint probe and maps its typed errors; ``BackendAuthError`` subclasses
         ``BackendConnectionError`` so it is caught first.
         """
         errors: dict[str, str] = {}
@@ -274,6 +301,8 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 normalized = str(data[url_key]).rstrip("/")
                 if strip_v1_suffix:
                     normalized = normalized.removesuffix("/v1")
+                if append_v1_suffix and not normalized.endswith("/v1"):
+                    normalized += "/v1"
                 data[url_key] = normalized
 
             adapter_cls = BACKEND_TO_CLS[self._backend_type]
