@@ -1486,15 +1486,15 @@ wheels = [
 
 [[package]]
 name = "hassil"
-version = "3.8.1"
+version = "3.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
     { name = "unicode-rbnf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/af/7f/05b74d6a9e4e92b2daa93373f42b02298bb5fbc34bbf06b32172679b7a6c/hassil-3.8.1.tar.gz", hash = "sha256:b8eade174e29cdf2e87e64884511df8e2a2405b59723afd2ecfba5f11f951b63", size = 63894, upload-time = "2026-06-15T20:57:30.895Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f7/43/f03045634765d117c16bb93e3296dc33f5b53e1a6d0e7c182aeb03a32222/hassil-3.10.0.tar.gz", hash = "sha256:798798a3a4216fa33e940fc92f74b32041f3065c8fce0543661e105f52273441", size = 58696, upload-time = "2026-07-17T19:27:42.805Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/56/f5f4845cf98aeb98aa0dd40e9a4747db5142906cd61b57b8554ed1a8fe1f/hassil-3.8.1-py3-none-any.whl", hash = "sha256:9ec2e1e13ad2b9f37d6ad27beb1f878d1c023a100e9a31bd88dd64d615a3ae3b", size = 53758, upload-time = "2026-06-15T20:57:29.334Z" },
+    { url = "https://files.pythonhosted.org/packages/15/1b/44e15dc73b9938d9f06bfa234070671b7428f7ab0c1eca1c3efe3298e05f/hassil-3.10.0-py3-none-any.whl", hash = "sha256:333fc0f20771e443da8cab2136d97a32f6adf33d9ac5003f1f98021e1c8ba3f4", size = 49028, upload-time = "2026-07-17T19:27:41.663Z" },
 ]
 
 [[package]]
@@ -1821,7 +1821,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "basedpyright" },
-    { name = "hassil", specifier = ">=3.0" },
+    { name = "hassil", specifier = ">=3.10.0" },
     { name = "home-assistant-intents", specifier = ">=2026.2.3" },
     { name = "pre-commit", specifier = ">=4" },
     { name = "pytest", specifier = ">=8.0" },
