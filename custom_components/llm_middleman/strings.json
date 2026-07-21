@@ -91,7 +91,7 @@
                     "api_key": "API key"
                 },
                 "data_description": {
-                    "base_url": "Dify API root including /v1, e.g. https://api.dify.ai/v1 (a trailing slash is stripped, and /v1 is appended if you omit it).",
+                    "base_url": "Dify API root including /v1 (a trailing slash is stripped, and /v1 is appended if you omit it).",
                     "api_key": "The Dify app's API key (starts with app-). Required."
                 }
             }
