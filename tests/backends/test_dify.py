@@ -178,6 +178,61 @@ async def test_in_stream_error_event_raises(hass: HomeAssistant) -> None:
         await _run(hass, blob, chunk=5)
 
 
+# --- <think> reasoning stripped from spoken output --------------------------
+# Reasoning models (e.g. via LiteLLM/llama-swap) inline chain-of-thought as
+# <think>…</think> in the answer; agent-chat apps have no post-processing node,
+# so the raw reasoning reaches the answer stream. HA speaks every content delta
+# aloud, so the adapter must strip think blocks before yielding — keeping only
+# the final prose. Blocks can span multiple deltas and the tags can split across
+# chunk boundaries.
+
+
+async def test_think_blocks_stripped_from_answer(hass: HomeAssistant) -> None:
+    # Multiple <think> blocks (one per ReAct step) then the real answer; only the
+    # final prose is spoken. Tiny chunks split the tags across raw byte boundaries.
+    blob = sse_bytes(
+        _msg("<think>\nLet me check the time.\n</think>"),
+        _msg("<think>\nGot it.\n</think>"),
+        _msg("It's twelve thirty-four PM, sir."),
+        _end(),
+    )
+    deltas = await _run(hass, blob, chunk=3)
+    assert _text_of(deltas) == "It's twelve thirty-four PM, sir."
+    # role-first invariant: emitted exactly once, and only once real content exists.
+    assert deltas[0] == {"role": "assistant"}
+    assert sum(1 for d in deltas if d.get("role")) == 1
+
+
+async def test_think_tags_split_across_deltas_are_stripped(hass: HomeAssistant) -> None:
+    # Opening/closing tags arrive split across separate answer deltas.
+    blob = sse_bytes(
+        _msg("<th"),
+        _msg("ink>reasoning"),
+        _msg(" here</th"),
+        _msg("ink>real answer"),
+        _end(),
+    )
+    assert _text_of(await _run(hass, blob, chunk=4)) == "real answer"
+
+
+async def test_answer_without_think_passes_through(hass: HomeAssistant) -> None:
+    blob = sse_bytes(_msg("Plain answer "), _msg("no tags"), _end())
+    assert _text_of(await _run(hass, blob, chunk=5)) == "Plain answer no tags"
+
+
+async def test_unclosed_think_emits_no_content(hass: HomeAssistant) -> None:
+    # A truncated stream with an open <think> and no close must never speak the
+    # partial reasoning (safe default: drop it entirely).
+    blob = sse_bytes(_msg("<think>\nthinking but cut off"), _end())
+    assert _text_of(await _run(hass, blob, chunk=4)) == ""
+
+
+async def test_literal_angle_bracket_text_preserved(hass: HomeAssistant) -> None:
+    # A bare "<" that is not a think tag must survive (no over-eager swallowing).
+    blob = sse_bytes(_msg("price is < 5 dollars"), _end())
+    assert _text_of(await _run(hass, blob, chunk=3)) == "price is < 5 dollars"
+
+
 # --- request shape ----------------------------------------------------------
 
 

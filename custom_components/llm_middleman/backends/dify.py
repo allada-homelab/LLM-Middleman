@@ -91,6 +91,73 @@ class _ConversationNotFound(Exception):
     """Internal signal: the echoed ``conversation_id`` was rejected (404) — recreate it."""
 
 
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _tag_tail(text: str, tag: str) -> int:
+    """Length of the longest suffix of ``text`` that is a proper prefix of ``tag``.
+
+    Lets the streaming stripper hold back a trailing fragment that might be the
+    start of a tag split across chunk boundaries (e.g. ``"…<th"``) without
+    emitting it prematurely, while a fragment that turns out to be literal text
+    (``"< 5"``) matches nothing and flushes normally.
+    """
+    for k in range(min(len(text), len(tag) - 1), 0, -1):
+        if text[-k:] == tag[:k]:
+            return k
+    return 0
+
+
+class _ThinkStripper:
+    """Stateful streaming filter that removes ``<think>…</think>`` reasoning.
+
+    Reasoning models inline chain-of-thought as ``<think>…</think>`` in the
+    ``answer`` content; an agent-chat app has no node to strip it, so it would be
+    spoken aloud by the voice pipeline. ``feed`` returns only the visible text
+    outside think blocks, correctly handling multiple blocks and tags split
+    across deltas/chunks. An unclosed block at end-of-stream is dropped (its
+    partial reasoning is never emitted).
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._in_think = False
+
+    def feed(self, chunk: str) -> str:
+        """Consume a content delta; return the emittable (non-reasoning) text."""
+        self._buf += chunk
+        out: list[str] = []
+        while self._buf:
+            if not self._in_think:
+                idx = self._buf.find(_THINK_OPEN)
+                if idx == -1:
+                    # Emit all but a possible split-open fragment kept for next feed.
+                    hold = _tag_tail(self._buf, _THINK_OPEN)
+                    out.append(self._buf[: len(self._buf) - hold])
+                    self._buf = self._buf[len(self._buf) - hold :]
+                    break
+                out.append(self._buf[:idx])
+                self._buf = self._buf[idx + len(_THINK_OPEN) :]
+                self._in_think = True
+            else:
+                idx = self._buf.find(_THINK_CLOSE)
+                if idx == -1:
+                    # Inside a block: drop everything but a possible split-close fragment.
+                    hold = _tag_tail(self._buf, _THINK_CLOSE)
+                    self._buf = self._buf[len(self._buf) - hold :]
+                    break
+                self._buf = self._buf[idx + len(_THINK_CLOSE) :]
+                self._in_think = False
+        return "".join(out)
+
+    def flush(self) -> str:
+        """End of stream: emit a held non-tag fragment; drop any unclosed block."""
+        tail = "" if self._in_think else self._buf
+        self._buf = ""
+        return tail
+
+
 def _parse_data(raw: str) -> dict[str, Any] | None:
     """Parse an SSE/HTTP JSON payload as an object, tolerating malformed input."""
     try:
@@ -238,6 +305,7 @@ class DifyAdapter(BackendAdapter):
 
         role_sent = False
         captured = False
+        stripper = _ThinkStripper()
         async with self.session.post(
             f"{self._base_url}/chat-messages",
             data=json.dumps(body),
@@ -287,13 +355,21 @@ class DifyAdapter(BackendAdapter):
                         if cid != conversation_id:
                             await self._remember(session_key, cid, persist)
                 if event == _EVENT_MESSAGE_END:
+                    tail = stripper.flush()
+                    if tail:
+                        if not role_sent:
+                            yield {"role": "assistant"}
+                            role_sent = True
+                        yield {"content": tail}
                     return
                 answer = payload.get("answer")
                 if isinstance(answer, str) and answer:
-                    if not role_sent:
-                        yield {"role": "assistant"}
-                        role_sent = True
-                    yield {"content": answer}
+                    visible = stripper.feed(answer)
+                    if visible:
+                        if not role_sent:
+                            yield {"role": "assistant"}
+                            role_sent = True
+                        yield {"content": visible}
 
     # --- best-effort stop -------------------------------------------------------
 
