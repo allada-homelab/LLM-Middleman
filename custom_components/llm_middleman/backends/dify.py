@@ -313,10 +313,16 @@ class DifyAdapter(BackendAdapter):
             timeout=timeout,
         ) as resp:
             if resp.status == 404 and conversation_id is not None:
-                detail = _parse_data(await resp.text())
-                if detail is not None and detail.get("code") == "conversation_not_exists":
+                # A 404 on an echoed conversation_id means the id is stale (GC'd/deleted) ->
+                # recreate. Dify has shipped more than one wire shape for this: the documented
+                # ``code: conversation_not_exists`` and the live ``code: not_found`` +
+                # "Conversation Not Exists" message. Match either; anything else is a real 404.
+                detail = _parse_data(await resp.text()) or {}
+                code = detail.get("code")
+                message = str(detail.get("message") or "")
+                if code in ("conversation_not_exists", "not_found") or "conversation not exist" in message.lower():
                     raise _ConversationNotFound
-                raise BackendConnectionError(f"Dify chat-messages 404: {detail.get('code') if detail else 'unknown'}")
+                raise BackendConnectionError(f"Dify chat-messages 404: {code or 'unknown'}")
             if resp.status in (401, 403):
                 raise BackendAuthError("Dify rejected the API key")
             if resp.status >= 400:
