@@ -321,7 +321,17 @@ async def test_device_map_persists_across_restart(hass: HomeAssistant, hass_stor
     assert bodies[0]["conversation_id"] == "conv-dev"
 
 
-async def test_stale_conversation_id_dropped_and_retried_once(hass: HomeAssistant) -> None:
+# Dify has shipped >1 wire shape for a stale/deleted conversation_id 404: the documented
+# ``conversation_not_exists`` code and the live ``not_found`` code + "Conversation Not Exists"
+# message. Both must trigger the drop-and-recreate, or the stale id wedges the agent forever.
+@pytest.mark.parametrize(
+    "not_found_body",
+    [
+        '{"code":"conversation_not_exists","message":"gone"}',
+        '{"code":"not_found","message":"Conversation Not Exists. You have requested this URI ...","status":404}',
+    ],
+)
+async def test_stale_conversation_id_dropped_and_retried_once(hass: HomeAssistant, not_found_body: str) -> None:
     state = {"served": 0}
     bodies: list[dict[str, Any]] = []
 
@@ -330,7 +340,7 @@ async def test_stale_conversation_id_dropped_and_retried_once(hass: HomeAssistan
         bodies.append(body)
         if body.get("conversation_id") == "old-id":
             # The echoed id was deleted server-side: pre-stream 404 before any bytes.
-            return FakeStreamResponse([], status=404, text='{"code":"conversation_not_exists","message":"gone"}')
+            return FakeStreamResponse([], status=404, text=not_found_body)
         cid = "new-id" if state["served"] else "old-id"
         state["served"] += 1
         return FakeStreamResponse(chunk_bytes(sse_bytes(_msg("recovered", cid=cid), _end(cid=cid)), 8))
