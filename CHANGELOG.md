@@ -8,6 +8,38 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Nothing yet.
 
+## [1.1.1] - 2026-07-22
+
+### Fixed
+
+- **Dify: strip `<think>` reasoning from streamed answers.** Reasoning-model chain-of-thought
+  (`<think>…</think>`) inlined in the Dify `answer` was forwarded to Home Assistant and spoken
+  aloud by the voice pipeline. It is now stripped mid-stream — handling multiple blocks and tags
+  split across deltas — so only the final reply reaches TTS. (#41)
+- **Dify: recover from a stale/deleted conversation.** The stale-conversation recreate path now
+  recognizes Dify's live `404` `{"code": "not_found", "message": "Conversation Not Exists…"}`
+  response (previously only `conversation_not_exists` was matched), so a deleted or expired
+  `conversation_id` is dropped and the turn retried once instead of wedging the agent on every
+  turn. (#42)
+
+## [1.1.0] - 2026-07-09
+
+### Added
+
+- **Dify backend preset.** First-class Dify support (Chatbot / Agent / Chatflow apps) over the
+  streaming `chat-messages` API, with server-side conversation memory and transparent
+  stale-conversation recreate. (#34)
+- **Client-integration guide** for wiring LiteLLM agents / MCP tools to Home Assistant.
+
+### Fixed
+
+- Replace deprecated `aiohttp.BasicAuth` usage in the n8n backend.
+
+### Internal
+
+- Durable end-to-end regression rig under `scripts/e2e/`, plus scheduled CI and Dependabot to
+  keep the integration from silently rotting.
+
 ## [1.0.0] - 2026-07-05
 
 ### Added
