@@ -6,7 +6,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **Dify advanced-chat (chatflow) apps no longer fail intermittently on tool turns.** The SSE
+  reader capped a single line at 64 KB and raised `BackendStreamError` on any line over it,
+  aborting the whole turn — Home Assistant spoke the "could not reach the assistant" fallback.
+  A Dify chatflow streams verbose `node_finished`/`agent_log` frames; a busy agent node's frame
+  was measured at 130–145 KB, so tool-calling turns failed whenever that frame preceded the
+  answer deltas (agent-chat apps, with small frames, were unaffected). The reader now drains an
+  over-cap line to its terminator and skips it — it is verbose node metadata the Dify adapter
+  already discards, never a content delta — keeping memory bounded (the cap's original purpose)
+  while letting the stream continue to the answer. This is a strict improvement for every
+  backend: an oversized frame that used to kill the turn is now survived.
 
 ## [1.1.1] - 2026-07-22
 

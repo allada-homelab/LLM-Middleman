@@ -22,7 +22,6 @@ from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from custom_components.llm_middleman.backends import BACKEND_TO_CLS, get_backend_cls
-from custom_components.llm_middleman.backends._sse import BackendStreamError
 from custom_components.llm_middleman.backends.base import (
     BackendAuthError,
     BackendConnectionError,
@@ -150,10 +149,12 @@ async def test_error_after_deltas_propagates(hass: HomeAssistant, mock_chat_log:
     assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
 
 
-async def test_oversized_line_raises_backend_stream_error(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
-    blob = b"data: " + b"x" * 70000 + b"\n\n"
-    with pytest.raises(BackendStreamError):
-        await _collect(hass, mock_chat_log, [blob], _ctx())
+async def test_oversized_line_drained_then_stream_continues(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # A data line beyond the reader's cap is drained and skipped (not fatal); a
+    # following valid delta still streams instead of the whole turn aborting.
+    blob = b"data: " + b"x" * 70000 + b"\n\n" + _data_frame({"content": "Hi"}) + b"data: [DONE]\n\n"
+    deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+    assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
 
 
 async def test_malformed_json_raises(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:

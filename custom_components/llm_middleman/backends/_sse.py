@@ -14,8 +14,11 @@ from ``base.py`` to keep the dependency direction one-way.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator, AsyncIterable
 from dataclasses import dataclass
+
+_LOGGER = logging.getLogger(__name__)
 
 _CR = 0x0D
 _LF = 0x0A
@@ -34,10 +37,11 @@ class ServerSentEvent:
 
 
 class BackendStreamError(Exception):
-    """Raised when the byte stream cannot be framed (oversized line).
+    """Raised when a backend stream cannot be consumed.
 
-    Replaces the ``ValueError`` aiohttp raises when a line exceeds its readline
-    cap, so callers can catch a single typed error and map it to the fallback.
+    Adapters raise it to map a stream-level failure (e.g. a backend-sent ``error``
+    frame) to the single fallback path. The framer no longer raises it on an
+    oversized line -- it drains and skips the line instead (see ``async_iter_sse``).
     """
 
 
@@ -52,8 +56,15 @@ async def async_iter_sse(
     ``errors="replace"`` so bad UTF-8 never raises. Consecutive ``data:`` fields
     accumulate and are joined with ``"\\n"``; the event dispatches on the blank
     line. A frame whose data buffer is empty (comment/keepalive-only or
-    event-only) dispatches nothing. An unterminated line exceeding
-    ``max_line_bytes`` raises ``BackendStreamError``.
+    event-only) dispatches nothing.
+
+    An unterminated line exceeding ``max_line_bytes`` is not buffered past the
+    cap: the framer stops accumulating it, drains the remaining bytes up to the
+    terminator, and skips the line (dispatching nothing) so the stream survives.
+    A line over the cap is never a small streaming delta -- for a Dify
+    advanced-chat app it is a verbose ``node_finished`` frame the adapter ignores
+    -- so dropping one line beats aborting the whole turn. This bounds memory
+    (the original guard's purpose) without making an oversized frame fatal.
 
     At EOF a trailing unterminated line is not flushed and a pending
     undispatched event is not emitted -- SSE requires a blank line to dispatch.
@@ -62,6 +73,7 @@ async def async_iter_sse(
     data_values: list[str] = []
     event_type = "message"
     prev_was_cr = False
+    line_overflowed = False  # current line passed the cap: drain to its terminator, then skip it
 
     def _handle_line() -> ServerSentEvent | None:
         nonlocal data_values, event_type
@@ -85,6 +97,18 @@ async def async_iter_sse(
         # id, retry, no-colon, and unknown fields are ignored.
         return None
 
+    def _terminate_line() -> ServerSentEvent | None:
+        # Finish the current line on a CR/LF: dispatch it normally, or -- if it
+        # overflowed the cap and was drained -- skip it (no dispatch).
+        nonlocal line_overflowed
+        if line_overflowed:
+            line_overflowed = False
+            line_buf.clear()
+            return None
+        event = _handle_line()
+        line_buf.clear()
+        return event
+
     async for chunk in stream:
         for byte in chunk:
             if prev_was_cr:
@@ -93,18 +117,27 @@ async def async_iter_sse(
                     # Trailing LF of a CRLF; the CR already terminated the line.
                     continue
             if byte == _CR:
-                event = _handle_line()
-                line_buf.clear()
+                event = _terminate_line()
                 prev_was_cr = True
                 if event is not None:
                     yield event
                 continue
             if byte == _LF:
-                event = _handle_line()
-                line_buf.clear()
+                event = _terminate_line()
                 if event is not None:
                     yield event
                 continue
+            if line_overflowed:
+                # Draining an oversized line: discard bytes until the terminator.
+                continue
             line_buf.append(byte)
             if len(line_buf) > max_line_bytes:
-                raise BackendStreamError(f"SSE line exceeded {max_line_bytes} bytes without a terminator")
+                # Stop buffering (bound memory) and drain the rest of this line to
+                # its terminator, then skip it -- an over-cap line is verbose node
+                # metadata, never a content delta, so this beats aborting the turn.
+                _LOGGER.debug(
+                    "SSE line exceeded %d bytes without a terminator; draining and skipping it",
+                    max_line_bytes,
+                )
+                line_overflowed = True
+                line_buf.clear()

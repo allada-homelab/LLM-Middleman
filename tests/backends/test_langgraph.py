@@ -209,10 +209,12 @@ async def test_malformed_json_frame_is_skipped(hass: HomeAssistant) -> None:
     assert _text_of(await _run_stateless(hass, blob)) == "ok"
 
 
-async def test_oversized_line_raises_backend_stream_error(hass: HomeAssistant) -> None:
+async def test_oversized_line_drained_then_stream_continues(hass: HomeAssistant) -> None:
+    # A data line beyond the reader's cap is drained and skipped (never hangs); a
+    # following token frame still streams instead of the whole turn aborting.
     huge = json.dumps([{"content": "x" * 70000}, {"langgraph_node": "agent"}])
-    with pytest.raises(BackendStreamError):
-        await _run_stateless(hass, sse_bytes(("messages", huge)))
+    blob = sse_bytes(("messages", huge), _msg_frame("ok"))
+    assert _text_of(await _run_stateless(hass, blob)) == "ok"
 
 
 async def test_non_token_events_ignored(hass: HomeAssistant) -> None:
