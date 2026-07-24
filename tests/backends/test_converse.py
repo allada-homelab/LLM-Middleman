@@ -237,15 +237,18 @@ async def test_http_error_status_raises_stream_error(hass: HomeAssistant) -> Non
         await _collect(adapter, ctx)
 
 
-async def test_oversized_line_raises_stream_error(hass: HomeAssistant) -> None:
-    """A data line beyond the reader's cap raises BackendStreamError, never hangs."""
+async def test_oversized_line_drained_then_stream_continues(hass: HomeAssistant) -> None:
+    """A data line beyond the reader's cap is drained and skipped, never hangs; a
+    following valid delta still streams instead of the whole turn aborting."""
     huge = "x" * 70000
-    response = FakeStreamResponse(chunk_bytes(sse_bytes(("text_delta", f'{{"delta":"{huge}"}}')), 8192))
+    blob = sse_bytes(("text_delta", f'{{"delta":"{huge}"}}'), ("text_delta", '{"delta":"Hi"}'), ("done", "{}"))
+    response = FakeStreamResponse(chunk_bytes(blob, 8192))
     adapter = _adapter(hass, response)
     ctx = TurnContext(options={}, memory_key="k")
 
-    with pytest.raises(BackendStreamError):
-        await _collect(adapter, ctx)
+    deltas = await _collect(adapter, ctx)
+
+    assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
 
 
 def test_adapter_classvars() -> None:

@@ -9,10 +9,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
-import pytest
-
 from custom_components.llm_middleman.backends._sse import (
-    BackendStreamError,
     ServerSentEvent,
     async_iter_sse,
 )
@@ -85,9 +82,27 @@ async def test_invalid_utf8_replaced_no_raise() -> None:
     assert events == [ServerSentEvent("message", "�")]
 
 
-async def test_oversized_line_raises() -> None:
-    with pytest.raises(BackendStreamError):
-        await _collect(b"data: " + b"x" * 64 + b"\n\n", max_line_bytes=16)
+async def test_oversized_line_drained_and_skipped() -> None:
+    # An unterminated line over the cap is drained to its terminator and skipped
+    # (dispatches nothing) instead of raising -- the stream survives.
+    events = await _collect(b"data: " + b"x" * 64 + b"\n\n", max_line_bytes=16)
+    assert events == []
+
+
+async def test_oversized_line_then_next_event_still_frames() -> None:
+    # After skipping an oversized line, a following well-formed event frames
+    # normally -- the real reason to drain rather than abort (a Dify chatflow's
+    # huge node_finished frame precedes the answer deltas).
+    events = await _collect(b"data: " + b"x" * 64 + b"\ndata: ok\n\n", max_line_bytes=16)
+    assert events == [ServerSentEvent("message", "ok")]
+
+
+async def test_oversized_line_drained_across_chunks() -> None:
+    # The drain must span chunk boundaries: one byte per chunk, oversized line
+    # then a clean event.
+    payload = b"data: " + b"x" * 64 + b"\ndata: ok\n\n"
+    events = await _collect(*(payload[i : i + 1] for i in range(len(payload))), max_line_bytes=16)
+    assert events == [ServerSentEvent("message", "ok")]
 
 
 async def test_line_at_cap_does_not_raise() -> None:
