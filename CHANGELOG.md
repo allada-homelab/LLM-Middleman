@@ -6,6 +6,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.1.2] - 2026-07-24
+
 ### Fixed
 
 - **Dify advanced-chat (chatflow) apps no longer fail intermittently on tool turns.** The SSE
