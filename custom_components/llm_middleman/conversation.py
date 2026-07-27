@@ -115,12 +115,13 @@ class LLMMiddlemanConversationEntity(
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
         """Forward the turn to the backend and stream the reply back."""
-        # Prepend the current datetime with Eastern timezone so the LLM has temporal
-        # context from chat history — without it a repeated request (e.g. "close the
-        # shades" the next day) looks identical and the model incorrectly reports no
-        # state change.
+        # Prepend the current datetime with HA's configured timezone so the LLM has
+        # temporal context from chat history — without it a repeated request (e.g.
+        # "close the shades" the next day) looks identical and the model incorrectly
+        # reports no state change.
+        tz = ZoneInfo(self.hass.config.time_zone)
         user_input.text = (
-            f"[{datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%d %H:%M:%S %Z')}] {user_input.text}"
+            f"[{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')}] {user_input.text}"
         )
         options = self.subentry.data
 
