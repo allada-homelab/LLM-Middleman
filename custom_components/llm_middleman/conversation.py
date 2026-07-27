@@ -16,7 +16,9 @@ HA tool loop (LLMM-014) — one iteration for text-only turns, up to
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
@@ -113,6 +115,12 @@ class LLMMiddlemanConversationEntity(
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
         """Forward the turn to the backend and stream the reply back."""
+        # Prepend the current datetime with HA's configured timezone so the LLM has
+        # temporal context from chat history — without it a repeated request (e.g.
+        # "close the shades" the next day) looks identical and the model incorrectly
+        # reports no state change.
+        tz = ZoneInfo(self.hass.config.time_zone)
+        user_input.text = f"[{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')}] {user_input.text}"
         options = self.subentry.data
 
         try:
