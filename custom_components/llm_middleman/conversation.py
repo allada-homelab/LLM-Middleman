@@ -118,7 +118,7 @@ class LLMMiddlemanConversationEntity(
         # history — without it a repeated request (e.g. "close the shades" the next
         # day) looks identical and the model incorrectly reports no state change.
         user_input.text = (
-            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {user_input.text}"
+            f"[{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')}] {user_input.text}"
         )
         options = self.subentry.data
 
