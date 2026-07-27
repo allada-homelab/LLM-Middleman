@@ -120,9 +120,7 @@ class LLMMiddlemanConversationEntity(
         # "close the shades" the next day) looks identical and the model incorrectly
         # reports no state change.
         tz = ZoneInfo(self.hass.config.time_zone)
-        user_input.text = (
-            f"[{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')}] {user_input.text}"
-        )
+        user_input.text = f"[{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')}] {user_input.text}"
         options = self.subentry.data
 
         try:
