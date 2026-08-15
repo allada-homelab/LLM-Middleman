@@ -15,7 +15,7 @@ dev = [
     "basedpyright",
     "hassil>=3.10.0",
     "home-assistant-intents>=2026.2.3",
-    "pre-commit>=4.6.1",
+    "pre-commit>=4.6.2",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-homeassistant-custom-component",
