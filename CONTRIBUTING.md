@@ -9,11 +9,28 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management and
 [just](https://just.systems/) as the task runner.
 
 ```bash
-just install     # uv sync --all-groups + install git hooks (pre-commit)
+just install     # uv sync --all-groups --all-extras + install git hooks (pre-commit)
 ```
 
 If you don't have `just`, the underlying commands are visible with `just --list`
 or in the `justfile`.
+
+### Dev container
+
+Open the repo in the dev container (VS Code: *Reopen in Container*) for the full
+toolchain without installing anything on the host.
+
+To use your host SSH keys inside the container (for signed commits and pushes), start
+an SSH agent on the **host** first — `host_setup_scripts/` holds one script per
+platform:
+
+```bash
+./host_setup_scripts/start-host-ssh-agent-mac-linux.sh    # macOS / Linux
+./host_setup_scripts/start-host-ssh-agent-windows.ps1     # Windows (PowerShell)
+```
+
+The container forwards the agent socket, so no private key is ever copied into it.
+
 
 ## Quality gates
 

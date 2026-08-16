@@ -1,0 +1,54 @@
+name: Bug report
+description: Something behaves differently than documented or expected.
+labels: ["bug", "needs-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not use this form for security problems** — see
+        [SECURITY.md](https://github.com/allada-homelab/LLM-Middleman/blob/main/SECURITY.md)
+        for the private reporting channel.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you observed, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows the problem. A failing test is ideal.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`llm-middleman` version (or commit SHA)."
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.13"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Traceback or log lines. Redact secrets.
+      render: text
+    validations:
+      required: false

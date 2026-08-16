@@ -19,14 +19,24 @@ working tree.
 copier update --trust
 ```
 
-- `--trust` is required because the template runs post-generation tasks
-  (`uv sync`, `ruff format`, and on first copy `.env` bootstrap).
+- `--trust` is required because the template runs post-generation tasks (`uv sync`,
+  `ruff format`, and on first copy the `.env` and
+  `secrets/app_secret.txt` bootstrap). Without it copier aborts rather than
+  skipping them.
+- If `pyproject.toml` changed, re-lock before running the gate: `uv sync --all-groups
+  --all-extras` (the update merges the manifest but `uv.lock` is `_skip_if_exists`, so it
+  is left as-is and can be stale).
 - Review the diff, run the gate (`just lint && just typecheck && just test`), commit.
 
 ## Re-answering questions
 
+`copier update` re-asks every question by default, pre-filled with your stored answer —
+press enter to keep one. There is no `--defaults=false`; the switches are:
+
 ```bash
-copier update --trust --defaults=false   # re-prompt every question
+copier update --trust                     # re-prompt everything (pre-filled)
+copier update --trust --skip-answered     # keep every stored answer, no prompts
+copier update --trust --ask 'include_*'   # re-ask only the matching questions
 ```
 
 ## Conflicts

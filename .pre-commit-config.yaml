@@ -20,18 +20,26 @@ repos:
 
   # Local hooks invoke the project's pinned ruff via uv, so the hook, CI, and
   # editor all run the exact same ruff version.
+  #
+  # `--frozen` is load-bearing: a bare `uv run` re-resolves and may rewrite
+  # uv.lock. On a runner pointed at a different index than the lock was built
+  # against — ours resolve via an internal PyPI mirror while the lock holds
+  # files.pythonhosted.org URLs — that rewrites every URL in the file, and
+  # pre-commit then fails the hook with "files were modified by this hook", on
+  # every branch, for a diff no author wrote. A hook must never mutate the
+  # lockfile.
   - repo: local
     hooks:
       - id: ruff-check
         name: ruff check
-        entry: uv run ruff check --force-exclude --fix --exit-non-zero-on-fix
+        entry: uv run --frozen ruff check --force-exclude --fix --exit-non-zero-on-fix
         require_serial: true
         language: system
         types: [python]
 
       - id: ruff-format
         name: ruff format
-        entry: uv run ruff format --force-exclude
+        entry: uv run --frozen ruff format --force-exclude
         require_serial: true
         language: system
         types: [python]
