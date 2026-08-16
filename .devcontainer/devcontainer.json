@@ -40,7 +40,9 @@
   },
 
   "onCreateCommand": "sudo chown vscode:vscode /workspaces /home/vscode/.claude /home/vscode/.codex /home/vscode/.cache /home/vscode/.cache/uv && .devcontainer/post-create.sh",
-  "updateContentCommand": "uv sync --all-groups",
+  // Mirrors post-create.sh and CI: --all-extras, or optional-extra imports resolve
+  // in CI and not in here.
+  "updateContentCommand": "uv sync --all-groups --all-extras",
   "postStartCommand": ".devcontainer/post-start.sh",
 
   "customizations": {

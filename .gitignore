@@ -9,6 +9,10 @@ dist/
 *.egg-info/
 .eggs/
 
+# Docs build output (`mkdocs build`) — generated, and large enough that a stray
+# `git add -A` after building sweeps in dozens of files
+site/
+
 # Test / coverage / type / lint caches
 .pytest_cache/
 .coverage

@@ -123,6 +123,7 @@ deterministically blocks the worst of them, but the responsibility is yours.
    cause. Don't silence the linter, loosen a type, skip a test, or lower the
    coverage floor to make red turn green.
 
+
 ## Anti-Potemkin rule
 
 Every change must be **fully wired or explicitly flagged.** Do not leave a

@@ -25,10 +25,21 @@ deny() {
     exit 0
 }
 
-# 1. bare force push (--force / -f). --force-with-lease is the sanctioned form
-#    (it refuses to clobber unseen remote work) and stays allowed.
-if printf '%s' "$cmd" | grep -qEi 'git[[:space:]]+push([[:space:]]+[^|;&]*)?[[:space:]](--force([=[:space:]]|$)|-f([[:space:]]|$))'; then
+# `git … push`, allowing git's own global options in between — `git -C <dir> push` is
+# routine here because the project ships a worktree workflow.
+git_push='git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-][^[:space:]]*)?)*[[:space:]]+push'
+
+# 1a. bare force push (--force / -f). --force-with-lease is the sanctioned form (it
+#     refuses to clobber unseen remote work) and stays allowed — the `[=[:space:]]|$`
+#     guard is what lets it through.
+if printf '%s' "$cmd" | grep -qEi "${git_push}([[:space:]]+[^|;&]*)?[[:space:]](--force([=[:space:]]|\$)|-f([[:space:]]|\$))"; then
     deny "Hard rule: never bare --force push. Use --force-with-lease, or rebase onto origin/main and push normally; if the branch is published, add a new commit instead."
+fi
+
+# 1b. a leading `+` on the refspec force-updates the remote ref with no flag present
+#     at all, so the flag check above never sees it.
+if printf '%s' "$cmd" | grep -qE "${git_push}[^|;&]*[[:space:]]\+[^[:space:]]"; then
+    deny "Hard rule: never force-push. A '+refspec' (e.g. 'git push origin +main') force-updates the remote ref just like --force. Push without the '+', or use --force-with-lease if you must overwrite."
 fi
 
 # 2. bypass commit/push verification (--no-verify, or commit -n)

@@ -12,8 +12,10 @@ root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 
 # Bootstrap deps on first run (fail-open: a sync failure must not block the session).
 if [ ! -d "$root/.venv" ] && command -v uv >/dev/null 2>&1; then
-    echo "- .venv missing — running 'uv sync --all-groups'..."
-    uv sync --all-groups --project "$root" >/dev/null 2>&1 || echo "  WARNING: uv sync failed; run 'just install' manually."
+    # --all-extras matters: CI and basedpyright both assume extras are installed, so a
+    # bare --all-groups sync leaves strict type-checking red on optional-extra imports.
+    echo "- .venv missing — running 'uv sync --all-groups --all-extras'..."
+    uv sync --all-groups --all-extras --project "$root" >/dev/null 2>&1 || echo "  WARNING: uv sync failed; run 'just install' manually."
 fi
 
 # Seed .env from the example if present and not yet created.
