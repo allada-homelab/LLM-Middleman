@@ -1,6 +1,6 @@
 # Changes here will be overwritten by Copier; NEVER edit manually.
 # Re-render with `copier update`.
-_commit: v0.21.0-1-g9f430f6
+_commit: v0.23.0
 _src_path: gh:allada-homelab/python-template
 author_email: davidanilallada@gmail.com
 author_name: David Allada
