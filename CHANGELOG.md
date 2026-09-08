@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-07-23
+
 ### Fixed
 
 - **Dify advanced-chat (chatflow) apps no longer fail intermittently on tool turns.** The SSE
@@ -17,7 +19,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   over-cap line to its terminator and skips it — it is verbose node metadata the Dify adapter
   already discards, never a content delta — keeping memory bounded (the cap's original purpose)
   while letting the stream continue to the answer. This is a strict improvement for every
-  backend: an oversized frame that used to kill the turn is now survived.
+  backend: an oversized frame that used to kill the turn is now survived. (#44)
 
 ## [1.1.1] - 2026-07-22
 
