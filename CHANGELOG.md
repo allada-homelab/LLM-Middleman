@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Declare the `voluptuous-openapi` runtime dependency in `manifest.json`.** The
+  `ollama`/`openai_compat` backends import `voluptuous_openapi`, but it was never
+  declared in `requirements`. It previously arrived in the HA runtime transitively
+  via `homeassistant`; when HA dropped it from its own deps (2026.9.x), the
+  integration failed to import at load and the whole component went `unavailable`,
+  taking the conversation agent (e.g. Dify "New Jarvis") down with it. Now declared
+  explicitly. Also adds a regression guard test (`tests/test_manifest_requirements.py`)
+  that asserts every third-party module the integration imports is declared in
+  `manifest.json` `requirements` — independent of what `homeassistant` happens to
+  provide, so a future HA dep-removal can't silently break the integration again.
+
 ## [1.1.3] - 2026-07-27
 
 ### Added
