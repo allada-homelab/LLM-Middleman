@@ -1,9 +1,10 @@
 #!/usr/bin/env sh
 # Runs on the HOST before the container is created. Ensures the files the
-# read-only mounts bind to exist, so Docker doesn't materialize .gitconfig as a
-# directory, and prepares the git plumbing the container needs to work in a
-# linked worktree. POSIX hosts execute this script; on Windows, cmd.exe resolves
-# `.devcontainer/initialize` to initialize.cmd via PATHEXT.
+# read-only mounts bind to exist, so Docker doesn't materialize one as a
+# directory, prepares the git plumbing the container needs to work in a linked
+# worktree, and gives the container a usable git identity. POSIX hosts execute
+# this script; on Windows, cmd.exe resolves `.devcontainer/initialize` to
+# initialize.cmd via PATHEXT.
 set -eu
 # Every path below is resolved with `cd`; a CDPATH inherited from the host's
 # shell would silently redirect that.
@@ -21,9 +22,10 @@ if command -v docker >/dev/null 2>&1; then
 fi
 
 mkdir -p "$HOME/.ssh"
-# Docker materialises a missing bind source as a directory, which is the very
-# thing the line below exists to prevent. If that already happened, say so —
-# under `set -e` the bare redirect would abort with an unattributable shell error.
+# The git-identity section at the end of this script reads the host's global
+# config, and git reports a fatal when that path is not a readable file. An
+# earlier revision bind-mounted ~/.gitconfig itself, so a run from before it
+# existed may have left Docker's auto-created directory behind.
 if [ -d "$HOME/.gitconfig" ]; then
     echo "initialize: $HOME/.gitconfig is a directory, not a file. Docker created it" >&2
     echo "  that way during an earlier run. Remove it and start the container again." >&2
@@ -93,3 +95,49 @@ elif [ "$gitdir" = "$common" ]; then
 else
     printf 'gitdir: /gitcommon/worktrees/%s\n' "$(basename -- "$gitdir")" > "$dc/.gitentry"
 fi
+
+# ---------------------------------------------------------------------------
+# Git identity
+#
+# The container gets a FLATTENED copy of the host's effective *global* config
+# rather than a bind mount of ~/.gitconfig itself. A ~/.gitconfig that is only
+# an `[include]` / `[includeIf]` shim — dotfiles managers, work/personal splits —
+# points at paths that are not mounted, so the include resolves to nothing in
+# there: `git config --get user.email` exits 1 and every commit, and every test
+# that makes one, dies with "unable to auto-detect email address".
+#
+# `--includes` resolves those on the host, where the targets exist; `--global`
+# keeps this to the user's own config so the repository's *local* settings are
+# not promoted into the container's global one; and `-C "$ws"` gives git the
+# repository context that `includeIf gitdir:` conditions are evaluated against
+# (without it they are all false and a work/personal split picks neither).
+#
+# Values are copied verbatim, including helpers and pagers that name host
+# binaries: those simply fail to resolve in the container, exactly as they do
+# today for a host whose ~/.gitconfig has no includes.
+# ---------------------------------------------------------------------------
+gitconfig_host="$dc/.gitconfig.host"
+# rm -rf, not rm -f: a run before this file existed let Docker materialise the
+# missing bind source as a directory.
+rm -rf "$gitconfig_host"
+# Created even when the host has no global config, so the bind source always
+# exists as a file. 0600 because credential and signing config can land in here.
+(umask 077 && : > "$gitconfig_host")
+
+git -C "$ws" config --global --includes --list | while IFS= read -r entry; do
+    key=${entry%%=*}
+    case "$key" in
+        # Already resolved above, and their targets are not mounted.
+        include.* | includeif.*) continue ;;
+        # `--list` is line-based, so a value containing a newline arrives as
+        # further lines that are not `section.key=value`. Warn and skip rather
+        # than feed git a bogus key: a failure here means no container at all.
+        *.*) ;;
+        *)
+            echo "initialize: skipping unparsable git config entry: $entry" >&2
+            continue
+            ;;
+    esac
+    git config -f "$gitconfig_host" --add "$key" "${entry#*=}" ||
+        echo "initialize: could not copy git config '$key' to $gitconfig_host" >&2
+done

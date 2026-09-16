@@ -5,6 +5,11 @@ echo "==> Configuring git defaults..."
 if [ -f /home/vscode/.gitconfig.host ]; then
     git config --global include.path /home/vscode/.gitconfig.host
 fi
+# Warn, never fail: a host with no identity configured should still get a
+# container. But say so here, because the symptom otherwise turns up much later
+# as "unable to auto-detect email address" from a commit or a test.
+git config --get user.email > /dev/null ||
+    echo "post-create: WARNING no git user.email — set it on the host (git config --global user.email) and rerun devcontainer up --remove-existing-container" >&2
 git config --global core.autocrlf &>/dev/null || git config --global core.autocrlf input
 git config --global core.eol &>/dev/null || git config --global core.eol lf
 git config --global init.defaultBranch &>/dev/null || git config --global init.defaultBranch main

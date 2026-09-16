@@ -46,6 +46,33 @@ push from the host, or from a VS Code terminal.
    missing — socket not mounted, or daemon unreachable — and never claims the
    container is ready after a failure.
 
+## Git identity
+
+Git in the container needs a `user.email`, or every commit — and every test that makes
+one — dies with `unable to auto-detect email address`. It does **not** get that by
+mounting your `~/.gitconfig`: on many machines that file is only an `[include]` /
+`[includeIf]` shim pointing at a dotfiles checkout or a work/personal split, and those
+paths are not mounted, so the include resolves to nothing in here.
+
+Instead `.devcontainer/initialize` writes a **flattened** copy of your effective global
+config — `git config --global --includes --list`, with the `include.*` / `includeif.*`
+directives themselves dropped — to `.devcontainer/.gitconfig.host`, which is what
+`devcontainer.json` bind-mounts read-only and `post-create.sh` pulls in with
+`git config --global include.path`. It is rewritten on every `up`, so a change on the
+host reaches the container on the next start, and it is git-ignored
+(`.devcontainer/.gitignore`): it is host-specific and can hold credential settings.
+
+Two things to know:
+
+- Values are copied verbatim, so settings naming a host binary (`core.pager = delta`,
+  a `credential.helper` path) simply fail to resolve in here.
+- `includeIf "gitdir:…"` conditions are evaluated against **this** repository, so a
+  work/personal split gives the container the identity that repository would get on the
+  host.
+
+If the host has no `user.email` at all, `post-create.sh` says so and the container still
+builds; set it on the host and recreate the container.
+
 ## Git worktrees
 
 In a linked worktree (`git worktree add ../feature-x`), `.git` is a *file* holding an

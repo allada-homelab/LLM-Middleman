@@ -12,7 +12,11 @@
     // HOME ‖ USERPROFILE form so Windows hosts don't bind the filesystem
     // root (one of the two env vars is always empty per OS).
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,readonly",
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.gitconfig,target=/home/vscode/.gitconfig.host,type=bind,readonly",
+    // Not ~/.gitconfig itself: that file is often only an [include]/[includeIf]
+    // shim pointing at paths this container cannot see, which leaves git in here
+    // with no user.email. .devcontainer/initialize writes a flattened copy of the
+    // host's effective global config to this path first — see that script.
+    "source=${localWorkspaceFolder}/.devcontainer/.gitconfig.host,target=/home/vscode/.gitconfig.host,type=bind,readonly",
     // Shared uv cache (cross-worktree reuse) — survives rebuilds.
     "source=llm-middleman-uv-cache,target=/home/vscode/.cache/uv,type=volume",
     // Per-worktree named volumes for agentic CLI state. Survives rebuilds,

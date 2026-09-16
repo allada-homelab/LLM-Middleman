@@ -69,6 +69,33 @@ if exist "%WS%\.git\" (
     for %%I in ("%GITDIR%") do set "WTNAME=%%~nxI"
     > "%DC%\.gitentry" echo gitdir: /gitcommon/worktrees/!WTNAME!
 )
+
+rem Git identity. devcontainer.json binds .devcontainer\.gitconfig.host rather
+rem than %USERPROFILE%\.gitconfig, because that file is often only an [include] /
+rem [includeIf] shim naming paths the container cannot see, which leaves git in
+rem there with no user.email. Flatten the host's effective global config into it;
+rem .devcontainer/initialize carries the full reasoning and must stay in step.
+rem Values containing `!` are mangled by delayed expansion — untested, like the
+rem rest of this file; post-create.sh warns when no identity survived the copy.
+call :replace "%DC%\.gitconfig.host" || exit /b 1
+type nul > "%DC%\.gitconfig.host"
+for /f "delims=" %%L in ('git -C "%WS%" config --global --includes --list 2^>nul') do call :copycfg "%%L"
+exit /b 0
+
+rem Copy one `section.key=value` entry into .gitconfig.host, splitting on the
+rem FIRST `=` so values may contain more of them.
+:copycfg
+set "CFGKEY="
+set "CFGVAL="
+for /f "tokens=1* delims==" %%A in ("%~1") do (
+    set "CFGKEY=%%A"
+    set "CFGVAL=%%B"
+)
+rem Already resolved above, and their targets are not mounted.
+if /i "!CFGKEY:~0,8!"=="include." exit /b 0
+if /i "!CFGKEY:~0,10!"=="includeif." exit /b 0
+git config -f "%DC%\.gitconfig.host" --add "!CFGKEY!" "!CFGVAL!" >nul
+if errorlevel 1 echo initialize: could not copy git config "!CFGKEY!" to "%DC%\.gitconfig.host". 1>&2
 exit /b 0
 
 rem Remove one path whatever type it currently has, without ever following a

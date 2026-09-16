@@ -3,3 +3,8 @@
 # absolute host paths, so it is never committed. See ./initialize.
 .gitcommon
 .gitentry
+
+# Flattened copy of the host user's effective global git config, written by
+# ./initialize and bind-mounted read-only so git in the container has an
+# identity. Host-specific (and may hold credential settings). See ./initialize.
+.gitconfig.host
