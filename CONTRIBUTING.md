@@ -18,18 +18,30 @@ or in the `justfile`.
 ### Dev container
 
 Open the repo in the dev container (VS Code: *Reopen in Container*) for the full
-toolchain without installing anything on the host.
+toolchain without installing anything on the host. It works from a linked `git
+worktree` as well as the main checkout — see [docs/devcontainer.md](docs/devcontainer.md)
+for what makes that work and the rest of the container's contract.
 
-To use your host SSH keys inside the container (for signed commits and pushes), start
-an SSH agent on the **host** first — `host_setup_scripts/` holds one script per
-platform:
+From the terminal, drive it with the `@devcontainers/cli` (no editor needed):
+
+```bash
+npx -y @devcontainers/cli@0.87.0 up --workspace-folder .
+npx -y @devcontainers/cli@0.87.0 exec --workspace-folder . -- just test
+```
+
+Pass the **host** path to `--workspace-folder`; never prefix these with
+`DOCKER_HOST=…` — the container needs the rootful daemon, which is the default.
+
+VS Code forwards your SSH agent into the container, so signed commits and pushes
+work there without copying a private key in. The CLI does **not** forward the
+agent: start one on the host and commit/push from the host, or use the scripts in
+`host_setup_scripts/` (one per platform) if you drive the container from VS Code
+and your agent is not already running:
 
 ```bash
 ./host_setup_scripts/start-host-ssh-agent-mac-linux.sh    # macOS / Linux
 ./host_setup_scripts/start-host-ssh-agent-windows.ps1     # Windows (PowerShell)
 ```
-
-The container forwards the agent socket, so no private key is ever copied into it.
 
 
 ## Quality gates
