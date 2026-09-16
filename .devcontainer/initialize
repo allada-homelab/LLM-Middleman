@@ -74,6 +74,12 @@ gitdir=$(cd -- "$ws" && cd -- "$(git rev-parse --git-dir)" && pwd)
 # Replace rather than update: a previous run — or Docker auto-creating a missing
 # bind source — may have left either path as a directory of the wrong type.
 rm -rf "$dc/.gitcommon" "$dc/.gitentry"
+
+# The .venv named volume mounts INSIDE the workspace bind mount. Docker creates
+# a missing mount point as root on the host, which a later host-side `uv sync`
+# cannot remove (EACCES). Pre-create it as the host user so the mount point is
+# ours; the volume shadows it in-container either way.
+mkdir -p "$ws/.venv"
 ln -s "$common" "$dc/.gitcommon"
 
 # Branch on what `.git` actually IS, not on whether the git dir happens to equal
