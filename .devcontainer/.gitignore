@@ -1,0 +1,5 @@
+# Host-specific git plumbing created by ./initialize and bind-mounted into the
+# container so a git worktree checkout can resolve its gitdir. Points at
+# absolute host paths, so it is never committed. See ./initialize.
+.gitcommon
+.gitentry

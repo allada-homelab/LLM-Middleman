@@ -1,7 +1,95 @@
 #!/usr/bin/env sh
 # Runs on the HOST before the container is created. Ensures the files the
 # read-only mounts bind to exist, so Docker doesn't materialize .gitconfig as a
-# directory. POSIX hosts execute this script; on Windows, cmd.exe resolves
+# directory, and prepares the git plumbing the container needs to work in a
+# linked worktree. POSIX hosts execute this script; on Windows, cmd.exe resolves
 # `.devcontainer/initialize` to initialize.cmd via PATHEXT.
+set -eu
+# Every path below is resolved with `cd`; a CDPATH inherited from the host's
+# shell would silently redirect that.
+unset CDPATH
+
+# A rootless daemon remaps the container's uid into a host subuid range, so
+# everything written through the workspace bind mount lands owned by a phantom
+# high uid and `.git` is unwritable from inside. Fail here rather than after a
+# five-minute build. Silent when docker is absent — the CLI reports that itself.
+if command -v docker >/dev/null 2>&1; then
+    if docker info -f '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then
+        echo "initialize: docker is rootless; dev containers require the rootful daemon (uid mapping breaks the bind mount). Unset DOCKER_HOST." >&2
+        exit 1
+    fi
+fi
+
 mkdir -p "$HOME/.ssh"
+# Docker materialises a missing bind source as a directory, which is the very
+# thing the line below exists to prevent. If that already happened, say so —
+# under `set -e` the bare redirect would abort with an unattributable shell error.
+if [ -d "$HOME/.gitconfig" ]; then
+    echo "initialize: $HOME/.gitconfig is a directory, not a file. Docker created it" >&2
+    echo "  that way during an earlier run. Remove it and start the container again." >&2
+    exit 1
+fi
 [ -f "$HOME/.gitconfig" ] || : > "$HOME/.gitconfig"
+
+# ---------------------------------------------------------------------------
+# Git worktree support
+#
+# In a linked worktree, <workspace>/.git is a FILE holding an absolute pointer
+# ("gitdir: /abs/parent/.git/worktrees/<name>") into the parent repository —
+# a path outside the workspace bind mount. Git inside the container therefore
+# dies during repository discovery with "fatal: not a git repository: (null)",
+# and onCreateCommand exits 128 before anything else runs.
+#
+# devcontainer.json mounts are static and cannot branch on host state, so this
+# script always produces the same two paths and devcontainer.json always mounts
+# them; only what they point at differs:
+#
+#   .gitcommon -> the git COMMON dir            , mounted at /gitcommon
+#   .gitentry  -> what the container sees as .git, mounted over <ws>/.git
+#
+# A bind mount's source type must match its target type (a directory cannot be
+# mounted over a file, or vice versa), which is why .gitentry is a plain file in
+# a worktree — where the host's .git is a file — and a symlink to the real .git
+# directory in a normal checkout, where mounting it back over itself is a no-op.
+# ---------------------------------------------------------------------------
+dc=$(cd -- "$(dirname -- "$0")" && pwd)
+ws=$(dirname -- "$dc")
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "initialize: git not found on the host; cannot prepare the container's" >&2
+    echo "  git mounts. Install git, or the container will start without a" >&2
+    echo "  usable repository." >&2
+    exit 1
+fi
+if ! git -C "$ws" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "initialize: $ws is not a git working tree. The dev container mounts the" >&2
+    echo "  repository's git directory and cannot be built without one. Run" >&2
+    echo "  'git init' in the project first." >&2
+    exit 1
+fi
+
+common=$(cd -- "$ws" && cd -- "$(git rev-parse --git-common-dir)" && pwd)
+gitdir=$(cd -- "$ws" && cd -- "$(git rev-parse --git-dir)" && pwd)
+
+# Replace rather than update: a previous run — or Docker auto-creating a missing
+# bind source — may have left either path as a directory of the wrong type.
+rm -rf "$dc/.gitcommon" "$dc/.gitentry"
+
+# The .venv named volume mounts INSIDE the workspace bind mount. Docker creates
+# a missing mount point as root on the host, which a later host-side `uv sync`
+# cannot remove (EACCES). Pre-create it as the host user so the mount point is
+# ours; the volume shadows it in-container either way.
+mkdir -p "$ws/.venv"
+ln -s "$common" "$dc/.gitcommon"
+
+# Branch on what `.git` actually IS, not on whether the git dir happens to equal
+# the common dir: a `--separate-git-dir` checkout has `.git` as a *file* while
+# those two are equal, and treating it as a normal checkout would make .gitentry a
+# directory symlink that Docker then refuses to mount over a file.
+if [ -d "$ws/.git" ]; then
+    ln -s "$gitdir" "$dc/.gitentry"
+elif [ "$gitdir" = "$common" ]; then
+    printf 'gitdir: /gitcommon\n' > "$dc/.gitentry"
+else
+    printf 'gitdir: /gitcommon/worktrees/%s\n' "$(basename -- "$gitdir")" > "$dc/.gitentry"
+fi

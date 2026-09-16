@@ -10,6 +10,20 @@ git config --global core.eol &>/dev/null || git config --global core.eol lf
 git config --global init.defaultBranch &>/dev/null || git config --global init.defaultBranch main
 git config --global core.editor &>/dev/null || git config --global core.editor "vim"
 git config --global --add safe.directory '*'
+# The container mounts the git common dir but not the host paths the sibling
+# worktrees live at, so a linked worktree that is alive and well on the host still
+# reads as `prunable` in here. `git gc` prunes worktrees, and this is the only knob
+# that stops it. (`git worktree prune` ignores this setting entirely — never run it
+# in here.)
+git config --global gc.worktreePruneExpire never
+
+echo "==> Verifying git works in this workspace..."
+# The point of the .gitcommon/.gitentry mounts is a container where git genuinely
+# works, not one that merely starts. `set -e` makes a broken setup fail here,
+# loudly, rather than surfacing later as a wrong answer from a gate run.
+git rev-parse --git-dir > /dev/null
+git status --porcelain > /dev/null
+echo "    git OK: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(no commits yet)')"
 
 echo "==> Installing Python dependencies (all dev groups + extras)..."
 # --all-extras matters: CI syncs with it, so without it an optional-extra import
@@ -23,8 +37,35 @@ echo "==> Installing just as a uv tool..."
 uv tool install rust-just==1.55.1
 
 echo "==> Installing pre-commit hooks..."
-uv run pre-commit install
-uv run pre-commit install --hook-type post-checkout
-uv run pre-commit install --hook-type post-merge
+# A hooks dir we cannot write to means the container user's uid does not match the
+# host's on the bind mount. Say that, rather than letting pre-commit fail with a
+# bare EACCES. `--git-path hooks` is load-bearing: in a worktree `.git` is a file
+# and the hooks live in the shared common dir, not `./.git/hooks`.
+hooks_dir=$(git rev-parse --path-format=absolute --git-path hooks)
+if [ ! -w "$hooks_dir" ]; then
+    echo "post-create: $hooks_dir is not writable (uid mismatch between host and container user; see the devcontainer contract)" >&2
+    exit 1
+fi
+
+# Git hooks live in the COMMON dir, which a linked worktree shares with the parent
+# repository and every sibling worktree. Installing from in here would rewrite that
+# one shared hook to point at ${containerWorkspaceFolder}/.venv/bin/python, a path
+# that exists on no host; pre-commit's generated hook then exits 1 for the host and
+# for every sibling worktree at once. Only install when the hooks we would write are
+# this workspace's own.
+workspace=$(git rev-parse --show-toplevel)
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+case "$common_dir" in
+    "$workspace"/*)
+        uv run pre-commit install
+        uv run pre-commit install --hook-type post-checkout
+        uv run pre-commit install --hook-type post-merge
+        ;;
+    *)
+        echo "    Skipped: this is a linked worktree, and its hooks live in"
+        echo "    $common_dir, shared with the parent repository. Commit from the"
+        echo "    host, where the installed hook's interpreter actually exists."
+        ;;
+esac
 
 echo "==> Dev container setup complete!"

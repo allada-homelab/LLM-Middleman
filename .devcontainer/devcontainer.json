@@ -20,7 +20,20 @@
     // Volume names are scoped with ${devcontainerId} so sibling worktrees
     // don't clobber each other.
     "source=llm-middleman-claude-${devcontainerId},target=/home/vscode/.claude,type=volume",
-    "source=llm-middleman-codex-${devcontainerId},target=/home/vscode/.codex,type=volume"
+    "source=llm-middleman-codex-${devcontainerId},target=/home/vscode/.codex,type=volume",
+    // The venv is container-only. Shared through the bind mount, host uv sees a
+    // symlink to an interpreter that does not exist on the host, deletes the venv
+    // and rebuilds it for host Python; container uv then does the same in reverse.
+    "source=llm-middleman-venv-${devcontainerId},target=${containerWorkspaceFolder}/.venv,type=volume",
+    // Git worktree support. Both sources are produced on the host by
+    // .devcontainer/initialize, which is where the full explanation lives.
+    // In a worktree, .git is a file pointing at the parent repo's
+    // .git/worktrees/<name> — outside this mount — so git inside the container
+    // cannot resolve it and onCreateCommand exits 128. These two mounts are
+    // unconditional because mounts cannot branch on host state; in a normal
+    // checkout they resolve to the repository's own .git and are a no-op.
+    "source=${localWorkspaceFolder}/.devcontainer/.gitcommon,target=/gitcommon,type=bind",
+    "source=${localWorkspaceFolder}/.devcontainer/.gitentry,target=/workspaces/${localWorkspaceFolderBasename}/.git,type=bind"
   ],
 
   "features": {
@@ -30,6 +43,10 @@
   },
 
   "remoteUser": "vscode",
+  // The CLI's default, stated so it is not silently flipped: the container user is
+  // re-numbered to the host uid/gid, which is what keeps files written in here
+  // owned by you on the bind mount (and .git writable — see post-create.sh).
+  "updateRemoteUserUID": true,
 
   "containerEnv": {
     "UV_LINK_MODE": "copy",
@@ -39,7 +56,7 @@
     "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
   },
 
-  "onCreateCommand": "sudo chown vscode:vscode /workspaces /home/vscode/.claude /home/vscode/.codex /home/vscode/.cache /home/vscode/.cache/uv && .devcontainer/post-create.sh",
+  "onCreateCommand": "sudo chown vscode:vscode /workspaces /home/vscode/.claude /home/vscode/.codex /home/vscode/.cache /home/vscode/.cache/uv ${containerWorkspaceFolder}/.venv && .devcontainer/post-create.sh",
   // Mirrors post-create.sh and CI: --all-extras, or optional-extra imports resolve
   // in CI and not in here.
   "updateContentCommand": "uv sync --all-groups --all-extras",
