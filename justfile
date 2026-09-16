@@ -43,10 +43,6 @@ fmt:
 fmt-check:
     uv run ruff format --check .
 
-# Run tests.
-test:
-    uv run pytest tests/
-
 # Verify the lockfile is current.
 lock-check:
     uv lock --check
