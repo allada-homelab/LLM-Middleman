@@ -112,9 +112,10 @@ fi
 # repository context that `includeIf gitdir:` conditions are evaluated against
 # (without it they are all false and a work/personal split picks neither).
 #
-# Values are copied verbatim, including helpers and pagers that name host
-# binaries: those simply fail to resolve in the container, exactly as they do
-# today for a host whose ~/.gitconfig has no includes.
+# Values are copied verbatim, including pagers that name host binaries: those
+# simply fail to resolve in the container, exactly as they do today for a host
+# whose ~/.gitconfig has no includes. Credential helpers are the one exception
+# and are skipped below.
 # ---------------------------------------------------------------------------
 gitconfig_host="$dc/.gitconfig.host"
 # rm -rf, not rm -f: a run before this file existed let Docker materialise the
@@ -129,6 +130,15 @@ git -C "$ws" config --global --includes --list | while IFS= read -r entry; do
     case "$key" in
         # Already resolved above, and their targets are not mounted.
         include.* | includeif.*) continue ;;
+        # Credential HELPERS are host-specific and must not cross into the
+        # container: the editor forwards its own helper via /etc/gitconfig, and
+        # a copied `gh auth setup-git` block both clears that list (its blank
+        # `helper =` reset) and names a host-only binary. The result was the
+        # dotfiles clone failing with "could not read Username" before any
+        # lifecycle command ran, and never being retried (2026-09-17). Only the
+        # helper keys are dropped: credential.useHttpPath and friends shape the
+        # request the forwarded helper receives and must still come across.
+        credential.helper | credential.*.helper) continue ;;
         # `--list` is line-based, so a value containing a newline arrives as
         # further lines that are not `section.key=value`. Warn and skip rather
         # than feed git a bogus key: a failure here means no container at all.
