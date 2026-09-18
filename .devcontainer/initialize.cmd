@@ -94,10 +94,11 @@ for /f "tokens=1* delims==" %%A in ("%~1") do (
 rem Already resolved above, and their targets are not mounted.
 if /i "!CFGKEY:~0,8!"=="include." exit /b 0
 if /i "!CFGKEY:~0,10!"=="includeif." exit /b 0
-rem Credential helpers are host-specific: the editor forwards its own via
+rem Credential HELPERS are host-specific: the editor forwards its own via
 rem /etc/gitconfig, and a copied `gh auth setup-git` block clears that list
-rem (blank `helper =`) and names a host-only binary. See initialize.
-if /i "!CFGKEY:~0,11!"=="credential." exit /b 0
+rem (blank `helper =`) and names a host-only binary. Other credential.*
+rem keys (useHttpPath) still come across. See initialize.
+if /i "!CFGKEY:~0,11!"=="credential." if /i "!CFGKEY:~-7!"==".helper" exit /b 0
 git config -f "%DC%\.gitconfig.host" --add "!CFGKEY!" "!CFGVAL!" >nul
 if errorlevel 1 echo initialize: could not copy git config "!CFGKEY!" to "%DC%\.gitconfig.host". 1>&2
 exit /b 0
