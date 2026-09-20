@@ -30,10 +30,17 @@ git rev-parse --git-dir > /dev/null
 git status --porcelain > /dev/null
 echo "    git OK: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(no commits yet)')"
 
+echo "==> Installing the pinned Python (.python-version) as the default python..."
+# --default puts python/python3 symlinks in ~/.local/bin (on PATH via containerEnv),
+# so a bare `python` in here is the uv-managed interpreter the venv is built on,
+# not the image's own.
+uv python install --default
+
 echo "==> Installing Python dependencies (all dev groups + extras)..."
 # --all-extras matters: CI syncs with it, so without it an optional-extra import
 # typechecks red in here and green in CI, which reads as a broken container.
-uv sync --all-groups --all-extras
+# --locked: a stale uv.lock fails here instead of being silently re-resolved.
+uv sync --locked --all-groups --all-extras
 
 echo "==> Installing just as a uv tool..."
 # The justfile is the documented dev loop, so `just` has to exist in the container

@@ -45,6 +45,14 @@ push from the host, or from a VS Code terminal.
    mount** and nothing else. `.devcontainer/post-start.sh` reports which half is
    missing — socket not mounted, or daemon unreachable — and never claims the
    container is ready after a failure.
+7. **The venv always matches `uv.lock`.** `uv sync --locked --all-groups --all-extras`
+   runs on create (`updateContentCommand`), on every start (`post-start.sh`, warn-only)
+   and after every checkout/merge (the `uv-sync` pre-commit hook). A stale lock is
+   reported, never silently re-resolved.
+8. **`python` is the uv-managed interpreter from `.python-version`.** `post-create.sh`
+   runs `uv python install --default`, `containerEnv` puts `~/.local/bin` first on
+   PATH, and `UV_PYTHON_PREFERENCE=only-managed` stops uv from picking the image's
+   own Python. VS Code uses `${workspaceFolder}/.venv/bin/python`.
 
 ## Git identity
 

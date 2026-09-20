@@ -6,13 +6,13 @@ default:
 
 # Install deps (all groups + extras) and git hooks.
 install:
-    uv sync --all-groups --all-extras
+    uv sync --locked --all-groups --all-extras
     uv run pre-commit install
     uv run pre-commit install --hook-type post-checkout --hook-type post-merge
 
 # Sync deps to the lockfile.
 sync:
-    uv sync --all-groups --all-extras
+    uv sync --locked --all-groups --all-extras
 
 # Run unit tests.
 test:

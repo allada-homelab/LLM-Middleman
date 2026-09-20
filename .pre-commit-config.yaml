@@ -47,7 +47,7 @@ repos:
       # Keep the venv current after branch switches / merges.
       - id: uv-sync
         name: uv sync
-        entry: uv sync --locked --dev
+        entry: uv sync --locked --all-groups --all-extras
         pass_filenames: false
         language: system
         always_run: true
