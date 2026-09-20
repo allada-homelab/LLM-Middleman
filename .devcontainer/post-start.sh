@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "==> Syncing Python dependencies to uv.lock..."
+# Every start, not just create: the workspace may have been checked out or merged
+# on the host while the container was down. Warn rather than fail — a failing
+# postStartCommand refuses to start the container on every start.
+uv sync --locked --all-groups --all-extras ||
+    echo "WARNING: uv sync --locked failed — uv.lock is stale or unreadable; run \`uv lock\` and \`just sync\`" >&2
+
 # The docker-outside-of-docker feature binds the host daemon socket to
 # /var/run/docker-host.sock and proxies it to /var/run/docker.sock, so the two
 # checks below distinguish "the socket was never mounted" from "it is mounted but

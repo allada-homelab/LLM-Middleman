@@ -54,16 +54,25 @@
 
   "containerEnv": {
     "UV_LINK_MODE": "copy",
+    // Never fall back to the image's /usr/local/bin/python: .python-version alone
+    // decides which (uv-managed) interpreter the venv is built on. Container-scoped,
+    // not [tool.uv], so CI keeps its setup-python matrix.
+    "UV_PYTHON_PREFERENCE": "only-managed",
     "SHELL": "/usr/bin/zsh"
   },
   "remoteEnv": {
+    // uv tool shims and the `uv python install --default` python/python3 symlinks
+    // live here; the image only adds it to PATH from an interactive rc file, which
+    // lifecycle hooks and `devcontainer exec` never source. remoteEnv, not
+    // containerEnv: only remoteEnv may reference ${containerEnv:PATH}.
+    "PATH": "/home/vscode/.local/bin:${containerEnv:PATH}",
     "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
   },
 
   "onCreateCommand": "sudo chown vscode:vscode /workspaces /home/vscode/.claude /home/vscode/.codex /home/vscode/.cache /home/vscode/.cache/uv ${containerWorkspaceFolder}/.venv && .devcontainer/post-create.sh",
   // Mirrors post-create.sh and CI: --all-extras, or optional-extra imports resolve
   // in CI and not in here.
-  "updateContentCommand": "uv sync --all-groups --all-extras",
+  "updateContentCommand": "uv sync --locked --all-groups --all-extras",
   "postStartCommand": ".devcontainer/post-start.sh",
 
   "customizations": {
