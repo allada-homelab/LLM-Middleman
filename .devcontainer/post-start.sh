@@ -8,6 +8,18 @@ echo "==> Syncing Python dependencies to uv.lock..."
 uv sync --locked --all-groups --all-extras ||
     echo "WARNING: uv sync --locked failed — uv.lock is stale or unreadable; run \`uv lock\` and \`just sync\`" >&2
 
+# Warn only. A bind mount re-resolves its source path on every container START, so
+# with a stable host socket path a stop+start heals a dead agent; only a changed
+# path needs a recreate.
+if [ -S "${SSH_AUTH_SOCK:-}" ]; then
+    ssh_rc=0
+    ssh-add -l > /dev/null 2>&1 || ssh_rc=$?
+    case "$ssh_rc" in
+        2) echo "WARNING: SSH agent socket is dead (host agent restarted since this container was created/started) — stop+start the container" >&2 ;;
+        1) echo "WARNING: host SSH agent has no keys loaded — run ssh-add on the host" >&2 ;;
+    esac
+fi
+
 # The docker-outside-of-docker feature binds the host daemon socket to
 # /var/run/docker-host.sock and proxies it to /var/run/docker.sock, so the two
 # checks below distinguish "the socket was never mounted" from "it is mounted but

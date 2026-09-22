@@ -10,6 +10,14 @@ rem than handing anyone a silently empty repository.
 setlocal enabledelayedexpansion
 
 if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"
+rem known_hosts is bind-mounted as a second trust file, so it must exist as a
+rem FILE. No agent check here: the Windows agent is a named pipe VS Code bridges,
+rem and SSH_AUTH_SOCK is normally unset, which devcontainer.json maps to /dev/null.
+if exist "%USERPROFILE%\.ssh\known_hosts\" (
+    echo initialize: "%USERPROFILE%\.ssh\known_hosts" is a directory, not a file. Remove it and start the container again. 1>&2
+    exit /b 1
+)
+if not exist "%USERPROFILE%\.ssh\known_hosts" type nul > "%USERPROFILE%\.ssh\known_hosts"
 if not exist "%USERPROFILE%\.gitconfig" type nul > "%USERPROFILE%\.gitconfig"
 
 set "DC=%~dp0"
@@ -79,18 +87,32 @@ rem Values containing `!` are mangled by delayed expansion — untested, like th
 rem rest of this file; post-create.sh warns when no identity survived the copy.
 call :replace "%DC%\.gitconfig.host" || exit /b 1
 type nul > "%DC%\.gitconfig.host"
-for /f "delims=" %%L in ('git -C "%WS%" config --global --includes --list 2^>nul') do call :copycfg "%%L"
+rem Listed to a file first: `for /f` over a command cannot see git's exit code, and
+rem a failed read must stop here rather than start a container with no identity.
+set "CFGLIST=%TEMP%\gitconfig-host-%RANDOM%.list"
+git -C "%WS%" config --global --includes --list > "%CFGLIST%"
+if errorlevel 1 (
+    del /q "%CFGLIST%" 2>nul
+    echo initialize: 'git config --global --includes --list' failed; cannot write "%DC%\.gitconfig.host". 1>&2
+    exit /b 1
+)
+for /f "usebackq delims=" %%L in ("%CFGLIST%") do call :copycfg "%%L"
+del /q "%CFGLIST%"
 exit /b 0
 
 rem Copy one `section.key=value` entry into .gitconfig.host, splitting on the
 rem FIRST `=` so values may contain more of them.
 :copycfg
+set "CFGLINE=%~1"
 set "CFGKEY="
 set "CFGVAL="
 for /f "tokens=1* delims==" %%A in ("%~1") do (
     set "CFGKEY=%%A"
     set "CFGVAL=%%B"
 )
+rem A valueless boolean ([core] bare) lists as a bare key with no `=`; git reads
+rem it as true. An explicit empty value (`helper =`) still has its `=`.
+if "!CFGKEY!"=="!CFGLINE!" set "CFGVAL=true"
 rem Already resolved above, and their targets are not mounted.
 if /i "!CFGKEY:~0,8!"=="include." exit /b 0
 if /i "!CFGKEY:~0,10!"=="includeif." exit /b 0
@@ -99,6 +121,10 @@ rem /etc/gitconfig, and a copied `gh auth setup-git` block clears that list
 rem (blank `helper =`) and names a host-only binary. Other credential.*
 rem keys (useHttpPath) still come across. See initialize.
 if /i "!CFGKEY:~0,11!"=="credential." if /i "!CFGKEY:~-7!"==".helper" exit /b 0
+rem Keys naming host binaries (delta and the like) break `git log` / `add -p`.
+if /i "!CFGKEY!"=="core.pager" exit /b 0
+if /i "!CFGKEY:~0,6!"=="pager." exit /b 0
+if /i "!CFGKEY!"=="interactive.difffilter" exit /b 0
 git config -f "%DC%\.gitconfig.host" --add "!CFGKEY!" "!CFGVAL!" >nul
 if errorlevel 1 echo initialize: could not copy git config "!CFGKEY!" to "%DC%\.gitconfig.host". 1>&2
 exit /b 0

@@ -21,7 +21,29 @@ if command -v docker >/dev/null 2>&1; then
     fi
 fi
 
-mkdir -p "$HOME/.ssh"
+# SSH: the container gets the host's agent socket, never ~/.ssh itself (see
+# devcontainer.json). known_hosts is bind-mounted as a second trust file, so it
+# must exist as a FILE: a missing source fails `docker run`.
+# shellcheck disable=SC2174  # $HOME exists, so -m lands on .ssh, the only dir created
+mkdir -p -m 700 "$HOME/.ssh"
+if [ -d "$HOME/.ssh/known_hosts" ]; then
+    echo "initialize: $HOME/.ssh/known_hosts is a directory, not a file. Docker creates" >&2
+    echo "  a missing bind source that way. Remove it and start the container again." >&2
+    exit 1
+fi
+[ -f "$HOME/.ssh/known_hosts" ] || : > "$HOME/.ssh/known_hosts"
+# devcontainer.json binds ${localEnv:SSH_AUTH_SOCK:/dev/null}: the default covers
+# only an UNSET variable. Docker rejects an empty or missing bind source with an
+# error that names neither, and a dead socket mounts fine but serves nothing.
+if [ -z "${SSH_AUTH_SOCK+set}" ]; then
+    echo "initialize: WARNING SSH_AUTH_SOCK is unset — the container gets no SSH agent (fine for CI; start one on the host for git over ssh)" >&2
+elif [ -z "$SSH_AUTH_SOCK" ]; then
+    echo "initialize: SSH_AUTH_SOCK is set but empty — docker rejects an empty bind source; unset it or start an agent" >&2
+    exit 1
+elif [ ! -S "$SSH_AUTH_SOCK" ]; then
+    echo "initialize: SSH_AUTH_SOCK=$SSH_AUTH_SOCK is not a live socket (stale agent env?) — start the agent / fix the env and retry" >&2
+    exit 1
+fi
 # The git-identity section at the end of this script reads the host's global
 # config, and git reports a fatal when that path is not a readable file. An
 # earlier revision bind-mounted ~/.gitconfig itself, so a run from before it
@@ -112,10 +134,7 @@ fi
 # repository context that `includeIf gitdir:` conditions are evaluated against
 # (without it they are all false and a work/personal split picks neither).
 #
-# Values are copied verbatim, including pagers that name host binaries: those
-# simply fail to resolve in the container, exactly as they do today for a host
-# whose ~/.gitconfig has no includes. Credential helpers are the one exception
-# and are skipped below.
+# Values are copied verbatim except for keys that name host binaries (below).
 # ---------------------------------------------------------------------------
 gitconfig_host="$dc/.gitconfig.host"
 # rm -rf, not rm -f: a run before this file existed let Docker materialise the
@@ -125,20 +144,32 @@ rm -rf "$gitconfig_host"
 # exists as a file. 0600 because credential and signing config can land in here.
 (umask 077 && : > "$gitconfig_host")
 
-git -C "$ws" config --global --includes --list | while IFS= read -r entry; do
-    key=${entry%%=*}
+# Captured first: POSIX sh has no pipefail, so a failing git on the left of a
+# pipe would silently produce an empty copy — a container with no identity.
+if ! host_config=$(git -C "$ws" config --global --includes --list); then
+    echo "initialize: 'git config --global --includes --list' failed (see above); cannot write $gitconfig_host" >&2
+    exit 1
+fi
+printf '%s\n' "$host_config" | while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    case "$entry" in
+        *=*) key=${entry%%=*} value=${entry#*=} ;;
+        # A valueless boolean (`[core] bare`) lists as a bare key; git reads it as true.
+        *) key=$entry value=true ;;
+    esac
+    # `--list` lowercases section and key names, so these patterns need no case folding.
     case "$key" in
         # Already resolved above, and their targets are not mounted.
         include.* | includeif.*) continue ;;
-        # Credential HELPERS are host-specific and must not cross into the
-        # container: the editor forwards its own helper via /etc/gitconfig, and
-        # a copied `gh auth setup-git` block both clears that list (its blank
-        # `helper =` reset) and names a host-only binary. The result was the
-        # dotfiles clone failing with "could not read Username" before any
-        # lifecycle command ran, and never being retried (2026-09-17). Only the
-        # helper keys are dropped: credential.useHttpPath and friends shape the
-        # request the forwarded helper receives and must still come across.
+        # Credential HELPERS are host-specific: the editor forwards its own helper
+        # via /etc/gitconfig, and a copied `gh auth setup-git` block both clears
+        # that list (its blank `helper =` reset) and names a host-only binary.
+        # credential.useHttpPath and friends shape the request the forwarded
+        # helper receives, so they still come across.
         credential.helper | credential.*.helper) continue ;;
+        # Name host binaries (delta and the like): copied, they break `git log`
+        # and `git add -p` in here instead of falling back to the defaults.
+        core.pager | pager.* | interactive.difffilter) continue ;;
         # `--list` is line-based, so a value containing a newline arrives as
         # further lines that are not `section.key=value`. Warn and skip rather
         # than feed git a bogus key: a failure here means no container at all.
@@ -148,6 +179,6 @@ git -C "$ws" config --global --includes --list | while IFS= read -r entry; do
             continue
             ;;
     esac
-    git config -f "$gitconfig_host" --add "$key" "${entry#*=}" ||
+    git config -f "$gitconfig_host" --add "$key" "$value" ||
         echo "initialize: could not copy git config '$key' to $gitconfig_host" >&2
 done
