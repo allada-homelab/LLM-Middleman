@@ -32,15 +32,17 @@ npx -y @devcontainers/cli@0.87.0 exec --workspace-folder . -- just test
 Pass the **host** path to `--workspace-folder`; never prefix these with
 `DOCKER_HOST=…` — the container needs the rootful daemon, which is the default.
 
-VS Code forwards your SSH agent into the container, so signed commits and pushes
-work there without copying a private key in. The CLI does **not** forward the
-agent: start one on the host and commit/push from the host, or use the scripts in
-`host_setup_scripts/` (one per platform) if you drive the container from VS Code
-and your agent is not already running:
+Git over SSH in the container goes through your **host's SSH agent**; no key
+file is mounted. VS Code forwards the agent itself, and for the CLI
+`devcontainer.json` mounts the socket named by `SSH_AUTH_SOCK` when the container
+is created — see [docs/devcontainer.md](docs/devcontainer.md#ssh). So start the
+agent (with your key loaded) **before** `up`. If none is running, use the script
+for your platform. The macOS / Linux one must be *sourced*, so the agent's
+environment reaches your shell:
 
 ```bash
-./host_setup_scripts/start-host-ssh-agent-mac-linux.sh    # macOS / Linux
-./host_setup_scripts/start-host-ssh-agent-windows.ps1     # Windows (PowerShell)
+. host_setup_scripts/start-host-ssh-agent-mac-linux.sh     # macOS / Linux
+./host_setup_scripts/start-host-ssh-agent-windows.ps1      # Windows (PowerShell)
 ```
 
 

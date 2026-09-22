@@ -1,6 +1,8 @@
 {
   "name": "LLM Middleman",
-  "image": "mcr.microsoft.com/devcontainers/python:3.14",
+  // 3-<python>-trixie: image major and Debian release pinned (a bare
+  // python:<ver> tag floats across both), still receiving patch rebuilds.
+  "image": "mcr.microsoft.com/devcontainers/python:3-3.14-trixie",
   "init": true,
 
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
@@ -9,9 +11,20 @@
   "initializeCommand": ".devcontainer/initialize",
 
   "mounts": [
-    // HOME ‖ USERPROFILE form so Windows hosts don't bind the filesystem
-    // root (one of the two env vars is always empty per OS).
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,readonly",
+    // SSH: the host's agent, never its key files — anything in here (including
+    // bypass-mode agents) can sign with the host key but not copy it. VS Code
+    // forwards its own agent on top; this one serves the CLI / `devcontainer exec`.
+    // Unset on the host → /dev/null and post-create.sh warns.
+    "source=${localEnv:SSH_AUTH_SOCK:/dev/null},target=/ssh-agent.sock,type=bind",
+    // Container-owned ~/.ssh so known_hosts is writable and survives rebuilds.
+    "source=llm-middleman-ssh-${devcontainerId},target=/home/vscode/.ssh,type=volume",
+    // Hosts the host already trusts, read-only, as a second trust file.
+    // HOME ‖ USERPROFILE: normally only one is set; under Git Bash/MSYS both can be.
+    // An empty or missing source is a hard mount error, not a bind of the host root.
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh/known_hosts,target=/home/vscode/.ssh/known_hosts.host,type=bind,readonly",
+    // GitHub's published host keys, pinned in the repo (api.github.com/meta
+    // ssh_keys), so github.com is verified with no trust-on-first-use.
+    "source=${localWorkspaceFolder}/.devcontainer/ssh_known_hosts,target=/etc/ssh/ssh_known_hosts,type=bind,readonly",
     // Not ~/.gitconfig itself: that file is often only an [include]/[includeIf]
     // shim pointing at paths this container cannot see, which leaves git in here
     // with no user.email. .devcontainer/initialize writes a flattened copy of the
@@ -42,7 +55,9 @@
 
   "features": {
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false },
-    "ghcr.io/va-h/devcontainers-features/uv:1": { "shellautocompletion": true },
+    // Pinned: the option defaults to `latest`. Same uv as the template's service
+    // Dockerfile; nothing bumps it automatically.
+    "ghcr.io/va-h/devcontainers-features/uv:1": { "version": "0.12.1", "shellautocompletion": true },
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
 
@@ -58,7 +73,9 @@
     // decides which (uv-managed) interpreter the venv is built on. Container-scoped,
     // not [tool.uv], so CI keeps its setup-python matrix.
     "UV_PYTHON_PREFERENCE": "only-managed",
-    "SHELL": "/usr/bin/zsh"
+    "SHELL": "/usr/bin/zsh",
+    // containerEnv, not remoteEnv: `docker exec` and agent processes must see it.
+    "SSH_AUTH_SOCK": "/ssh-agent.sock"
   },
   "remoteEnv": {
     // uv tool shims and the `uv python install --default` python/python3 symlinks
@@ -69,7 +86,7 @@
     "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
   },
 
-  "onCreateCommand": "sudo chown vscode:vscode /workspaces /home/vscode/.claude /home/vscode/.codex /home/vscode/.cache /home/vscode/.cache/uv ${containerWorkspaceFolder}/.venv && .devcontainer/post-create.sh",
+  "onCreateCommand": "sudo chown vscode:vscode /workspaces /home/vscode/.claude /home/vscode/.codex /home/vscode/.ssh /home/vscode/.cache /home/vscode/.cache/uv ${containerWorkspaceFolder}/.venv && .devcontainer/post-create.sh",
   // Mirrors post-create.sh and CI: --all-extras, or optional-extra imports resolve
   // in CI and not in here.
   "updateContentCommand": "uv sync --locked --all-groups --all-extras",
@@ -89,7 +106,6 @@
         "eamodio.gitlens"
       ],
       "settings": {
-        "claude-code.permissions.defaultMode": "bypassPermissions",
         "terminal.integrated.defaultProfile.linux": "zsh"
       }
     }

@@ -10,10 +10,12 @@ fi
 # as "unable to auto-detect email address" from a commit or a test.
 git config --get user.email > /dev/null ||
     echo "post-create: WARNING no git user.email — set it on the host (git config --global user.email) and rerun devcontainer up --remove-existing-container" >&2
-git config --global core.autocrlf &>/dev/null || git config --global core.autocrlf input
-git config --global core.eol &>/dev/null || git config --global core.eol lf
-git config --global init.defaultBranch &>/dev/null || git config --global init.defaultBranch main
-git config --global core.editor &>/dev/null || git config --global core.editor "vim"
+# --includes: a --global read otherwise ignores the include.path above, so these
+# "only if unset" guards would always overwrite the host's own values.
+git config --global --includes --get core.autocrlf &>/dev/null || git config --global core.autocrlf input
+git config --global --includes --get core.eol &>/dev/null || git config --global core.eol lf
+git config --global --includes --get init.defaultBranch &>/dev/null || git config --global init.defaultBranch main
+git config --global --includes --get core.editor &>/dev/null || git config --global core.editor "vim"
 git config --global --add safe.directory '*'
 # The container mounts the git common dir but not the host paths the sibling
 # worktrees live at, so a linked worktree that is alive and well on the host still
@@ -21,6 +23,20 @@ git config --global --add safe.directory '*'
 # that stops it. (`git worktree prune` ignores this setting entirely — never run it
 # in here.)
 git config --global gc.worktreePruneExpire never
+
+echo "==> Configuring SSH..."
+chmod 700 ~/.ssh
+# New host keys are learned into the writable volume file (the first one listed);
+# hosts the host machine already trusts come from its read-only known_hosts, and
+# github.com from the pinned /etc/ssh/ssh_known_hosts. Written once: the volume
+# persists, so later hand edits are kept.
+if [ ! -e ~/.ssh/config ]; then
+    printf 'UserKnownHostsFile ~/.ssh/known_hosts ~/.ssh/known_hosts.host\n' > ~/.ssh/config
+    chmod 600 ~/.ssh/config
+fi
+# Warn, never fail: VS Code forwards its own agent regardless of this one.
+[ -S /ssh-agent.sock ] ||
+    echo "post-create: WARNING no host SSH agent mounted (SSH_AUTH_SOCK unset on the host at create time) — ssh from devcontainer exec / the CLI has no key. Start one on the host (host_setup_scripts/) and rerun devcontainer up --remove-existing-container" >&2
 
 echo "==> Verifying git works in this workspace..."
 # The point of the .gitcommon/.gitentry mounts is a container where git genuinely
@@ -31,7 +47,7 @@ git status --porcelain > /dev/null
 echo "    git OK: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(no commits yet)')"
 
 echo "==> Installing the pinned Python (.python-version) as the default python..."
-# --default puts python/python3 symlinks in ~/.local/bin (on PATH via containerEnv),
+# --default puts python/python3 symlinks in ~/.local/bin (on PATH via remoteEnv),
 # so a bare `python` in here is the uv-managed interpreter the venv is built on,
 # not the image's own.
 uv python install --default
