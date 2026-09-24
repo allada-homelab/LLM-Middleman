@@ -58,7 +58,11 @@
     // Pinned: the option defaults to `latest`. Same uv as the template's service
     // Dockerfile; nothing bumps it automatically.
     "ghcr.io/va-h/devcontainers-features/uv:1": { "version": "0.12.1", "shellautocompletion": true },
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    // Local Feature: the official ghcr.io/anthropics/devcontainer-features/claude-code
+    // has no version option, and AGENTS.md is only read by Claude Code >= 2.1.277.
+    // The pinned version and its checksums live in claude-code/install.sh.
+    "./claude-code": {}
   },
 
   "remoteUser": "vscode",

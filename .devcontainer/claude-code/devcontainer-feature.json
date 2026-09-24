@@ -1,0 +1,10 @@
+{
+  "id": "claude-code",
+  "version": "1.0.0",
+  "name": "Claude Code (pinned native binary)",
+  "description": "Installs one pinned, checksum-verified Claude Code release to /usr/local/bin. The version and checksums live in install.sh.",
+  "options": {},
+  "containerEnv": {
+    "DISABLE_AUTOUPDATER": "1"
+  }
+}

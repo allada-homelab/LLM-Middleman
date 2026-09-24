@@ -66,6 +66,7 @@ docs:
 # Serve the docs with live reload.
 docs-serve:
     uv run --group docs mkdocs serve
+
 # Validate the compose configuration.
 compose-config:
     docker compose config

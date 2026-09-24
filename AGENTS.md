@@ -1,8 +1,8 @@
-# CLAUDE.md
+# AGENTS.md
 
-Guidance for Claude Code (claude.ai/code) working in **LLM Middleman**.
+Guidance for coding agents (Claude Code, pi, dsh) working in **LLM Middleman**.
 
-This file is Claude-facing. It is a starting point — ground-truth lives in code, not here.
+This file is agent-facing. It is a starting point — ground-truth lives in code, not here.
 Verify directory layout and recipe availability against `git log` and the actual
 filesystem before trusting any specific claim below.
 
@@ -73,6 +73,9 @@ This is a **HACS custom integration, not a pip package** — there is intentiona
   `pyrightconfig.json` scopes the type-check to `custom_components/llm_middleman` + `tests`.
 - `justfile` — the task runner; every routine command has a recipe.
 - `.claude/` — project hooks and settings (committed, except `settings.local.json`).
+- `.agents/skills/` — project skills and slash commands; `.claude/skills` is a symlink to it.
+  Keep instructions in this file: a `CLAUDE.md` or `CLAUDE.local.md` makes Claude Code
+  stop reading `AGENTS.md`.
 
 ## Workflow (post-v1 maintenance)
 
@@ -114,8 +117,9 @@ These are non-negotiable. A project hook (`.claude/hooks/deny-guardrails.sh`)
 deterministically blocks the worst of them, but the responsibility is yours.
 
 1. **Never commit directly to `main`.** Branch, push, open a PR.
-2. **Never force-push** (`--force` / `-f` / `--force-with-lease`). Rebase onto
-   `origin/main` and push normally; if a branch is published, add a new commit.
+2. **Never force-push without explicit human confirmation**, and then only
+   `--force-with-lease` — never bare `--force` / `-f` / `+refspec`. By default, rebase
+   only unpublished work; update a published branch by merging `origin/main`.
 3. **Never bypass the gate** with `--no-verify`, and never amend-then-push a
    published commit.
 4. **Never merge red.** Failing lint, types, or tests block the merge — full stop.
