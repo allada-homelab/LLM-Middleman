@@ -26,6 +26,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:  # gives a compromised release time to be yanked before we adopt it
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore"
@@ -37,12 +39,15 @@ updates:
       python-minor-and-patch:
         update-types: ["minor", "patch"]
 
-  # GitHub Actions versions in our workflows.
+  # GitHub Actions in our workflows. They are SHA-pinned with a `# vX.Y.Z`
+  # comment; Dependabot bumps the SHA and the comment together.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:  # gives a compromised release time to be yanked before we adopt it
+      default-days: 7
     open-pull-requests-limit: 3
     commit-message:
       prefix: "chore"
@@ -53,11 +58,33 @@ updates:
     groups:
       actions-minor-and-patch:
         update-types: ["minor", "patch"]
+
+  # pre-commit hook revs (.pre-commit-config.yaml), frozen to SHAs with a
+  # `# frozen: vX.Y.Z` comment that Dependabot keeps in step.
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:  # gives a compromised release time to be yanked before we adopt it
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    labels:
+      - "deps"
+      - "needs-review"
+    groups:
+      pre-commit-minor-and-patch:
+        update-types: ["minor", "patch"]
   # Devcontainer base image + features.
   - package-ecosystem: "devcontainers"
     directory: "/"
     schedule:
       interval: "monthly"
+    cooldown:  # gives a compromised release time to be yanked before we adopt it
+      default-days: 7
     open-pull-requests-limit: 2
     commit-message:
       prefix: "chore"
@@ -66,11 +93,14 @@ updates:
       - "deps"
       - "needs-review"
 
-  # Docker base images (digest-pinned FROM lines in static Dockerfiles).
+  # Docker base images (FROM lines). Bumps the tag, and refreshes an
+  # `@sha256:` digest alongside it when a FROM line carries one.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "monthly"
+    cooldown:  # gives a compromised release time to be yanked before we adopt it
+      default-days: 7
     open-pull-requests-limit: 2
     commit-message:
       prefix: "chore"

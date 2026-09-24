@@ -9,11 +9,18 @@ on:
   schedule:
     - cron: '15 3 * * 1'
 
+permissions: {}
+
 jobs:
   hassfest:
     name: Hassfest
     runs-on: ubuntu-latest
+    permissions:
+      contents: read  # actions/checkout
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # @master is HA's documented usage for hassfest; do not pin
-      - uses: home-assistant/actions/hassfest@master
+        with:
+          persist-credentials: false
+      # HA publishes no release tags for this action (only a stale 1.0.0), so pin
+      # master's SHA; it runs the untagged hassfest image, which still tracks HA.
+      - uses: home-assistant/actions/hassfest@58bff37c8947f690ace498be413a9b78d6f30f93 # master
