@@ -58,3 +58,6 @@ secrets/*
 .claude/settings.local.json
 .codex/
 .aider*
+
+# A CLAUDE.local.md suppresses Claude Code's AGENTS.md fallback
+CLAUDE.local.md

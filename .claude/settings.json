@@ -1,21 +1,31 @@
 {
-  "enabledPlugins": {
-    "code-review@claude-plugins-official": true,
-    "code-simplifier@claude-plugins-official": true,
-    "github@claude-plugins-official": true,
-    "claude-md-management@claude-plugins-official": true,
-    "feature-dev@claude-plugins-official": true,
-    "context7@claude-plugins-official": true,
-    "commit-commands@claude-plugins-official": true,
-    "remember@claude-plugins-official": true
-  },
-  "extraKnownMarketplaces": {
-    "claude-plugins-official": {
-      "source": {
-        "source": "github",
-        "repo": "anthropics/claude-plugins-official"
-      }
-    }
+  "permissions": {
+    "allow": [
+      "Bash(just install *)",
+      "Bash(just sync *)",
+      "Bash(just test *)",
+      "Bash(just test-int *)",
+      "Bash(just mcp-probe *)",
+      "Bash(just coverage *)",
+      "Bash(just lint *)",
+      "Bash(just lint-fix *)",
+      "Bash(just fmt *)",
+      "Bash(just fmt-check *)",
+      "Bash(just typecheck *)",
+      "Bash(just pre-commit *)",
+      "Bash(just build *)",
+      "Bash(just docs *)",
+      "Bash(just docs-serve *)",
+      "Bash(just compose-config *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)"
+    ],
+    "deny": [
+      "Read(./.env*)",
+      "Read(./secrets/**)"
+    ]
   },
   "hooks": {
     "SessionStart": [
