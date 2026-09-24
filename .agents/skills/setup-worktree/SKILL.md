@@ -1,7 +1,12 @@
 ---
+name: setup-worktree
 description: Create an isolated git worktree + branch for feature work
+argument-hint: "[branch-name]"
+user-invocable: true
+disable-model-invocation: true
 ---
 
+<!-- portable-ok: harnesses that don't substitute $ARGUMENTS leave it literal, which the "else infer it" fallback covers. -->
 Set up an isolated worktree for new work (branch name from `$ARGUMENTS`, else infer it):
 
 1. Confirm the current tree is clean (`git status`); stash or commit first if not.
