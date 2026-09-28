@@ -23,4 +23,4 @@ jobs:
           persist-credentials: false
       # HA publishes no release tags for this action (only a stale 1.0.0), so pin
       # master's SHA; it runs the untagged hassfest image, which still tracks HA.
-      - uses: home-assistant/actions/hassfest@58bff37c8947f690ace498be413a9b78d6f30f93 # master
+      - uses: home-assistant/actions/hassfest@06749dd8c0b54f350bc69c8752456cee498808a3 # master
