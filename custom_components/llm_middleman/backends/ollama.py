@@ -55,6 +55,7 @@ from .base import (
     bearer_headers,
     build_client_timeout,
     probe_json,
+    trace_token_stats,
 )
 
 
@@ -200,7 +201,8 @@ class OllamaAdapter(BackendAdapter):
         Stateless: rebuilds messages from ``chat_log.content`` each turn and ignores
         ``ctx.memory_key``. Emits ``{"role": "assistant"}`` once before the first
         non-empty content (or thinking) delta, then one delta per object. Whitespace
-        in content is preserved verbatim. Stops on ``done: true``; on a silent EOF
+        in content is preserved verbatim. Stops on ``done: true`` (tracing its token
+        counts as ``stats`` when present); on a silent EOF
         the generator simply ends and LLMM-005's entity guard supplies the final
         ``AssistantContent``.
         """
@@ -247,4 +249,12 @@ class OllamaAdapter(BackendAdapter):
                         yield {"role": "assistant"}
                     yield {"content": content}
                 if obj.get("done"):
+                    # The terminal frame carries the round-trip's token counts;
+                    # prompt_eval_count is omitted when the prompt was fully cached.
+                    if "prompt_eval_count" in obj or "eval_count" in obj:
+                        trace_token_stats(
+                            chat_log,
+                            input_tokens=int(obj.get("prompt_eval_count") or 0),
+                            output_tokens=int(obj.get("eval_count") or 0),
+                        )
                     break

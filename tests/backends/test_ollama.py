@@ -528,3 +528,36 @@ async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_cha
     assert timeout.total is None
     assert timeout.sock_connect == 45
     assert timeout.sock_read == IDLE_TIMEOUT
+
+
+# --- token stats (trace) ----------------------------------------------------------
+
+
+async def test_done_frame_counts_traced_as_stats(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    blob = (
+        b'{"message":{"content":"Hi"},"done":false}\n'
+        b'{"message":{"content":""},"done":true,"prompt_eval_count":42,"eval_count":9}\n'
+    )
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse(chunk_bytes(blob, 4))))
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        deltas = await _run(adapter, mock_chat_log)
+    assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
+    trace.assert_called_once_with({"stats": {"input_tokens": 42, "output_tokens": 9}})
+
+
+async def test_done_frame_missing_prompt_count_defaults_zero(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    # Ollama omits prompt_eval_count when the whole prompt was served from its cache.
+    blob = b'{"message":{"content":"Hi"},"done":true,"eval_count":3}\n'
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse([blob])))
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        await _run(adapter, mock_chat_log)
+    trace.assert_called_once_with({"stats": {"input_tokens": 0, "output_tokens": 3}})
+
+
+async def test_no_counts_no_trace(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse([_HAPPY])))
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        await _run(adapter, mock_chat_log)
+    trace.assert_not_called()
