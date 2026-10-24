@@ -137,16 +137,13 @@ class N8nAdapter(BackendAdapter):
         # Log the auth *type* only — never the credential value.
         _LOGGER.debug("n8n POST %s (auth=%s)", url, self._auth_type())
         try:
-            async with self.session.post(
+            async with self._post_checked(
                 url,
+                label="n8n webhook",
                 data=json.dumps(body, default=str),
                 headers=headers,
                 timeout=build_client_timeout(ctx.options, N8N_DEFAULT_TIMEOUT),
             ) as response:
-                if response.status >= 400:
-                    detail = (await response.text())[:500]
-                    _LOGGER.error("n8n webhook returned HTTP %s: %s", response.status, detail)
-                    raise BackendStreamError(f"n8n webhook returned HTTP {response.status}")
                 async for delta in self._iter_deltas(response, ctx):
                     yield delta
         except (TimeoutError, aiohttp.ClientError) as err:

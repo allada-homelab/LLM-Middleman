@@ -90,6 +90,12 @@ class _ThreadNotFound(Exception):
     """Internal signal: the mapped ``thread_id`` was rejected (404) — recreate it."""
 
 
+async def _raise_thread_not_found(response: aiohttp.ClientResponse) -> None:
+    """Error-status hook for a threaded run: a 404 means the mapped thread was GC'd."""
+    if response.status == 404:
+        raise _ThreadNotFound
+
+
 def _headers(api_key: str | None) -> dict[str, str]:
     """Build request headers; attach ``x-api-key`` only when a key is configured."""
     headers = {"Content-Type": "application/json"}
@@ -279,11 +285,13 @@ class LangGraphAdapter(BackendAdapter):
 
     async def _create_thread(self, timeout: aiohttp.ClientTimeout) -> str:
         """Create a LangGraph thread and return its id."""
-        async with self.session.post(
-            f"{self._base_url}/threads", data=json.dumps({}), headers=_headers(self._api_key), timeout=timeout
+        async with self._post_checked(
+            f"{self._base_url}/threads",
+            label="LangGraph thread creation",
+            data=json.dumps({}),
+            headers=_headers(self._api_key),
+            timeout=timeout,
         ) as resp:
-            if resp.status >= 400:
-                raise BackendStreamError(f"LangGraph thread creation failed: HTTP {resp.status}")
             payload: object = await resp.json()
         thread_id = cast("dict[str, object]", payload).get("thread_id") if isinstance(payload, dict) else None
         if not isinstance(thread_id, str):
@@ -344,11 +352,14 @@ class LangGraphAdapter(BackendAdapter):
         )
         node_filter = str(options.get(CONF_RESPONSE_NODE_FILTER, "") or "")
 
-        async with self.session.post(url, data=body, headers=_headers(self._api_key), timeout=timeout) as resp:
-            if resp.status == 404 and thread_id is not None:
-                raise _ThreadNotFound
-            if resp.status >= 400:
-                raise BackendStreamError(f"LangGraph run failed: HTTP {resp.status}")
+        async with self._post_checked(
+            url,
+            label="LangGraph run",
+            data=body,
+            headers=_headers(self._api_key),
+            timeout=timeout,
+            on_error_status=_raise_thread_not_found if thread_id is not None else None,
+        ) as resp:
             role_sent = False
             async for event in async_iter_sse(resp.content.iter_any()):
                 # Success terminates by SSE EOF (loop exhaustion), not a terminal event.

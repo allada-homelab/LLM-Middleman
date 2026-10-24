@@ -116,17 +116,13 @@ class ConverseAdapter(BackendAdapter):
         url = self.connection_data[CONF_BASE_URL].rstrip("/") + CONVERSE_PATH
 
         started = False
-        async with self.session.post(
+        async with self._post_checked(
             url,
+            label="Converse backend",
             json=body,
             headers=headers,
             timeout=build_client_timeout(ctx.options),
         ) as response:
-            if response.status != 200:
-                detail = (await response.text())[:500]
-                _LOGGER.error("Converse backend returned HTTP %s: %s", response.status, detail)
-                raise BackendStreamError(f"Converse backend returned HTTP {response.status}")
-
             async for sse in async_iter_sse(response.content.iter_any()):
                 if sse.event == "text_delta":
                     payload = loads_json_object(sse.data, warn_label="converse SSE")

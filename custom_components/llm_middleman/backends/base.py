@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, ClassVar, cast
 
@@ -107,6 +108,10 @@ def loads_json_object(raw: str | bytes, *, warn_label: str | None = None) -> dic
 # the entity only iterates (never sends values in), so the send type defaults to None.
 type DeltaStream = AsyncGenerator[conversation.AssistantContentDeltaDict]
 
+# Pre-check hook for an error status: may raise a preset-specific error, or return to
+# fall through to the generic log-and-raise (see ``BackendAdapter._post_checked``).
+type ErrorStatusHook = Callable[[aiohttp.ClientResponse], Awaitable[None]]
+
 
 class BackendConnectionError(HomeAssistantError):
     """A backend connection probe failed (config flow maps to ``cannot_connect``)."""
@@ -173,6 +178,36 @@ class BackendAdapter(ABC):
         self.hass = hass
         self.session = session
         self.connection_data = connection_data
+
+    @asynccontextmanager
+    async def _post_checked(
+        self,
+        url: str,
+        *,
+        label: str,
+        headers: Mapping[str, str],
+        timeout: aiohttp.ClientTimeout,
+        json: Any = None,
+        data: str | None = None,
+        error_cls: type[Exception] = BackendStreamError,
+        on_error_status: ErrorStatusHook | None = None,
+    ) -> AsyncGenerator[aiohttp.ClientResponse]:
+        """POST a turn request and yield the response once its status is a success.
+
+        On status >= 400, ``on_error_status`` (if given) runs first so a preset can map a
+        specific status to its own signal (a stale thread/conversation 404, an auth
+        error); if it returns, the body (first 500 chars) is logged at ERROR as
+        ``"<label> returned HTTP <status>: <body>"`` and ``error_cls`` is raised, so an
+        error status always reaches the entity guard named, never as a silent empty stream.
+        """
+        async with self.session.post(url, json=json, data=data, headers=headers, timeout=timeout) as response:
+            if response.status >= 400:
+                if on_error_status is not None:
+                    await on_error_status(response)
+                detail = (await response.text())[:500]
+                _LOGGER.error("%s returned HTTP %s: %s", label, response.status, detail)
+                raise error_cls(f"{label} returned HTTP {response.status}")
+            yield response
 
     @classmethod
     @abstractmethod

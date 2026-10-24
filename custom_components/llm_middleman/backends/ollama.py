@@ -245,15 +245,14 @@ class OllamaAdapter(BackendAdapter):
         base_url = self.connection_data[CONF_BASE_URL].rstrip("/")
         body = self._build_request(chat_log, ctx.options)
 
-        async with self.session.post(
+        async with self._post_checked(
             f"{base_url}/api/chat",
+            label="Ollama /api/chat",
             json=body,
             headers=bearer_headers(self.connection_data.get(CONF_API_KEY)),
             timeout=build_client_timeout(ctx.options),
+            error_cls=BackendConnectionError,
         ) as response:
-            if response.status != 200:
-                raise BackendConnectionError(f"Ollama /api/chat returned HTTP {response.status}")
-
             role_emitted = False
             async for obj in _iter_ndjson(response.content.iter_any()):
                 message: dict[str, Any] = obj.get("message") or {}

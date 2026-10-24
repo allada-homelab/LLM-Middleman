@@ -302,12 +302,8 @@ class DifyAdapter(BackendAdapter):
         role_sent = False
         captured = False
         stripper = _ThinkStripper()
-        async with self.session.post(
-            f"{self._base_url}/chat-messages",
-            data=json.dumps(body),
-            headers=self._headers(),
-            timeout=timeout,
-        ) as resp:
+
+        async def _on_error_status(resp: aiohttp.ClientResponse) -> None:
             if resp.status == 404 and conversation_id is not None:
                 # A 404 on an echoed conversation_id means the id is stale (GC'd/deleted) ->
                 # recreate. Dify has shipped more than one wire shape for this: the documented
@@ -321,16 +317,16 @@ class DifyAdapter(BackendAdapter):
                 raise BackendConnectionError(f"Dify chat-messages 404: {code or 'unknown'}")
             if resp.status in (401, 403):
                 raise BackendAuthError(f"Dify rejected the API key (HTTP {resp.status})")
-            if resp.status >= 400:
-                detail = loads_json_object(await resp.text(), warn_label="Dify") or {}
-                _LOGGER.error(
-                    "Dify chat-messages HTTP %s: code=%s message=%s",
-                    resp.status,
-                    detail.get("code"),
-                    detail.get("message"),
-                )
-                raise BackendConnectionError(f"Dify chat-messages returned HTTP {resp.status}")
 
+        async with self._post_checked(
+            f"{self._base_url}/chat-messages",
+            label="Dify chat-messages",
+            data=json.dumps(body),
+            headers=self._headers(),
+            timeout=timeout,
+            error_cls=BackendConnectionError,
+            on_error_status=_on_error_status,
+        ) as resp:
             agent_streamed = False
             async for sse in async_iter_sse(resp.content.iter_any()):
                 payload = loads_json_object(sse.data, warn_label="Dify") or {}

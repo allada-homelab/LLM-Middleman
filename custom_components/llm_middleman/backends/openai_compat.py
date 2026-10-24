@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar
 
@@ -44,7 +43,7 @@ from custom_components.llm_middleman.const import (
 
 from ._compat import schema_to_openapi, tool_result_data
 from ._history import trim_history
-from ._sse import BackendStreamError, async_iter_sse
+from ._sse import async_iter_sse
 from .base import (
     BackendAdapter,
     BackendAuthError,
@@ -54,8 +53,6 @@ from .base import (
     bearer_headers,
     build_client_timeout,
 )
-
-_LOGGER = logging.getLogger(__name__)
 
 # The provider terminates the SSE stream with this literal payload, not JSON.
 _DONE_SENTINEL = "[DONE]"
@@ -237,16 +234,13 @@ class OpenAICompatAdapter(BackendAdapter):
         # index -> partial call; id/name arrive on the first fragment, arguments stream
         # as a string concatenated across fragments (chat/completions delta.tool_calls).
         tool_calls: dict[int, dict[str, str]] = {}
-        async with self.session.post(
+        async with self._post_checked(
             url,
+            label="OpenAI-compatible backend",
             json=self._build_body(chat_log, ctx),
             headers=headers,
             timeout=build_client_timeout(ctx.options),
         ) as response:
-            if response.status != 200:
-                detail = (await response.text())[:500]
-                _LOGGER.error("OpenAI-compatible backend returned HTTP %s: %s", response.status, detail)
-                raise BackendStreamError(f"OpenAI-compatible backend returned HTTP {response.status}")
             async for event in async_iter_sse(response.content.iter_any()):
                 if event.data == _DONE_SENTINEL:
                     break
