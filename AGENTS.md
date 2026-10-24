@@ -46,8 +46,7 @@ voice-hardware checks) — see `docs/implementation/HANDOFF.md`.
 **Quality-scale snapshot** (no `quality_scale.yaml` is declared): Bronze rules are met
 (config flow with a connection test, `already_configured` for duplicate connections,
 setup-time probe → `ConfigEntryNotReady`, `runtime_data`, `has_entity_name` + subentry
-unique ids, branding) **except `docs-removal-instructions`** — the README has no removal
-section. Silver-relevant: reauth flow, `PARALLEL_UPDATES = 0`, repair issue for an
+unique ids, branding, README removal section). Silver-relevant: reauth flow, `PARALLEL_UPDATES = 0`, repair issue for an
 unreachable backend, coverage gate ≥ 94 %.
 
 > **START HERE for background:** `docs/implementation/plan.md` — the architecture of record

@@ -160,6 +160,15 @@ Requires Home Assistant **2026.7.0** or newer.
 5. Add a conversation agent (name, system prompt, per-agent options).
 6. Assign the agent under **Settings → Voice assistants**.
 
+## Removal
+
+1. Under **Settings → Voice assistants**, move any assistant using an LLM Middleman agent to
+   another conversation agent.
+2. **Settings → Devices & Services → LLM Middleman → ⋮ → Delete** for each connection. This
+   also deletes the integration's stored conversation/thread mappings for that connection;
+   history kept on the backend itself (Dify conversations, LangGraph threads) is not touched.
+3. Optionally uninstall **LLM Middleman** in HACS and restart Home Assistant.
+
 ## Docs
 
 - `docs/knowledge/03-the-shim.md` — the multi-backend design (architecture, config model,
