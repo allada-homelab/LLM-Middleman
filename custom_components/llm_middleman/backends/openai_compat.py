@@ -19,6 +19,7 @@ The entity's bounded tool loop drives the re-entry; this adapter stays stateless
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
@@ -47,8 +48,11 @@ from .base import (
     TurnContext,
     bearer_headers,
     build_client_timeout,
+    loads_json_object,
     probe_json,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 # The provider terminates the SSE stream with this literal payload, not JSON.
 _DONE_SENTINEL = "[DONE]"
@@ -81,6 +85,25 @@ def _accumulate_tool_call(tool_calls: dict[int, dict[str, str]], fragment: Any) 
     if hasattr(function, "get"):
         slot["name"] += function.get("name") or ""
         slot["args"] += function.get("arguments") or ""
+
+
+def _tool_input(call: dict[str, str]) -> llm.ToolInput | None:
+    """Build a ``ToolInput`` from an accumulated call, or ``None`` if its arguments are bad.
+
+    Small models sometimes stream truncated/invalid JSON arguments; dropping that one
+    call (logged) keeps the rest of the turn alive instead of failing it wholesale.
+    No streamed ``arguments`` (a no-arg call) means ``{}``.
+    """
+    args = loads_json_object(call["args"] or "{}")
+    if args is None:
+        _LOGGER.warning(
+            "Skipping tool call %s (%s): arguments are not a JSON object: %s",
+            call["id"],
+            call["name"],
+            call["args"][:200],
+        )
+        return None
+    return llm.ToolInput(id=call["id"], tool_name=call["name"], tool_args=args)
 
 
 def _convert_content(item: conversation.Content) -> dict[str, Any]:
@@ -121,6 +144,8 @@ class OpenAICompatAdapter(BackendAdapter):
     # Formats HA tool schemas + parses streamed tool_calls (LLMM-014), so the subentry
     # flow offers CONF_LLM_HASS_API and the entity runs the tool loop.
     supports_ha_tools: ClassVar[bool] = True
+    # Replays chat_log (whose system prompt carries HA's date/time); never reads user_input.text.
+    wants_time_prefix: ClassVar[bool] = False
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
@@ -233,17 +258,9 @@ class OpenAICompatAdapter(BackendAdapter):
         # Flush accumulated tool calls once, after [DONE]/EOF (some servers omit the id
         # on later fragments and/or the finish_reason, so index-keyed accumulation +
         # a single terminal flush is the tolerant contract).
-        if tool_calls:
+        tool_inputs = [tool_input for call in tool_calls.values() if (tool_input := _tool_input(call)) is not None]
+        if tool_inputs:
             if not role_sent:
                 yield {"role": "assistant"}
                 role_sent = True
-            yield {
-                "tool_calls": [
-                    llm.ToolInput(
-                        id=call["id"],
-                        tool_name=call["name"],
-                        tool_args=json.loads(call["args"] or "{}"),
-                    )
-                    for call in tool_calls.values()
-                ]
-            }
+            yield {"tool_calls": tool_inputs}

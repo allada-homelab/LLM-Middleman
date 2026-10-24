@@ -55,6 +55,10 @@ CONVERSE_PATH = "/v1/converse"
 # so we fall back rather than hang the pipeline.
 DEFAULT_TIMEOUT = 60
 
+# Bound on a non-turn backend round-trip (setup reachability probe, subentry model
+# list): a dead backend must not stall HA startup or freeze a config form.
+PROBE_TIMEOUT = 10
+
 # --- v1 re-architecture (LLMM-005) ---
 
 # Per-agent (conversation subentry) option keys.

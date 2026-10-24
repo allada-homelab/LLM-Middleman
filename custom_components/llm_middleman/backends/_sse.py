@@ -18,13 +18,15 @@ from ``base.py`` to keep the dependency direction one-way.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncGenerator, AsyncIterable
 from dataclasses import dataclass
 
 _LOGGER = logging.getLogger(__name__)
 
-_CR = 0x0D
-_LF = 0x0A
+# One SSE line terminator: CRLF, a lone CR, or a lone LF (WHATWG). Matched in C so a
+# chunk is split without a per-byte Python loop blocking the event loop.
+_TERMINATOR = re.compile(rb"\r\n?|\n")
 
 # Per-line buffering cap shared by both framers: bounds memory against a peer that
 # never sends a terminator; an over-cap line is drained and skipped, never fatal.
@@ -79,12 +81,12 @@ async def async_iter_sse(
     line_buf = bytearray()
     data_values: list[str] = []
     event_type = "message"
-    prev_was_cr = False
+    prev_was_cr = False  # the previous chunk ended in CR: a leading LF here completes that CRLF
     line_overflowed = False  # current line passed the cap: drain to its terminator, then skip it
 
-    def _handle_line() -> ServerSentEvent | None:
+    def _handle_line(raw: bytes) -> ServerSentEvent | None:
         nonlocal data_values, event_type
-        line = bytes(line_buf).decode("utf-8", errors="replace")
+        line = raw.decode("utf-8", errors="replace")
         if line == "":
             # Blank line -> dispatch. An empty data buffer dispatches nothing.
             event = ServerSentEvent(event=event_type, data="\n".join(data_values)) if data_values else None
@@ -104,50 +106,46 @@ async def async_iter_sse(
         # id, retry, no-colon, and unknown fields are ignored.
         return None
 
-    def _terminate_line() -> ServerSentEvent | None:
-        # Finish the current line on a CR/LF: dispatch it normally, or -- if it
-        # overflowed the cap and was drained -- skip it (no dispatch).
+    def _overflow() -> None:
+        # Stop buffering (bound memory) and drain the rest of this line to its
+        # terminator, then skip it -- an over-cap line is verbose node metadata,
+        # never a content delta, so this beats aborting the turn.
         nonlocal line_overflowed
-        if line_overflowed:
-            line_overflowed = False
-            line_buf.clear()
-            return None
-        event = _handle_line()
+        _LOGGER.debug("SSE line exceeded %d bytes without a terminator; draining and skipping it", max_line_bytes)
+        line_overflowed = True
         line_buf.clear()
-        return event
 
     async for chunk in stream:
-        for byte in chunk:
-            if prev_was_cr:
-                prev_was_cr = False
-                if byte == _LF:
-                    # Trailing LF of a CRLF; the CR already terminated the line.
-                    continue
-            if byte == _CR:
-                event = _terminate_line()
-                prev_was_cr = True
-                if event is not None:
-                    yield event
-                continue
-            if byte == _LF:
-                event = _terminate_line()
-                if event is not None:
-                    yield event
-                continue
-            if line_overflowed:
-                # Draining an oversized line: discard bytes until the terminator.
-                continue
-            line_buf.append(byte)
+        if not chunk:
+            continue
+        pos = 0
+        if prev_was_cr:
+            prev_was_cr = False
+            if chunk[0] == 0x0A:
+                pos = 1  # trailing LF of a CRLF split across chunks; the CR ended the line
+        for match in _TERMINATOR.finditer(chunk, pos):
+            event = None
+            if not line_overflowed:
+                if line_buf:
+                    line_buf += chunk[pos : match.start()]
+                    raw = bytes(line_buf)
+                else:
+                    raw = chunk[pos : match.start()]
+                if len(raw) > max_line_bytes:
+                    _overflow()
+                else:
+                    event = _handle_line(raw)
+            line_buf.clear()
+            line_overflowed = False
+            pos = match.end()
+            # A CR closing the chunk may be the first half of a CRLF split across chunks.
+            prev_was_cr = pos == len(chunk) and match.group() == b"\r"
+            if event is not None:
+                yield event
+        if not line_overflowed and pos < len(chunk):
+            line_buf += chunk[pos:]
             if len(line_buf) > max_line_bytes:
-                # Stop buffering (bound memory) and drain the rest of this line to
-                # its terminator, then skip it -- an over-cap line is verbose node
-                # metadata, never a content delta, so this beats aborting the turn.
-                _LOGGER.debug(
-                    "SSE line exceeded %d bytes without a terminator; draining and skipping it",
-                    max_line_bytes,
-                )
-                line_overflowed = True
-                line_buf.clear()
+                _overflow()
 
 
 async def async_iter_lines(

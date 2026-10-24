@@ -184,6 +184,7 @@ class TurnContext:
     options: Mapping[str, Any]  # the agent subentry's options for this turn
     memory_key: str  # session key derived by the entity from the memory scope
     continue_conversation: bool = False  # adapter may set; entity ORs into result
+    fallback: bool = False  # entity-owned: the last round-trip ended in the fallback message
 
 
 class BackendAdapter(ABC):
@@ -211,6 +212,10 @@ class BackendAdapter(ABC):
     supports_ha_tools: ClassVar[bool] = False
     # Gates CONF_MEMORY_SCOPE in the subentry flow; stateful backends set True.
     supports_memory_scope: ClassVar[bool] = False
+    # Prefix the forwarded turn text with the local date/time. Adapters that replay the
+    # chat log or forward the rendered system prompt (which already carries HA's date/time
+    # prompt) opt out; the default keeps temporal context for text-only presets.
+    wants_time_prefix: ClassVar[bool] = True
 
     def __init__(
         self,
