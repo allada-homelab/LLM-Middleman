@@ -41,6 +41,7 @@ from custom_components.llm_middleman.const import (
     IDLE_TIMEOUT,
 )
 from tests.conftest import (
+    HA_HAS_TOOL_RESULT_OBJ,
     TEST_API_KEY,
     TEST_BASE_URL,
     TOOL_SCHEMA_PROPERTIES,
@@ -426,7 +427,33 @@ async def test_history_replays_tool_calls_and_results_default_str(
     }
     assert messages[3]["role"] == "tool"
     assert messages[3]["tool_call_id"] == "call_1"
-    assert json.loads(messages[3]["content"]) == {"now": str(now)}
+    assert json.loads(messages[3]["content"]) == {"data": {"now": str(now)}, "error": False}
+
+
+@pytest.mark.skipif(not HA_HAS_TOOL_RESULT_OBJ, reason="llm.ToolResult.error needs HA >= 2026.10")
+async def test_failed_tool_result_is_flagged_as_error(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # A failed tool call reaches the model flagged, as core openai/ollama send it.
+    mock_chat_log.content = [
+        conversation.SystemContent(content="sys"),
+        tool_result_content(agent_id="a", tool_call_id="c1", tool_name="t", data={"error": "boom"}, error=True),
+    ]
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    _ = [d async for d in _adapter(hass, session).stream_turn(mock_chat_log, _input(), _ctx())]
+
+    assert json.loads(_posted_body(session)["messages"][1]["content"]) == {"data": {"error": "boom"}, "error": True}
+
+
+class _UndescribedTool(_FakeTool):
+    description = None
+
+
+async def test_tool_without_description_omits_field(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # A tool with no description sends no "description" key rather than null.
+    mock_chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([_UndescribedTool()]))
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    _ = [d async for d in _adapter(hass, session).stream_turn(mock_chat_log, _input(), _ctx())]
+
+    assert "description" not in _posted_body(session)["tools"][0]["function"]
 
 
 # --- registration ---------------------------------------------------------------

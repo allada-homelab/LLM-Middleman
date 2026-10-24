@@ -589,7 +589,7 @@ async def test_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: MockChat
     tool_messages = [m for m in body2["messages"] if m.get("role") == "tool"]
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "call_1"
-    assert json.loads(tool_messages[0]["content"]) == {"now": str(now)}
+    assert json.loads(tool_messages[0]["content"]) == {"data": {"now": str(now)}, "error": False}
 
     # Final spoken answer is the turn-2 text.
     last = mock_chat_log.content[-1]
@@ -672,7 +672,7 @@ async def test_ollama_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: M
     body2 = session.post.call_args_list[1].kwargs["json"]
     tool_messages = [m for m in body2["messages"] if m.get("role") == "tool"]
     assert len(tool_messages) == 1
-    assert json.loads(tool_messages[0]["content"]) == {"now": str(now)}
+    assert json.loads(tool_messages[0]["content"]) == {"data": {"now": str(now)}, "error": False}
 
     # Final spoken answer is the turn-2 text.
     last = mock_chat_log.content[-1]
