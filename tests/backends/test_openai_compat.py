@@ -352,6 +352,36 @@ async def test_empty_arguments_default_to_empty_object(hass: HomeAssistant, mock
     assert calls[0].tool_args == {}
 
 
+async def test_malformed_tool_arguments_skip_only_that_call(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Unparsable streamed arguments drop that one call (logged), not the whole turn.
+    blob = (
+        _tc_frame({"index": 0, "id": "bad", "function": {"name": "a", "arguments": '{"x": '}})
+        + _tc_frame({"index": 1, "id": "ok", "function": {"name": "b", "arguments": '{"y": 1}'}})
+        + b"data: [DONE]\n\n"
+    )
+    with caplog.at_level("WARNING"):
+        deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+
+    calls = deltas[-1].get("tool_calls")
+    assert calls is not None
+    assert [(call.id, call.tool_args) for call in calls] == [("ok", {"y": 1})]
+    assert "bad" in caplog.text
+
+
+async def test_only_malformed_tool_call_keeps_the_text_reply(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # With every call dropped no tool_calls delta is emitted; streamed text still stands.
+    blob = (
+        _data_frame({"content": "On it."})
+        + _tc_frame({"index": 0, "id": "bad", "function": {"name": "a", "arguments": "not json"}})
+        + b"data: [DONE]\n\n"
+    )
+    deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+
+    assert deltas == [{"role": "assistant"}, {"content": "On it."}]
+
+
 async def test_tools_field_sent_when_llm_api_set(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
     mock_chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([_FakeTool()]))
     session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
