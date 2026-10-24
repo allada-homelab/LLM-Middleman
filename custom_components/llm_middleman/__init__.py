@@ -23,11 +23,15 @@ from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.storage import Store
+from homeassistant.util import slugify
 
 from .backends import BackendAdapter, get_backend_cls
 from .backends.base import BackendAuthError, BackendConnectionError
 from .const import (
     BACKEND_CONVERSE,
+    BACKEND_DIFY,
+    BACKEND_LANGGRAPH,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
     CONF_NAME,
@@ -38,6 +42,7 @@ from .const import (
     DEFAULT_TIMEOUT,
     DOMAIN,
     PROBE_TIMEOUT,
+    STORAGE_VERSION,
     SUBENTRY_TYPE_CONVERSATION,
 )
 
@@ -85,6 +90,20 @@ async def async_update_options(hass: HomeAssistant, entry: LLMMiddlemanConfigEnt
 async def async_unload_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> None:
+    """Delete the session-map Store a stateful preset persisted for this entry.
+
+    The key mirrors the dify/langgraph adapters' per-entry Store key
+    (``<domain>.<backend>.<slugified entry_id>``); tests pin it to the adapters' own.
+    """
+    backend_type = entry.data.get(CONF_BACKEND_TYPE)
+    if backend_type in (BACKEND_DIFY, BACKEND_LANGGRAPH):
+        store: Store[dict[str, str]] = Store(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{backend_type}.{slugify(entry.entry_id)}"
+        )
+        await store.async_remove()
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

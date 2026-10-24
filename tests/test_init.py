@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState, ConfigSubentry
@@ -26,6 +26,8 @@ from custom_components.llm_middleman import (
 from custom_components.llm_middleman import conversation as conversation_platform
 from custom_components.llm_middleman.backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
 from custom_components.llm_middleman.backends.converse import ConverseAdapter
+from custom_components.llm_middleman.backends.dify import DifyAdapter
+from custom_components.llm_middleman.backends.langgraph import LangGraphAdapter
 from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
     CONF_BACKEND_TYPE,
@@ -152,6 +154,27 @@ def test_manifest_loads_after_assist_pipeline_and_intent() -> None:
     """Mirror core conversation integrations' after_dependencies."""
     manifest = json.loads((Path(__file__).parents[1] / "custom_components/llm_middleman/manifest.json").read_text())
     assert manifest["after_dependencies"] == ["assist_pipeline", "intent"]
+
+
+@pytest.mark.parametrize("adapter_cls", [DifyAdapter, LangGraphAdapter])
+async def test_removing_entry_deletes_its_session_map_store(
+    hass: HomeAssistant, hass_storage: dict[str, Any], adapter_cls: type[BackendAdapter]
+) -> None:
+    """Deleting a stateful entry removes its persisted session map, leaving other entries' alone."""
+    entry = MockConfigEntry(domain=DOMAIN, version=2, data={CONF_BACKEND_TYPE: adapter_cls.backend_type})
+    entry.add_to_hass(hass)
+    # The key the adapter itself persists under, so a drift in its derivation fails here.
+    adapter: Any = adapter_cls(hass, MagicMock(), {CONF_BASE_URL: "http://b", "entry_id": entry.entry_id})
+    own_key: str = adapter._store.key
+    other_key = f"{DOMAIN}.{adapter_cls.backend_type}.other_entry"
+    hass_storage[own_key] = {"version": 1, "data": {"dev-1": "thread-1"}}
+    hass_storage[other_key] = {"version": 1, "data": {"dev-2": "thread-2"}}
+
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert own_key not in hass_storage
+    assert other_key in hass_storage
 
 
 async def test_setup_and_unload_end_to_end(hass: HomeAssistant) -> None:
