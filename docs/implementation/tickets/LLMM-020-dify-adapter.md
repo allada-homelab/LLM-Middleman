@@ -4,7 +4,13 @@ title: Dify adapter (chat/agent apps, SSE streaming, server-side memory)
 status: in-review
 phase: 5
 depends_on: [LLMM-003, LLMM-004]
+superseded_by: LLMM-021
 ---
+
+> **Superseded by [LLMM-021](LLMM-021-dify-tier1.md).** LLMM-021 reworks this adapter against
+> the Dify Service API spec (new Agent app mode, terminal-state handling, stop/recreate,
+> inputs mapping, configurable `user`, …). Statements below about `inputs: {}`, the constant
+> `user`, and ignoring `message_replace` describe the LLMM-020 state, not the current code.
 
 # LLMM-020 — Dify adapter (chat/agent apps, SSE streaming, server-side memory)
 
