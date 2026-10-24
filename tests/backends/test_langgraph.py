@@ -334,11 +334,11 @@ async def test_capture_survives_any_chunking(hass: HomeAssistant, chunk: int) ->
     assert _text_of(deltas) == _ANSWER
 
 
-async def test_tools_without_reply_text_end_with_fallback(hass: HomeAssistant) -> None:
-    """A run cut off after its tool result must not leave the stream ending on that result."""
+async def test_tools_without_reply_text_raise(hass: HomeAssistant) -> None:
+    """A run that ends after its tool result raises, so the entity guard appends the fallback."""
     blob = _events_until(_capture("react_tool_call"), b'{"tools":')  # through the tools update
-    deltas, _ = await _turn(_adapter(hass, _FakeServer(blob)))
-    assert deltas[-2:] == [{"role": "assistant"}, {"content": ERROR_MESSAGE}]
+    with pytest.raises(BackendStreamError, match="no reply text"):
+        await _turn(_adapter(hass, _FakeServer(blob)))
 
 
 async def test_node_filter_speaks_only_matching_node(hass: HomeAssistant) -> None:
@@ -382,9 +382,9 @@ async def test_turn_after_interrupt_resumes_with_the_reply(hass: HomeAssistant) 
     adapter = _adapter(hass, server)
     await _turn(adapter)
 
-    deltas, _ = await _turn(adapter, text="[2026-10-24 10:00:00 UTC] kitchen")
+    deltas, _ = await _turn(adapter, text="kitchen")
 
-    assert server.body()["command"] == {"resume": "kitchen"}  # entity timestamp prefix stripped
+    assert server.body()["command"] == {"resume": "kitchen"}
     assert "input" not in server.body()
     assert _text_of(deltas) == "Turning on the lights in the kitchen."
 

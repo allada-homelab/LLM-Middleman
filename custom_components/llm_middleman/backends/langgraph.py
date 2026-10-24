@@ -44,7 +44,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -72,7 +71,6 @@ from custom_components.llm_middleman.const import (
     DEFAULT_MULTITASK_STRATEGY,
     DEFAULT_TIMEOUT,
     DOMAIN,
-    ERROR_MESSAGE,
     LANGGRAPH_AUTH_BEARER,
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
@@ -92,6 +90,7 @@ from .base import (
     bearer_headers,
     build_client_timeout,
     rendered_system_prompt,
+    trace_token_stats,
 )
 
 if TYPE_CHECKING:
@@ -125,10 +124,6 @@ _CANCEL_TIMEOUT = 5
 
 # Spoken when a graph interrupts with a value that has no readable question.
 _INTERRUPT_FALLBACK = "The assistant needs more information to continue."
-
-# conversation.py prefixes every turn with "[YYYY-MM-DD HH:MM:SS TZ] " for the model's
-# temporal context; a resume value is the user's literal answer to the graph's question.
-_TIMESTAMP_PREFIX = re.compile(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[^\]]*\] ")
 
 
 class AssistantNotFoundError(BackendConnectionError):
@@ -329,6 +324,9 @@ class LangGraphAdapter(BackendAdapter):
     backend_type: ClassVar[str] = BACKEND_LANGGRAPH
     supports_ha_tools: ClassVar[bool] = False  # tools live server-side in the graph
     supports_memory_scope: ClassVar[bool] = True  # stateful -> key maps to a thread_id
+    # The rendered prompt (with HA's date/time) rides in the run context, and a resume
+    # value must be the user's literal answer to the graph's question.
+    wants_time_prefix: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -348,7 +346,7 @@ class LangGraphAdapter(BackendAdapter):
         self._entry_key = str(connection_data.get(_CONF_ENTRY_ID) or self._base_url or "default")
         store_key = f"{DOMAIN}.langgraph.{slugify(self._entry_key)}"
         # Read-only: the LLMM-011 session_key -> thread_id map for device/agent scopes.
-        self._legacy_store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, store_key)
+        self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, store_key)
         self._legacy: dict[str, str] | None = None
         # thread_id -> whether it belongs to a persisted (device/agent) scope.
         self._pending_store: Store[list[str]] = Store(hass, STORAGE_VERSION, f"{store_key}.pending_resume")
@@ -421,7 +419,7 @@ class LangGraphAdapter(BackendAdapter):
             body["if_not_exists"] = "create"
             body["multitask_strategy"] = strategy if strategy in MULTITASK_STRATEGIES else DEFAULT_MULTITASK_STRATEGY
         if resume:
-            body["command"] = {"resume": _TIMESTAMP_PREFIX.sub("", user_input.text, count=1)}
+            body["command"] = {"resume": user_input.text}
         else:
             messages: list[dict[str, str]] = []
             if system_prompt and stateless:
@@ -467,7 +465,7 @@ class LangGraphAdapter(BackendAdapter):
     async def _thread_id(self, session_key: str) -> str:
         """Return the legacy mapped thread for ``session_key``, else its deterministic uuid5."""
         if self._legacy is None:
-            self._legacy = await self._legacy_store.async_load() or {}
+            self._legacy = await self._store.async_load() or {}
         legacy = self._legacy.get(session_key)
         if legacy is not None:
             return legacy
@@ -527,9 +525,9 @@ class LangGraphAdapter(BackendAdapter):
     ) -> DeltaStream:
         """POST the run and yield role-first deltas: spoken text plus external tool activity.
 
-        Guarantees the stream never ends right after tool activity: the entity's tool loop
-        re-enters (re-sending the turn) while the chat log ends on a tool result, so a run
-        that used tools but spoke nothing ends with the fallback message.
+        A run that used tools but spoke nothing raises after the stream: left alone the chat
+        log would end on a tool result, which re-enters the entity's tool loop (re-sending
+        the turn); raising hands it to the entity guard, which appends the fallback reply.
         """
         node_filter = str(options.get(CONF_RESPONSE_NODE_FILTER, "") or "")
         messages_key = str(options.get(CONF_INPUT_MESSAGES_KEY) or DEFAULT_INPUT_MESSAGES_KEY)
@@ -586,11 +584,9 @@ class LangGraphAdapter(BackendAdapter):
             state.finished = True
 
         if has_usage:
-            chat_log.async_trace({"stats": {"input_tokens": input_tokens, "output_tokens": output_tokens}})
+            trace_token_stats(chat_log, input_tokens=input_tokens, output_tokens=output_tokens)
         if needs_reply:
-            _LOGGER.warning("LangGraph run used tools but produced no reply text; returning fallback")
-            yield {"role": "assistant"}
-            yield {"content": ERROR_MESSAGE}
+            raise BackendStreamError("LangGraph run used tools but produced no reply text")
 
     # --- best-effort cancel --------------------------------------------------------
 

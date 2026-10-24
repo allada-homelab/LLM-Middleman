@@ -64,7 +64,8 @@ def external_tool_call_delta(tool_call_id: str, tool_name: str, tool_args: Mappi
     :func:`external_tool_result_delta`, and the stream must not END on a tool result —
     the entity's tool loop re-enters while ``chat_log.unresponded_tool_results`` is true,
     which would re-send the turn. Yield a ``{"role": "assistant"}`` block with non-empty
-    content after the last result.
+    content after the last result, or raise (the entity guard then appends its fallback
+    reply after the result).
     """
     call = llm.ToolInput(tool_name=tool_name, tool_args=dict(tool_args), id=tool_call_id, external=True)
     return {"role": "assistant", "tool_calls": [call]}

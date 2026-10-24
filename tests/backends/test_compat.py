@@ -19,7 +19,7 @@ from custom_components.llm_middleman.backends._compat import (
     external_tool_result_delta,
     tool_result_data,
 )
-from tests.conftest import _HA_HAS_TOOL_RESULT_OBJ, MockChatLog
+from tests.conftest import HA_HAS_TOOL_RESULT_OBJ, MockChatLog
 
 
 async def _stream(*deltas: AssistantDelta) -> AsyncIterator[AssistantDelta]:
@@ -69,7 +69,7 @@ async def test_reply_after_result_leaves_no_unresponded_tool_result(mock_chat_lo
     assert mock_chat_log.unresponded_tool_results is False
 
 
-@pytest.mark.skipif(not _HA_HAS_TOOL_RESULT_OBJ, reason="HA < 2026.10 tool results carry no error flag")
+@pytest.mark.skipif(not HA_HAS_TOOL_RESULT_OBJ, reason="HA < 2026.10 tool results carry no error flag")
 async def test_error_flag_is_carried(mock_chat_log: MockChatLog) -> None:
     _, result, _ = await _feed(mock_chat_log, {"error": "boom"}, error=True)
     assert isinstance(result, conversation.ToolResultContent)

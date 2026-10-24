@@ -9,7 +9,7 @@ exercises the real HTTP download path to prove HA auto-discovers ``diagnostics.p
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigSubentryData
@@ -25,6 +25,7 @@ from pytest_homeassistant_custom_component.typing import (
     ClientSessionGenerator,  # pyright: ignore[reportUnknownVariableType]
 )
 
+from custom_components.llm_middleman.backends.langgraph import LangGraphAdapter
 from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
@@ -264,8 +265,12 @@ async def test_diagnostics_http_download_path(
     assert _SECRETS["prompt"] not in blob
 
 
-async def test_diagnostics_include_langgraph_runtime_state(hass: HomeAssistant) -> None:
+async def test_diagnostics_include_langgraph_runtime_state(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A loaded LangGraph entry adds its last run id / counters — never thread ids or secrets."""
+    # No server behind the dummy URL: skip the setup reachability probe.
+    monkeypatch.setattr(LangGraphAdapter, "async_validate_connection", AsyncMock())
     entry = _build_entry(hass, BACKEND_LANGGRAPH)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
