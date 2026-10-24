@@ -148,6 +148,12 @@ async def test_malformed_json_raises(hass: HomeAssistant, mock_chat_log: convers
         await _run(adapter, mock_chat_log)
 
 
+async def test_non_object_ndjson_line_raises(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse([b'["not", "an object"]\n'])))
+    with pytest.raises(BackendStreamError, match="not an object"):
+        await _run(adapter, mock_chat_log)
+
+
 async def test_error_after_deltas_propagates(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
     # Transport raises mid-stream after >=1 delta has been emitted.
     chunks = [

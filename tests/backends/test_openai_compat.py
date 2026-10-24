@@ -163,6 +163,12 @@ async def test_malformed_json_raises(hass: HomeAssistant, mock_chat_log: MockCha
         await _collect(hass, mock_chat_log, [b"data: not-json\n\n"], _ctx())
 
 
+async def test_non_object_tool_call_fragment_raises(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    frame = b'data: {"choices": [{"delta": {"tool_calls": ["oops"]}}]}\n\n'
+    with pytest.raises(BackendStreamError, match="Malformed tool_calls fragment"):
+        await _collect(hass, mock_chat_log, [frame], _ctx())
+
+
 @pytest.mark.parametrize("status", [401, 500])
 async def test_http_error_logs_and_raises(
     hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture, status: int
