@@ -29,12 +29,14 @@
                 "data": {
                     "base_url": "Deployment URL",
                     "api_key": "API key",
+                    "auth_scheme": "API key header",
                     "assistant_id": "Assistant ID"
                 },
                 "data_description": {
                     "base_url": "LangGraph deployment URL (a trailing slash is stripped automatically).",
-                    "api_key": "Optional; sent as the x-api-key header.",
-                    "assistant_id": "Graph name or UUID (default: agent)."
+                    "api_key": "Optional. Required by LangSmith cloud deployments and servers with custom auth.",
+                    "auth_scheme": "How the API key is sent: the x-api-key header (LangSmith cloud and the default for self-hosted servers), or an Authorization: Bearer token (for custom auth handlers that read Authorization).",
+                    "assistant_id": "Graph name or assistant UUID (default: agent). Checked against the deployment when you save."
                 }
             },
             "ollama": {
@@ -119,7 +121,8 @@
         "error": {
             "cannot_connect": "Failed to connect. Check the URL and that the backend is reachable.",
             "invalid_auth": "Authentication failed. Check your credentials.",
-            "unknown": "Unexpected error"
+            "unknown": "Unexpected error",
+            "assistant_not_found": "The deployment has no assistant or graph with this ID."
         },
         "abort": {
             "already_configured": "Service is already configured",
@@ -145,7 +148,11 @@
                         "max_history": "Max history",
                         "timeout": "Timeout (seconds)",
                         "memory_scope": "Memory scope",
-                        "llm_hass_api": "Control Home Assistant"
+                        "llm_hass_api": "Control Home Assistant",
+                        "multitask_strategy": "Double-texting (LangGraph)",
+                        "input_messages_key": "Input messages key (LangGraph)",
+                        "response_node_filter": "Spoken node (LangGraph)",
+                        "stateless_runs": "Stateless runs (LangGraph)"
                     },
                     "data_description": {
                         "name": "Display name for this agent's conversation entity.",
@@ -154,7 +161,11 @@
                         "max_history": "How many past turns to replay to stateless backends. Higher costs more per turn; full-replay backends may ignore it.",
                         "timeout": "How long to wait to reach the backend. A reply that keeps streaming is never cut off; a backend that goes silent for 30 seconds is dropped and the pipeline falls back.",
                         "memory_scope": "Which conversations share memory on stateful backends: per conversation, per device, or one continuous thread for the agent.",
-                        "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent."
+                        "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent.",
+                        "multitask_strategy": "What happens to a reply still running on this thread when a new turn arrives. Roll back (default) cancels it and removes it from the thread's history; Interrupt cancels it but keeps its partial progress; Enqueue waits for it to finish first; Reject refuses the new turn.",
+                        "input_messages_key": "The graph state key the new message list is sent under (default: messages).",
+                        "response_node_filter": "Only speak text produced by this graph node. Leave empty to speak every node's AI messages.",
+                        "stateless_runs": "Run each turn without a server-side thread. The graph then keeps no memory between turns."
                     }
                 }
             },
@@ -210,6 +221,20 @@
                 "none": "None",
                 "basic": "Basic auth",
                 "custom_header": "Custom header"
+            }
+        },
+        "auth_scheme": {
+            "options": {
+                "x_api_key": "x-api-key header",
+                "bearer": "Authorization: Bearer"
+            }
+        },
+        "multitask_strategy": {
+            "options": {
+                "rollback": "Roll back",
+                "interrupt": "Interrupt",
+                "enqueue": "Enqueue",
+                "reject": "Reject"
             }
         }
     }

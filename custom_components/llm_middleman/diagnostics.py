@@ -17,6 +17,7 @@ from homeassistant.components.diagnostics import async_redact_data  # pyright: i
 from homeassistant.const import CONF_API_KEY, CONF_PROMPT, CONF_URL
 from homeassistant.helpers import entity_registry as er
 
+from .backends.langgraph import LangGraphAdapter
 from .const import (
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
@@ -57,6 +58,12 @@ TO_REDACT = {
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> dict[str, Any]:
     """Return redacted diagnostics for a config entry."""
+    # runtime_data is unset while the entry is not loaded.
+    adapter = getattr(entry, "runtime_data", None)
+    runtime: dict[str, Any] = {}
+    if isinstance(adapter, LangGraphAdapter):
+        # Run ids and counters only: no thread ids (derived from device/conversation ids).
+        runtime["langgraph"] = adapter.diagnostics()
 
     return {
         "title": entry.title,
@@ -79,4 +86,5 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: LLMMidd
             entity_entry.entity_id: entity_entry.extended_dict
             for entity_entry in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
         },
+        **runtime,
     }

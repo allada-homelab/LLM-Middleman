@@ -182,12 +182,12 @@ class ScriptedBackend:
         # Connection probes async_setup_entry runs (converse accepts any HTTP response).
         app.router.add_get("/v1/models", self._probe({"data": []}))
         app.router.add_get("/api/tags", self._probe({"models": []}))
-        app.router.add_get("/ok", self._probe({"ok": True}))
+        app.router.add_post("/assistants/search", self._probe([{"assistant_id": "a1", "graph_id": "agent"}]))
         app.router.add_get("/info", self._probe({"mode": "advanced-chat"}))
         return app
 
     @staticmethod
-    def _probe(body: dict[str, Any]) -> Callable[[web.Request], Awaitable[web.Response]]:
+    def _probe(body: object) -> Callable[[web.Request], Awaitable[web.Response]]:
         async def handler(request: web.Request) -> web.Response:
             return web.json_response(body)
 

@@ -1,29 +1,42 @@
-"""LangGraph Platform backend adapter (LLMM-011).
+"""LangGraph Agent Server backend adapter (LLMM-011, tier-1 rework LLMM-022).
 
 Stateful-thread preset: the graph owns its history and tools server-side, so this
-adapter sends only the **new** turn keyed by ``ctx.memory_key`` (mapped to a LangGraph
-``thread_id``) and streams the reply back. Text-only passthrough
-(``supports_ha_tools = False``); the same wire API serves ``langgraph dev``,
-self-hosted, and cloud deployments.
+adapter sends only the **new** turn on a thread derived from ``ctx.memory_key`` and
+streams the reply back. Text-only passthrough (``supports_ha_tools = False``); the same
+wire API serves ``langgraph dev``, self-hosted, and LangSmith cloud deployments.
 
-Streaming uses ``stream_mode=messages-tuple`` over SSE (framed by :mod:`._sse`): each
-token frame carries a ``[message_chunk, metadata]`` JSON array; token text is read from
-the chunk's ``content`` and the emitting node from ``metadata.langgraph_node``. A
-configured ``response_node_filter`` restricts spoken output to one node. A successful run
-terminates by **SSE EOF** — the server simply closes the stream; there is no terminal
-``event: end`` frame. An ``event: error`` frame raises (-> entity guard fallback).
+Wire behaviour (confirmed against a live ``langgraph-api`` 0.16.6 server, see
+``docs/implementation/e2e-results/langgraph-tier1.md``):
 
-Thread continuity: ``session_key -> thread_id`` is held in-memory for ``conversation``
-scope (HA rotates ``conversation_id`` after its 5-minute TTL, so a stale key just makes a
-new thread) and persisted via ``helpers.storage.Store`` for ``device``/``agent`` scope so
-long-lived threads survive HA restarts. A thread the server has GC'd (404) is transparently
-re-created.
+* Runs stream with ``stream_mode=["messages-tuple", "updates"]``. ``messages`` frames are
+  ``[message, metadata]`` pairs; only AI messages (``AIMessageChunk`` tokens, or a whole
+  ``ai`` message from a node that did not stream) are spoken — ``tool``/``human`` messages
+  and tool-call-only chunks never reach TTS. ``updates`` frames carry each node's
+  complete output: finished tool calls and tool results (surfaced in the chat log as
+  external tool activity), ``usage_metadata`` (traced as token stats), and
+  ``__interrupt__`` (a graph waiting on ``interrupt()``).
+* A successful run ends at SSE EOF (no terminal event); ``event: error`` raises. The
+  server sends a ``: heartbeat`` comment every 5 s, so a long silent tool step never
+  trips the 30 s idle (``sock_read``) timeout.
+* Threads are deterministic: ``thread_id = uuid5(namespace, "<entry_id>:<memory_key>")``
+  and every run sends ``if_not_exists: "create"``, so the server creates the thread on
+  first use and re-creates one it has deleted — no client-side map, lock, or 404 retry.
+  A ``session_key -> thread_id`` map persisted by the LLMM-011 adapter is still honoured
+  (read-only) so existing device/agent-scope threads keep their history.
+* ``on_disconnect: "cancel"`` stops a run HA abandoned (cancelled turn, idle timeout);
+  a best-effort ``POST /threads/{id}/runs/{run_id}/cancel`` backs it up for proxies
+  that keep the upstream connection open. ``multitask_strategy`` (default ``rollback``)
+  decides what a new turn does to a run still in flight on the same thread.
+* An interrupt is spoken (its string value, or ``question``/``message``), follow-up
+  listening is requested, and the next turn on that thread is sent as
+  ``{"command": {"resume": <reply>}}`` after confirming the thread still has a pending
+  interrupt.
 
-.. note::
-   The ``messages-tuple`` frame shape and stream-termination behaviour were confirmed
-   against a live self-hosted ``langgraph-api`` 0.10.0 capture (LLMM-018 E2E): a
-   successful run emits ``event: metadata`` then ``event: messages`` frames and closes on
-   EOF — no ``event: end`` is ever sent. ``event: error`` remains the failure signal.
+Graph-side contract: each run's ``context`` carries ``system_prompt`` (threaded runs —
+a system message in ``input`` would accumulate in thread state every turn), ``language``,
+``device_id``, ``satellite_id``, ``conversation_id`` and ``user_id`` (keys without a value
+are omitted). Graphs read them from ``runtime.context``; unknown keys are dropped by a
+dataclass ``context_schema``, so declaring only the ones a graph needs is fine.
 """
 
 from __future__ import annotations
@@ -31,7 +44,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import aiohttp
@@ -42,24 +57,40 @@ from homeassistant.util import slugify
 
 from custom_components.llm_middleman.const import (
     BACKEND_LANGGRAPH,
+    CONF_API_KEY,
     CONF_ASSISTANT_ID,
+    CONF_AUTH_SCHEME,
+    CONF_BASE_URL,
     CONF_INPUT_MESSAGES_KEY,
+    CONF_MEMORY_SCOPE,
+    CONF_MULTITASK_STRATEGY,
     CONF_RESPONSE_NODE_FILTER,
     CONF_STATELESS_RUNS,
     DEFAULT_ASSISTANT_ID,
     DEFAULT_INPUT_MESSAGES_KEY,
+    DEFAULT_MULTITASK_STRATEGY,
+    DEFAULT_TIMEOUT,
     DOMAIN,
+    LANGGRAPH_AUTH_BEARER,
+    MEMORY_SCOPE_AGENT,
+    MEMORY_SCOPE_CONVERSATION,
+    MEMORY_SCOPE_DEVICE,
+    MULTITASK_STRATEGIES,
     STORAGE_VERSION,
 )
 
+from ._compat import external_tool_call_delta, external_tool_result_delta
 from ._sse import BackendStreamError, async_iter_sse
 from .base import (
     BackendAdapter,
+    BackendAuthError,
+    BackendConnectionError,
     BackendStatusError,
     DeltaStream,
+    bearer_headers,
     build_client_timeout,
-    probe_json,
     rendered_system_prompt,
+    trace_token_stats,
 )
 
 if TYPE_CHECKING:
@@ -69,46 +100,53 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Foundation connection/option keys. LLMM-005/006 promote these to const.py CONF_*
-# symbols; used as literals here (mirroring tests/conftest.py) until they land.
-_CONF_BASE_URL = "base_url"
-_CONF_API_KEY = "api_key"
 _CONF_ENTRY_ID = "entry_id"
-_CONF_MEMORY_SCOPE = "memory_scope"
-_SCOPE_CONVERSATION = "conversation"
-_SCOPE_DEVICE = "device"
-_SCOPE_AGENT = "agent"
 
-# Wire event names (confirmed against a live langgraph-api 0.10.0 capture — see module
-# note). Success terminates by SSE EOF, so there is no terminal event to match here.
+# Wire event names. Success terminates by SSE EOF, so there is no terminal event.
 _EVENT_ERROR = "error"
 _EVENT_MESSAGES = "messages"
+_EVENT_METADATA = "metadata"
+_EVENT_UPDATES = "updates"
+_INTERRUPT_KEY = "__interrupt__"
+
+# LangChain message ``type`` values as serialized on the wire: streamed tokens are
+# ``AIMessageChunk``; a node that returns a message without streaming emits ``ai``.
+_AI_TYPES = frozenset({"ai", "AIMessage", "AIMessageChunk"})
+_TOOL_TYPES = frozenset({"tool", "ToolMessage"})
+
+# Thread ids are uuid5 under this namespace. It must never change: existing users'
+# threads are addressed by the ids it produces.
+# (= uuid5(NAMESPACE_URL, "https://github.com/allada-homelab/LLM-Middleman#langgraph-thread")).
+_THREAD_NAMESPACE = uuid.UUID("75e17f5a-ab70-5736-83d6-5c5f8ce93dca")
+
+# The best-effort cancel must not outlive the turn by much; it never blocks the turn.
+_CANCEL_TIMEOUT = 5
+
+# Spoken when a graph interrupts with a value that has no readable question.
+_INTERRUPT_FALLBACK = "The assistant needs more information to continue."
 
 
-class _ThreadNotFound(Exception):
-    """Internal signal: the mapped ``thread_id`` was rejected (404) — recreate it."""
+class AssistantNotFoundError(BackendConnectionError):
+    """The configured assistant/graph id does not exist on the deployment."""
 
 
-async def _raise_thread_not_found(response: aiohttp.ClientResponse) -> None:
-    """Error-status hook for a threaded run: a 404 means the mapped thread was GC'd."""
-    if response.status == 404:
-        raise _ThreadNotFound
-
-
-def _headers(api_key: str | None) -> dict[str, str]:
-    """Build request headers; attach ``x-api-key`` only when a key is configured."""
+def _headers(api_key: str | None, auth_scheme: str | None) -> dict[str, str]:
+    """Build request headers; attach the key as ``x-api-key`` or a bearer token."""
     headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["x-api-key"] = api_key
+    if not api_key:
+        return headers
+    if auth_scheme == LANGGRAPH_AUTH_BEARER:
+        return {**headers, **bearer_headers(api_key)}
+    headers["x-api-key"] = api_key
     return headers
 
 
 def _extract_text(content: object) -> str:
-    """Pull plain text from a LangChain message chunk's ``content``.
+    """Pull plain text from a LangChain message's ``content``.
 
     ``content`` is a string for text models, or a list of content blocks (str or
-    ``{"type": "text", "text": ...}``) for block-based models. Non-text blocks are
-    skipped so only speakable text reaches TTS.
+    ``{"type": "text", "text": ...}``) for block-based models. Non-text blocks (tool use,
+    images) are skipped so only speakable text reaches TTS.
     """
     if isinstance(content, str):
         return content
@@ -129,9 +167,10 @@ def _extract_text(content: object) -> str:
 def _parse_messages_frame(data: str) -> tuple[str | None, str | None]:
     """Parse a ``messages-tuple`` SSE ``data`` payload into ``(text, node)``.
 
-    Returns ``(None, None)`` for malformed JSON or an unexpected shape so a single bad
-    frame is skipped rather than aborting the stream. Empty token text is normalized to
-    ``None`` (no spurious empty delta).
+    Only AI messages yield text: tool results, echoed human input, and tool-call chunks
+    (empty ``content``) return ``None`` text so they are never spoken. Malformed JSON or
+    an unexpected shape returns ``(None, None)`` so one bad frame is skipped rather than
+    aborting the stream.
     """
     try:
         parsed: object = json.loads(data)
@@ -144,19 +183,150 @@ def _parse_messages_frame(data: str) -> tuple[str | None, str | None]:
     if len(frame) != 2:
         return None, None
     chunk, metadata = frame[0], frame[1]
-    if not isinstance(chunk, dict):
-        return None, None
-    text = _extract_text(cast("dict[str, object]", chunk).get("content"))
     node = cast("dict[str, object]", metadata).get("langgraph_node") if isinstance(metadata, dict) else None
-    return (text or None, node if isinstance(node, str) else None)
+    node = node if isinstance(node, str) else None
+    if not isinstance(chunk, dict):
+        return None, node
+    message = cast("dict[str, object]", chunk)
+    if message.get("type") not in _AI_TYPES:
+        return None, node
+    return _extract_text(message.get("content")) or None, node
+
+
+@dataclass
+class _Updates:
+    """What one ``updates`` frame contributes to the turn."""
+
+    tool_calls: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list[tuple[str, str, dict[str, Any]]])
+    tool_results: list[tuple[str, str, Any, bool]] = field(default_factory=list[tuple[str, str, Any, bool]])
+    input_tokens: int = 0
+    output_tokens: int = 0
+    has_usage: bool = False
+    interrupt: object = None
+    interrupted: bool = False
+
+
+def _node_messages(update: object, messages_key: str) -> list[dict[str, Any]]:
+    """Return the message dicts a node's update wrote to ``messages_key``."""
+    if not isinstance(update, dict):
+        return []
+    value: object = cast("dict[str, object]", update).get(messages_key)
+    messages: list[object] = cast("list[object]", value) if isinstance(value, list) else [value]
+    return [cast("dict[str, Any]", m) for m in messages if isinstance(m, dict)]
+
+
+def _parse_updates_frame(data: str, messages_key: str) -> _Updates:
+    """Parse an ``updates`` SSE payload (``{node: update}``) into tool activity/usage/interrupt."""
+    out = _Updates()
+    try:
+        parsed: object = json.loads(data)
+    except json.JSONDecodeError, ValueError:
+        _LOGGER.debug("Skipping malformed LangGraph updates frame")
+        return out
+    if not isinstance(parsed, dict):
+        return out
+    for node, update in cast("dict[str, object]", parsed).items():
+        if node == _INTERRUPT_KEY:
+            interrupts = cast("list[object]", update) if isinstance(update, list) else []
+            first = interrupts[0] if interrupts else None
+            out.interrupted = True
+            out.interrupt = cast("dict[str, object]", first).get("value") if isinstance(first, dict) else None
+            continue
+        for message in _node_messages(update, messages_key):
+            msg_type = message.get("type")
+            if msg_type in _AI_TYPES:
+                _collect_ai_message(message, out)
+            elif msg_type in _TOOL_TYPES:
+                call_id, name = message.get("tool_call_id"), message.get("name")
+                if isinstance(call_id, str) and call_id:
+                    error = message.get("status") == "error"
+                    out.tool_results.append(
+                        (call_id, name if isinstance(name, str) else "", message.get("content"), error)
+                    )
+    return out
+
+
+def _collect_ai_message(message: dict[str, Any], out: _Updates) -> None:
+    """Fold a whole AI message's finished tool calls and token usage into ``out``."""
+    for raw in cast("list[object]", message.get("tool_calls") or []):
+        if not isinstance(raw, dict):
+            continue
+        call = cast("dict[str, object]", raw)
+        call_id, name, args = call.get("id"), call.get("name"), call.get("args")
+        if isinstance(call_id, str) and call_id and isinstance(name, str):
+            out.tool_calls.append((call_id, name, cast("dict[str, Any]", args) if isinstance(args, dict) else {}))
+    usage = message.get("usage_metadata")
+    if isinstance(usage, dict):
+        tokens = cast("dict[str, object]", usage)
+        input_tokens, output_tokens = tokens.get("input_tokens"), tokens.get("output_tokens")
+        if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+            out.input_tokens += input_tokens
+            out.output_tokens += output_tokens
+            out.has_usage = True
+
+
+def _interrupt_text(value: object) -> str:
+    """Return the speakable question of an interrupt value."""
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, dict):
+        mapping = cast("dict[str, object]", value)
+        for key in ("question", "message"):
+            text = mapping.get(key)
+            if isinstance(text, str) and text:
+                return text
+    return _INTERRUPT_FALLBACK
+
+
+@dataclass
+class _RunState:
+    """Per-run bookkeeping shared between ``stream_turn`` and the stream it drives."""
+
+    run_id: str | None = None
+    finished: bool = False
+    interrupted: bool = False
+
+
+async def _probe_assistant(
+    session: aiohttp.ClientSession, url: str, headers: Mapping[str, str], body: str | None
+) -> object:
+    """GET (``body is None``) or POST ``url`` for the assistant check; return the JSON body."""
+    timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
+    try:
+        request = (
+            session.get(url, headers=headers, timeout=timeout)
+            if body is None
+            else session.post(url, data=body, headers=headers, timeout=timeout)
+        )
+        async with request as response:
+            if response.status in (401, 403):
+                raise BackendAuthError(f"LangGraph rejected credentials (HTTP {response.status})")
+            if response.status == 404:
+                raise AssistantNotFoundError(f"LangGraph assistant not found at {url}")
+            if response.status >= 400:
+                raise BackendStatusError(f"LangGraph assistant probe returned HTTP {response.status}")
+            return await response.json()
+    except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+        raise BackendConnectionError(f"Cannot reach LangGraph at {url}: {err}") from err
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 class LangGraphAdapter(BackendAdapter):
-    """LangGraph Platform preset: stateful threads, ``messages-tuple`` streaming."""
+    """LangGraph preset: deterministic threads, ``messages-tuple`` + ``updates`` streaming."""
 
     backend_type: ClassVar[str] = BACKEND_LANGGRAPH
     supports_ha_tools: ClassVar[bool] = False  # tools live server-side in the graph
     supports_memory_scope: ClassVar[bool] = True  # stateful -> key maps to a thread_id
+    # The rendered prompt (with HA's date/time) rides in the run context, and a resume
+    # value must be the user's literal answer to the graph's question.
+    wants_time_prefix: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -164,45 +334,56 @@ class LangGraphAdapter(BackendAdapter):
         session: aiohttp.ClientSession,
         connection_data: Mapping[str, Any],
     ) -> None:
-        """Store connection state and build the per-entry thread-map store."""
+        """Store connection state and the legacy thread-map / pending-resume stores."""
         super().__init__(hass, session, connection_data)
-        self._base_url = str(connection_data.get(_CONF_BASE_URL, "")).rstrip("/")
-        self._api_key: str | None = connection_data.get(_CONF_API_KEY) or None
+        self._base_url = str(connection_data.get(CONF_BASE_URL, "")).rstrip("/")
+        self._request_headers = _headers(
+            connection_data.get(CONF_API_KEY) or None, connection_data.get(CONF_AUTH_SCHEME)
+        )
         self._assistant_id = str(connection_data.get(CONF_ASSISTANT_ID, DEFAULT_ASSISTANT_ID))
-        # Per-entry discriminator for the Store filename (entry_id preferred; base_url
-        # slug is a collision-safe fallback for the LLMM-005 wiring not landed yet).
-        discriminator = connection_data.get(_CONF_ENTRY_ID) or self._base_url or "default"
-        store_key = f"{DOMAIN}.langgraph.{slugify(discriminator)}"
+        # Per-entry discriminator for thread ids and Store filenames (entry_id is always
+        # passed by async_setup_entry; the base_url slug keeps bare test construction working).
+        self._entry_key = str(connection_data.get(_CONF_ENTRY_ID) or self._base_url or "default")
+        store_key = f"{DOMAIN}.langgraph.{slugify(self._entry_key)}"
+        # Read-only: the LLMM-011 session_key -> thread_id map for device/agent scopes.
         self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, store_key)
-        # conversation-scope map (in-memory) and lazily loaded device/agent-scope map.
-        self._mem: dict[str, str] = {}
-        self._persisted: dict[str, str] | None = None
-        self._lock = asyncio.Lock()
+        self._legacy: dict[str, str] | None = None
+        # thread_id -> whether it belongs to a persisted (device/agent) scope.
+        self._pending_store: Store[list[str]] = Store(hass, STORAGE_VERSION, f"{store_key}.pending_resume")
+        self._pending: dict[str, bool] | None = None
+        # Diagnostics only (never read by turn logic, so concurrent turns can't race on it).
+        self.last_run_id: str | None = None
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
-        """Probe ``GET /ok``; on any non-success fall back to ``POST /assistants/search``.
+        """Check the deployment answers authenticated requests AND the assistant exists.
 
-        Raises :class:`BackendAuthError` on 401/403 and :class:`BackendConnectionError`
-        on transport failure or a failing fallback, mirroring the ollama config-flow shape.
+        A UUID assistant id is looked up with ``GET /assistants/{id}``; a graph id (which
+        that endpoint rejects with 422) with ``POST /assistants/search {"graph_id"}``.
+        401/403 -> :class:`BackendAuthError`; missing assistant (404 or no search hit) ->
+        :class:`AssistantNotFoundError`; transport failure / other status ->
+        :class:`BackendConnectionError`.
         """
         session = async_get_clientsession(hass)
-        base_url = str(data.get(_CONF_BASE_URL, "")).rstrip("/")
-        headers = _headers(data.get(_CONF_API_KEY) or None)
-        try:
-            await probe_json(session, f"{base_url}/ok", label="LangGraph", headers=headers, parse=False)
-        except BackendStatusError:
-            # /ok unavailable on this deployment — try the assistants search endpoint
-            # (its body is a JSON list, so only the status is checked).
-            await probe_json(
-                session,
-                f"{base_url}/assistants/search",
-                label="LangGraph",
-                headers=headers,
-                method="POST",
-                data=json.dumps({}),
-                parse=False,
-            )
+        base_url = str(data.get(CONF_BASE_URL, "")).rstrip("/")
+        headers = _headers(data.get(CONF_API_KEY) or None, data.get(CONF_AUTH_SCHEME))
+        assistant_id = str(data.get(CONF_ASSISTANT_ID) or DEFAULT_ASSISTANT_ID)
+        if _is_uuid(assistant_id):
+            await _probe_assistant(session, f"{base_url}/assistants/{assistant_id}", headers, None)
+            return
+        found = await _probe_assistant(
+            session, f"{base_url}/assistants/search", headers, json.dumps({"graph_id": assistant_id, "limit": 1})
+        )
+        if not (isinstance(found, list) and found):
+            raise AssistantNotFoundError(f"LangGraph has no assistant for graph {assistant_id!r}")
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Non-secret runtime state for the config-entry diagnostics dump."""
+        return {
+            "last_run_id": self.last_run_id,
+            "threads_awaiting_resume": len(self._pending) if self._pending is not None else None,
+            "legacy_thread_map_entries": len(self._legacy) if self._legacy is not None else None,
+        }
 
     async def stream_turn(
         self,
@@ -210,163 +391,229 @@ class LangGraphAdapter(BackendAdapter):
         user_input: conversation.ConversationInput,
         ctx: TurnContext,
     ) -> DeltaStream:
-        """Ensure a thread for ``ctx.memory_key`` and stream the new turn's reply.
-
-        LangGraph owns history server-side, so only the new turn is sent (stateful
-        contract); ``chat_log`` is read solely for the rendered system prompt.
-        """
+        """Stream the new turn's reply on the session's thread (or a stateless run)."""
         options = ctx.options
         timeout = build_client_timeout(options)
         system_prompt = rendered_system_prompt(chat_log)
+        stateless = bool(options.get(CONF_STATELESS_RUNS, False))
 
-        if bool(options.get(CONF_STATELESS_RUNS, False)):
-            async for delta in self._run_stream(None, user_input, options, timeout, system_prompt):
-                yield delta
-            return
-
-        scope = str(options.get(_CONF_MEMORY_SCOPE, _SCOPE_CONVERSATION))
-        persist = scope in (_SCOPE_DEVICE, _SCOPE_AGENT)
-        session_key = ctx.memory_key
-        thread_id = await self._ensure_thread(session_key, persist, timeout)
-        try:
-            async for delta in self._run_stream(thread_id, user_input, options, timeout, system_prompt):
-                yield delta
-        except _ThreadNotFound:
-            # Persisted/cached thread was GC'd server-side: recreate and retry once.
-            _LOGGER.debug("LangGraph thread %s gone; recreating", thread_id)
-            thread_id = await self._create_thread(timeout)
-            await self._store_thread(session_key, thread_id, persist)
-            async for delta in self._run_stream(thread_id, user_input, options, timeout, system_prompt):
-                yield delta
-
-    # --- thread mapping ------------------------------------------------------
-
-    async def _ensure_thread(self, session_key: str, persist: bool, timeout: aiohttp.ClientTimeout) -> str:
-        """Return the mapped ``thread_id`` for ``session_key``, creating one if absent."""
-        if not persist:
-            existing = self._mem.get(session_key)
-            if existing is not None:
-                return existing
-            thread_id = await self._create_thread(timeout)
-            self._mem[session_key] = thread_id
-            return thread_id
-        async with self._lock:
-            mapping = await self._persisted_map()
-            existing = mapping.get(session_key)
-            if existing is not None:
-                return existing
-            thread_id = await self._create_thread(timeout)
-            mapping[session_key] = thread_id
-            await self._store.async_save(mapping)
-            return thread_id
-
-    async def _store_thread(self, session_key: str, thread_id: str, persist: bool) -> None:
-        """Record ``session_key -> thread_id`` in the in-memory or persisted map."""
-        if not persist:
-            self._mem[session_key] = thread_id
-            return
-        async with self._lock:
-            mapping = await self._persisted_map()
-            mapping[session_key] = thread_id
-            await self._store.async_save(mapping)
-
-    async def _persisted_map(self) -> dict[str, str]:
-        """Lazily load the persisted device/agent-scope map (call under ``self._lock``)."""
-        if self._persisted is None:
-            loaded = await self._store.async_load()
-            self._persisted = loaded if loaded is not None else {}
-        return self._persisted
-
-    async def _create_thread(self, timeout: aiohttp.ClientTimeout) -> str:
-        """Create a LangGraph thread and return its id."""
-        async with self._post_checked(
-            f"{self._base_url}/threads",
-            label="LangGraph thread creation",
-            data=json.dumps({}),
-            headers=_headers(self._api_key),
-            timeout=timeout,
-        ) as resp:
-            payload: object = await resp.json()
-        thread_id = cast("dict[str, object]", payload).get("thread_id") if isinstance(payload, dict) else None
-        if not isinstance(thread_id, str):
-            raise BackendStreamError("LangGraph thread creation returned no thread_id")
-        return thread_id
-
-    # --- streaming -----------------------------------------------------------
-
-    def _build_body(
-        self,
-        user_input: conversation.ConversationInput,
-        options: Mapping[str, Any],
-        system_prompt: str | None,
-        *,
-        threaded: bool,
-    ) -> dict[str, Any]:
-        """Assemble the run request body carrying only the new turn.
-
-        On a persistent thread the prompt goes in the run's ``context`` (read by the
-        graph as ``runtime.context.system_prompt``): a system message in ``input`` would
-        be appended to the thread's state by the ``add_messages`` reducer every turn. A
-        stateless run has no accumulated state, so it leads the input messages instead.
-        """
-        messages: list[dict[str, str]] = []
-        if system_prompt and not threaded:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": user_input.text})
-        input_key = str(options.get(CONF_INPUT_MESSAGES_KEY, DEFAULT_INPUT_MESSAGES_KEY))
+        thread_id: str | None = None
+        persist = False
+        resume = False
         body: dict[str, Any] = {
             "assistant_id": self._assistant_id,
-            "input": {input_key: messages},
-            "stream_mode": "messages-tuple",
+            "stream_mode": ["messages-tuple", "updates"],
+            "on_disconnect": "cancel",
         }
-        if system_prompt and threaded:
-            body["context"] = {"system_prompt": system_prompt}
-        return body
+        input_key = str(options.get(CONF_INPUT_MESSAGES_KEY) or DEFAULT_INPUT_MESSAGES_KEY)
+        context = self._run_context(chat_log, user_input, None if stateless else system_prompt)
+        if stateless:
+            url = f"{self._base_url}/runs/stream"
+        else:
+            scope = str(options.get(CONF_MEMORY_SCOPE, MEMORY_SCOPE_CONVERSATION))
+            persist = scope in (MEMORY_SCOPE_DEVICE, MEMORY_SCOPE_AGENT)
+            thread_id = await self._thread_id(ctx.memory_key)
+            resume = await self._take_pending_resume(thread_id, timeout)
+            url = f"{self._base_url}/threads/{thread_id}/runs/stream"
+            strategy = str(options.get(CONF_MULTITASK_STRATEGY) or DEFAULT_MULTITASK_STRATEGY)
+            body["if_not_exists"] = "create"
+            body["multitask_strategy"] = strategy if strategy in MULTITASK_STRATEGIES else DEFAULT_MULTITASK_STRATEGY
+        if resume:
+            body["command"] = {"resume": user_input.text}
+        else:
+            messages: list[dict[str, str]] = []
+            if system_prompt and stateless:
+                # No accumulated state on a stateless run, so the prompt leads the input.
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": user_input.text})
+            body["input"] = {input_key: messages}
+        if context:
+            body["context"] = context
+
+        state = _RunState()
+        try:
+            async for delta in self._run_stream(url, body, options, timeout, chat_log, ctx, state):
+                yield delta
+        except GeneratorExit, asyncio.CancelledError, TimeoutError, aiohttp.ClientError:
+            # Abandoned mid-run (turn cancelled, idle timeout, dropped socket): make sure
+            # the server stops too. on_disconnect covers stateless runs (no thread to address).
+            if thread_id is not None and state.run_id is not None and not state.finished:
+                self._fire_cancel(thread_id, state.run_id)
+            raise
+        if thread_id is not None and state.interrupted:
+            await self._mark_pending_resume(thread_id, persist)
+
+    # --- request assembly ------------------------------------------------------
+
+    @staticmethod
+    def _run_context(
+        chat_log: conversation.ChatLog, user_input: conversation.ConversationInput, system_prompt: str | None
+    ) -> dict[str, str]:
+        """Return the run ``context``: the prompt plus HA turn metadata, empty values omitted."""
+        values: dict[str, str | None] = {
+            "system_prompt": system_prompt,
+            "language": user_input.language,
+            "device_id": user_input.device_id,
+            "satellite_id": user_input.satellite_id,
+            "conversation_id": chat_log.conversation_id,
+            "user_id": user_input.context.user_id,
+        }
+        return {key: value for key, value in values.items() if isinstance(value, str) and value}
+
+    # --- threads -----------------------------------------------------------------
+
+    async def _thread_id(self, session_key: str) -> str:
+        """Return the legacy mapped thread for ``session_key``, else its deterministic uuid5."""
+        if self._legacy is None:
+            self._legacy = await self._store.async_load() or {}
+        legacy = self._legacy.get(session_key)
+        if legacy is not None:
+            return legacy
+        return str(uuid.uuid5(_THREAD_NAMESPACE, f"{self._entry_key}:{session_key}"))
+
+    async def _pending_map(self) -> dict[str, bool]:
+        if self._pending is None:
+            loaded = await self._pending_store.async_load() or []
+            self._pending = dict.fromkeys(loaded, True)
+        return self._pending
+
+    async def _mark_pending_resume(self, thread_id: str, persist: bool) -> None:
+        """Remember ``thread_id`` is waiting on an interrupt answer (persisted scopes saved)."""
+        pending = await self._pending_map()
+        pending[thread_id] = persist
+        if persist:
+            await self._save_pending(pending)
+
+    async def _take_pending_resume(self, thread_id: str, timeout: aiohttp.ClientTimeout) -> bool:
+        """Consume a pending-resume mark; True only if the server still holds an interrupt.
+
+        A ``command.resume`` on a thread with no pending interrupt silently does nothing
+        (the user's utterance would be lost), so the mark is confirmed with
+        ``GET /threads/{id}``. Its ``interrupts`` field — not ``status``, which a cancelled
+        run also leaves as ``interrupted`` — is the signal.
+        """
+        pending = await self._pending_map()
+        if thread_id not in pending:
+            return False
+        if pending.pop(thread_id):
+            await self._save_pending(pending)
+        async with self.session.get(
+            f"{self._base_url}/threads/{thread_id}", headers=self._request_headers, timeout=timeout
+        ) as resp:
+            if resp.status == 404:
+                return False
+            if resp.status >= 400:
+                raise BackendStreamError(f"LangGraph thread lookup returned HTTP {resp.status}")
+            thread: object = await resp.json()
+        interrupts = cast("dict[str, object]", thread).get("interrupts") if isinstance(thread, dict) else None
+        return bool(interrupts)
+
+    async def _save_pending(self, pending: dict[str, bool]) -> None:
+        await self._pending_store.async_save([thread_id for thread_id, persist in pending.items() if persist])
+
+    # --- streaming ---------------------------------------------------------------
 
     async def _run_stream(
         self,
-        thread_id: str | None,
-        user_input: conversation.ConversationInput,
+        url: str,
+        body: dict[str, Any],
         options: Mapping[str, Any],
         timeout: aiohttp.ClientTimeout,
-        system_prompt: str | None,
+        chat_log: conversation.ChatLog,
+        ctx: TurnContext,
+        state: _RunState,
     ) -> DeltaStream:
-        """POST a (threaded or stateless) run and yield role-first token deltas.
+        """POST the run and yield role-first deltas: spoken text plus external tool activity.
 
-        Raises :class:`_ThreadNotFound` on a 404 for a threaded run (before any delta) so
-        the caller can recreate the thread; other HTTP/stream failures raise
-        :class:`BackendStreamError` for the entity guard.
+        A run that used tools but spoke nothing raises after the stream: left alone the chat
+        log would end on a tool result, which re-enters the entity's tool loop (re-sending
+        the turn); raising hands it to the entity guard, which appends the fallback reply.
         """
-        if thread_id is None:
-            url = f"{self._base_url}/runs/stream"
-        else:
-            url = f"{self._base_url}/threads/{thread_id}/runs/stream"
-        body = json.dumps(
-            self._build_body(user_input, options, system_prompt, threaded=thread_id is not None), default=str
-        )
         node_filter = str(options.get(CONF_RESPONSE_NODE_FILTER, "") or "")
+        messages_key = str(options.get(CONF_INPUT_MESSAGES_KEY) or DEFAULT_INPUT_MESSAGES_KEY)
+        block_open = False  # an assistant block that may take more content is open
+        needs_reply = False  # tool activity happened since the last spoken text
+        input_tokens = output_tokens = 0
+        has_usage = False
 
         async with self._post_checked(
             url,
             label="LangGraph run",
-            data=body,
-            headers=_headers(self._api_key),
+            data=json.dumps(body, default=str),
+            headers=self._request_headers,
             timeout=timeout,
-            on_error_status=_raise_thread_not_found if thread_id is not None else None,
         ) as resp:
-            role_sent = False
             async for event in async_iter_sse(resp.content.iter_any()):
-                # Success terminates by SSE EOF (loop exhaustion), not a terminal event.
                 if event.event == _EVENT_ERROR:
                     raise BackendStreamError(f"LangGraph error event: {event.data[:200]}")
+                if event.event == _EVENT_METADATA:
+                    metadata = _loads(event.data)
+                    run_id = cast("dict[str, object]", metadata).get("run_id") if isinstance(metadata, dict) else None
+                    if isinstance(run_id, str):
+                        state.run_id = self.last_run_id = run_id
+                    continue
+                if event.event == _EVENT_UPDATES:
+                    update = _parse_updates_frame(event.data, messages_key)
+                    if update.has_usage:
+                        input_tokens += update.input_tokens
+                        output_tokens += update.output_tokens
+                        has_usage = True
+                    for call_id, name, args in update.tool_calls:
+                        yield external_tool_call_delta(call_id, name, args)
+                        block_open, needs_reply = False, True
+                    for call_id, name, result, error in update.tool_results:
+                        yield external_tool_result_delta(call_id, name, result, error=error)
+                        block_open, needs_reply = False, True
+                    if update.interrupted:
+                        state.interrupted = ctx.continue_conversation = True
+                        if not block_open:
+                            yield {"role": "assistant"}
+                        yield {"content": _interrupt_text(update.interrupt)}
+                        block_open, needs_reply = True, False
+                    continue
                 if not (event.event == _EVENT_MESSAGES or event.event.startswith(f"{_EVENT_MESSAGES}/")):
                     continue
                 text, node = _parse_messages_frame(event.data)
-                if text is None:
+                if text is None or (node_filter and node != node_filter):
                     continue
-                if node_filter and node != node_filter:
-                    continue
-                if not role_sent:
+                if not block_open:
                     yield {"role": "assistant"}
-                    role_sent = True
+                    block_open = True
                 yield {"content": text}
+                needs_reply = False
+            state.finished = True
+
+        if has_usage:
+            trace_token_stats(chat_log, input_tokens=input_tokens, output_tokens=output_tokens)
+        if needs_reply:
+            raise BackendStreamError("LangGraph run used tools but produced no reply text")
+
+    # --- best-effort cancel --------------------------------------------------------
+
+    def _fire_cancel(self, thread_id: str, run_id: str) -> None:
+        """Schedule a fire-and-forget cancel of ``run_id`` (never blocks the cancelled turn)."""
+        self.hass.async_create_background_task(
+            self._cancel_run(thread_id, run_id), name=f"{DOMAIN}.langgraph.cancel.{run_id}"
+        )
+
+    async def _cancel_run(self, thread_id: str, run_id: str) -> None:
+        """POST ``/threads/{id}/runs/{run_id}/cancel``; failures are logged, never raised.
+
+        404 is the normal outcome when ``on_disconnect`` already stopped the run.
+        """
+        url = f"{self._base_url}/threads/{thread_id}/runs/{run_id}/cancel"
+        try:
+            async with self.session.post(
+                url, headers=self._request_headers, timeout=aiohttp.ClientTimeout(total=_CANCEL_TIMEOUT)
+            ) as resp:
+                _LOGGER.debug("LangGraph cancel of run %s returned HTTP %s", run_id, resp.status)
+        except (TimeoutError, aiohttp.ClientError) as err:
+            _LOGGER.debug("LangGraph cancel of run %s failed: %s", run_id, err)
+
+
+def _loads(data: str) -> object:
+    """Parse JSON, returning ``None`` for a malformed payload."""
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError, ValueError:
+        return None
