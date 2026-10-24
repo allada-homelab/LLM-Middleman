@@ -1,0 +1,6 @@
+{
+  "description": "command.resume on a thread with no pending interrupt — in-stream `event: error`",
+  "server": "langgraph-api 0.16.6 (langgraph 1.2.17) via `langgraph dev`, captured 2026-10-24 (LLMM-022)",
+  "request": "POST /threads/{id}/runs/stream stream_mode=[messages-tuple, updates], if_not_exists=create, on_disconnect=cancel",
+  "body": "event: metadata\r\ndata: {\"run_id\":\"01a1700b-0b76-74dd-8004-ae02a66e88e8\",\"attempt\":1}\r\n\r\nevent: error\r\ndata: {\"error\":\"TypeError\",\"message\":\"'NoneType' object is not iterable\"}\r\n\r\n"
+}

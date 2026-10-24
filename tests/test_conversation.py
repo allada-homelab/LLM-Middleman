@@ -37,7 +37,6 @@ from custom_components.llm_middleman.backends.openai_compat import OpenAICompatA
 from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
-    BACKEND_LANGGRAPH,
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_MEMORY_SCOPE,
@@ -462,7 +461,6 @@ def test_time_prefix_opt_out_for_prompt_forwarding_and_replay_presets() -> None:
     assert {cls.backend_type for cls in BACKEND_TO_CLS.values() if cls.wants_time_prefix} == {
         BACKEND_CONVERSE,
         BACKEND_DIFY,
-        BACKEND_LANGGRAPH,
     }
 
 

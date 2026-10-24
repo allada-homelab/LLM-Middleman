@@ -85,8 +85,9 @@ Phase milestones match `plan.md` §Implementation phases. `⇐` = depends on.
 | ID | Title | ⇐ |
 |---|---|---|
 | LLMM-020 | Dify adapter (chat/agent/chatflow apps, SSE streaming, server-side memory) | LLMM-003, LLMM-004 |
+| LLMM-022 | LangGraph tier-1 (AI-only speech, deterministic threads, run cancel, interrupts, external tool activity) | LLMM-011 |
 
 ### Fast-follow (roadmap, not v1 — file tickets when picked up)
 AI Task `generate_data` subentry type · token stats via `chat_log.async_trace` · external
-tool-activity surfacing (`ToolInput(external=True)`) · AG-UI / Anthropic /
+tool-activity surfacing (`ToolInput(external=True)`; LangGraph done in LLMM-022, helper in `backends/_compat.py`) · AG-UI / Anthropic /
 Responses-toggle presets.
