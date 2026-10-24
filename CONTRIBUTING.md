@@ -72,7 +72,8 @@ just pre-commit  # pre-commit run --all-files
 
 ## Releasing
 
-1. In a PR, bump `version` in `custom_components/llm_middleman/manifest.json` and add a
+1. In a PR, bump `version` in `custom_components/llm_middleman/manifest.json` and
+   `pyproject.toml` together (`tests/test_versions.py` fails if they differ), and add a
    matching `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`; merge it.
 2. Tag the merge commit and push the tag:
 
@@ -104,7 +105,7 @@ This is a HACS custom integration — there is no build backend and no PyPI
 publish. Releases are SemVer and tag-based (HACS surfaces GitHub tags/releases
 as installable versions). To cut a release:
 
-1. Bump `"version"` in `custom_components/llm_middleman/manifest.json`.
+1. Bump `"version"` in `custom_components/llm_middleman/manifest.json` and `pyproject.toml`.
 2. Update `CHANGELOG.md`.
 3. Land both on the default branch.
 4. Tag the release commit with a matching `vX.Y.Z` tag and push it:
