@@ -44,16 +44,20 @@ __all__ = [
 ]
 
 
-def build_client_timeout(options: Mapping[str, Any]) -> aiohttp.ClientTimeout:
+def build_client_timeout(options: Mapping[str, Any], default: float = DEFAULT_TIMEOUT) -> aiohttp.ClientTimeout:
     """Return the aiohttp timeout every adapter uses for its streaming POST.
 
-    ``total`` is the per-agent ``CONF_TIMEOUT`` (default 60 s); ``sock_read`` is the
-    idle deadline (:data:`IDLE_TIMEOUT`), so a responsive-but-slow stream isn't killed
-    by a single total deadline (the v0 60 s bug). Lives on ``base`` — not the entity
-    module — so adapters import it without a cycle back through ``conversation``.
+    There is deliberately no ``total`` deadline: aiohttp's ``total`` bounds the whole
+    request *including* the streamed body, so it would cut off a reply that is still
+    producing tokens (the v0 60 s bug). Instead ``sock_connect`` is the per-agent
+    ``CONF_TIMEOUT`` (how long to wait to reach the backend) and ``sock_read`` is the
+    idle deadline (:data:`IDLE_TIMEOUT`), which fails a stalled backend fast while a
+    live stream runs as long as frames keep arriving. Lives on ``base`` — not the
+    entity module — so adapters import it without a cycle back through ``conversation``.
     """
     return aiohttp.ClientTimeout(
-        total=options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
+        total=None,
+        sock_connect=options.get(CONF_TIMEOUT, default),
         sock_read=IDLE_TIMEOUT,
     )
 

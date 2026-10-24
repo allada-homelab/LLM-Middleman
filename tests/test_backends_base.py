@@ -26,7 +26,9 @@ from custom_components.llm_middleman.backends.base import (
     BackendConnectionError,
     BackendStreamError,
     TurnContext,
+    build_client_timeout,
 )
+from custom_components.llm_middleman.const import CONF_TIMEOUT, DEFAULT_TIMEOUT, IDLE_TIMEOUT
 
 
 class _DummyAdapter(BackendAdapter):
@@ -137,3 +139,17 @@ async def test_isinstance_aiohttp_session_contract(hass: HomeAssistant) -> None:
     adapter = _DummyAdapter(hass, session, {})
     assert isinstance(adapter.session, aiohttp.ClientSession)
     assert adapter.session is session
+
+
+def test_build_client_timeout_has_no_total_deadline() -> None:
+    """A live stream must not be killed by a whole-request deadline (the v0 60 s bug)."""
+    timeout = build_client_timeout({CONF_TIMEOUT: 7})
+    assert timeout.total is None
+    assert timeout.sock_connect == 7
+    assert timeout.sock_read == IDLE_TIMEOUT
+
+
+def test_build_client_timeout_default() -> None:
+    timeout = build_client_timeout({})
+    assert timeout.total is None
+    assert timeout.sock_connect == DEFAULT_TIMEOUT

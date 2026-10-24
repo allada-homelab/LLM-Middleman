@@ -5,10 +5,14 @@ conftest harness (arbitrary chunk boundaries, CRLF). ``session_key -> conversati
 mapping / persistence is exercised against a real ``helpers.storage.Store`` backed by the
 ``hass_storage`` fixture, mirroring ``test_langgraph.py``.
 
-Wire facts (Dify ``POST /chat-messages``, ``response_mode: streaming``): ``agent_message``
-(Agent apps) and ``message`` (Chatbot/Chatflow) both carry ``answer`` deltas + a
-``conversation_id``; ``message_end`` terminates; ``error`` ends an HTTP-200 stream with a
-failure; ``ping``/``agent_thought``/``message_file``/``tts_*`` are ignored.
+Wire facts (Dify ``POST /chat-messages``, ``response_mode: streaming``, per
+https://docs.dify.ai/en/api-reference/openapi_service.json): every event except ``ping`` is a
+bare ``data: {json}`` frame with the event name INSIDE the JSON (``"event": "message"``) — no
+``event:`` line; ``ping`` is ``event: ping`` with no data. ``agent_message`` (Agent apps) and
+``message`` (Chatbot/Chatflow) carry ``answer`` deltas + a ``conversation_id``; a new-style Agent
+app closes with one ``message`` carrying the complete answer (not to be appended);
+``message_end`` terminates; ``error`` ends an HTTP-200 stream with a failure; everything else
+(``agent_thought``/``message_replace``/``workflow_*``/``node_*``/``tts_*`` …) is not spoken.
 """
 
 from __future__ import annotations
@@ -77,22 +81,44 @@ def _adapter(hass: HomeAssistant, session: MagicMock, conn: dict[str, Any] | Non
     return DifyAdapter(hass, cast("aiohttp.ClientSession", session), conn if conn is not None else _CONN)
 
 
+# Keep-alive exactly as Dify sends it: an ``event:`` line with no ``data:`` (dispatches nothing).
+_PING = b"event: ping\n\n"
+
+
+def _ev(event: str, *, cid: str = "conv-abc", task_id: str = "task-1", **fields: Any) -> dict[str, Any]:
+    """A Dify stream event payload: the event name rides INSIDE the JSON, with the common ids."""
+    return {
+        "event": event,
+        "task_id": task_id,
+        "id": "m-1",
+        "message_id": "m-1",
+        "conversation_id": cid,
+        "created_at": 1705395332,
+        **fields,
+    }
+
+
 def _msg(
-    answer: str,
-    *,
-    event: str = "agent_message",
-    cid: str = "conv-abc",
-    task_id: str = "task-1",
-) -> tuple[str, str]:
+    answer: str, *, event: str = "agent_message", cid: str = "conv-abc", task_id: str = "task-1"
+) -> dict[str, Any]:
     """A Dify content event carrying an ``answer`` delta + ids."""
-    return (
-        event,
-        json.dumps({"answer": answer, "task_id": task_id, "message_id": "m-1", "conversation_id": cid}),
-    )
+    return _ev(event, cid=cid, task_id=task_id, answer=answer)
 
 
-def _end(*, cid: str = "conv-abc", task_id: str = "task-1") -> tuple[str, str]:
-    return ("message_end", json.dumps({"metadata": {}, "conversation_id": cid, "task_id": task_id}))
+def _end(*, cid: str = "conv-abc", task_id: str = "task-1") -> dict[str, Any]:
+    usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "latency": 0.5}
+    return _ev("message_end", cid=cid, task_id=task_id, metadata={"usage": usage})
+
+
+def _dify_sse(*frames: dict[str, Any] | bytes, newline: bytes = b"\n") -> bytes:
+    """Build a Dify wire blob: each payload as a bare ``data: {json}`` frame; raw bytes verbatim."""
+    out = bytearray()
+    for frame in frames:
+        if isinstance(frame, bytes):
+            out += frame.replace(b"\n", newline)
+        else:
+            out += b"data: " + json.dumps(frame).encode() + newline + newline
+    return bytes(out)
 
 
 def _session(blob: bytes, *, chunk: int | list[int] = 1, status: int = 200, text: str = "") -> MagicMock:
@@ -147,7 +173,7 @@ def test_adapter_classvars() -> None:
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
 async def test_happy_path_streams_both_event_types(hass: HomeAssistant, event: str, newline: bytes) -> None:
     # Both Agent (agent_message) and Chatbot/Chatflow (message) deltas stream identically.
-    blob = sse_bytes(_msg("Hello ", event=event), _msg("world", event=event), _end(), newline=newline)
+    blob = _dify_sse(_msg("Hello ", event=event), _msg("world", event=event), _end(), newline=newline)
     deltas = await _run(hass, blob, chunk=5)
     assert deltas[0] == {"role": "assistant"}
     assert _text_of(deltas) == "Hello world"
@@ -155,16 +181,16 @@ async def test_happy_path_streams_both_event_types(hass: HomeAssistant, event: s
 
 async def test_message_end_terminates_stream(hass: HomeAssistant) -> None:
     # Content after message_end is never emitted (message_end is terminal).
-    blob = sse_bytes(_msg("Hi"), _end(), _msg("after-end"))
+    blob = _dify_sse(_msg("Hi"), _end(), _msg("after-end"))
     assert _text_of(await _run(hass, blob, chunk=6)) == "Hi"
 
 
 async def test_ignored_events_produce_no_content(hass: HomeAssistant) -> None:
-    blob = sse_bytes(
-        ("ping", '{"event":"ping"}'),
-        ("agent_thought", '{"thought":"reasoning"}'),
-        ("message_file", '{"type":"image"}'),
-        ("tts_message", '{"audio":"..."}'),
+    blob = _dify_sse(
+        _PING,
+        _ev("agent_thought", thought="reasoning", position=1),
+        _ev("message_file", type="image", belongs_to="assistant", url="https://example.com/cat.png"),
+        _ev("tts_message", audio="..."),
         _msg("answer"),
         _end(),
     )
@@ -173,9 +199,88 @@ async def test_ignored_events_produce_no_content(hass: HomeAssistant) -> None:
 
 async def test_in_stream_error_event_raises(hass: HomeAssistant) -> None:
     # An error event ends an otherwise-200 stream with a failure.
-    blob = sse_bytes(_msg("partial"), ("error", '{"status":400,"code":"boom","message":"bad"}'))
+    blob = _dify_sse(_msg("partial"), {"event": "error", "status": 400, "code": "boom", "message": "bad"})
     with pytest.raises(BackendStreamError):
         await _run(hass, blob, chunk=5)
+
+
+async def test_mid_stream_error_after_partial_text_raises_and_logs(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Real wire: the error is a bare data frame. It must not be swallowed as "message".
+    blob = _dify_sse(
+        _msg("partial ", event="message"),
+        {"event": "error", "task_id": "task-1", "message_id": "m-1", "status": 400, "code": "boom", "message": "bad"},
+    )
+    adapter = _adapter(hass, _session(blob, chunk=7))
+    gen = adapter.stream_turn(_chat_log(), _input(), TurnContext(options={}, memory_key="k"))
+    assert await anext(gen) == {"role": "assistant"}
+    assert await anext(gen) == {"content": "partial "}
+    with pytest.raises(BackendStreamError):
+        await anext(gen)
+    assert "code=boom message=bad" in caplog.text
+
+
+async def test_agent_closing_full_message_not_spoken_twice(hass: HomeAssistant) -> None:
+    # New-style Agent app: agent_message chunks, then ONE closing message with the full answer.
+    blob = _dify_sse(
+        _ev("agent_thought", thought="", position=1),
+        _msg("Hi "),
+        _msg("there"),
+        _msg("Hi there", event="message"),
+        _end(),
+    )
+    assert _text_of(await _run(hass, blob, chunk=9)) == "Hi there"
+
+
+async def test_message_end_terminates_before_eof(hass: HomeAssistant) -> None:
+    # message_end matched on the real wire: later answer-bearing frames are never spoken.
+    blob = _dify_sse(_msg("Hi", event="message"), _end(), _msg("after-end", event="message"))
+    assert _text_of(await _run(hass, blob, chunk=6)) == "Hi"
+
+
+async def test_message_end_flushes_held_think_fragment(hass: HomeAssistant) -> None:
+    # A trailing "<" held back by the think-stripper is flushed by message_end, not by EOF.
+    blob = _dify_sse(_msg("a <", event="message"), _end(), _msg("think>x</think>", event="message"))
+    assert _text_of(await _run(hass, blob, chunk=6)) == "a <"
+
+
+async def test_message_replace_not_spoken(hass: HomeAssistant) -> None:
+    blob = _dify_sse(
+        _msg("bad words", event="message"),
+        _ev("message_replace", answer="[redacted]", reason="moderation"),
+        _end(),
+    )
+    assert _text_of(await _run(hass, blob, chunk=8)) == "bad words"
+
+
+async def test_chatflow_sequence_speaks_only_answer_text(hass: HomeAssistant) -> None:
+    run = {"workflow_run_id": "wfr-1"}
+    node = {"id": "ne-1", "node_id": "llm", "node_type": "llm", "title": "LLM", "index": 1}
+    blob = _dify_sse(
+        _PING,
+        _ev("workflow_started", **run, data={"id": "wfr-1", "workflow_id": "wf-1", "inputs": {}}),
+        _ev("node_started", **run, data=node),
+        _msg("Hello", event="message"),
+        _msg(" world", event="message"),
+        _ev("node_finished", **run, data={**node, "status": "succeeded", "outputs": {"text": "Hello world"}}),
+        _end(),
+        _ev("workflow_finished", **run, data={"id": "wfr-1", "status": "succeeded", "outputs": {"answer": "x"}}),
+    )
+    assert await _run(hass, blob, chunk=11) == [{"role": "assistant"}, {"content": "Hello"}, {"content": " world"}]
+
+
+async def test_sse_event_line_fallback_when_json_has_no_event(hass: HomeAssistant) -> None:
+    # A proxy that frames with ``event:`` lines and omits the JSON key still works.
+    def bare(answer: str) -> str:
+        return json.dumps({"answer": answer, "task_id": "task-1", "conversation_id": "conv-abc"})
+
+    blob = sse_bytes(
+        ("agent_message", bare("Hi")),
+        ("message_end", json.dumps({"conversation_id": "conv-abc"})),
+        ("agent_message", bare("after-end")),
+    )
+    assert _text_of(await _run(hass, blob, chunk=6)) == "Hi"
 
 
 # --- <think> reasoning stripped from spoken output --------------------------
@@ -190,7 +295,7 @@ async def test_in_stream_error_event_raises(hass: HomeAssistant) -> None:
 async def test_think_blocks_stripped_from_answer(hass: HomeAssistant) -> None:
     # Multiple <think> blocks (one per ReAct step) then the real answer; only the
     # final prose is spoken. Tiny chunks split the tags across raw byte boundaries.
-    blob = sse_bytes(
+    blob = _dify_sse(
         _msg("<think>\nLet me check the time.\n</think>"),
         _msg("<think>\nGot it.\n</think>"),
         _msg("It's twelve thirty-four PM, sir."),
@@ -205,7 +310,7 @@ async def test_think_blocks_stripped_from_answer(hass: HomeAssistant) -> None:
 
 async def test_think_tags_split_across_deltas_are_stripped(hass: HomeAssistant) -> None:
     # Opening/closing tags arrive split across separate answer deltas.
-    blob = sse_bytes(
+    blob = _dify_sse(
         _msg("<th"),
         _msg("ink>reasoning"),
         _msg(" here</th"),
@@ -216,20 +321,20 @@ async def test_think_tags_split_across_deltas_are_stripped(hass: HomeAssistant) 
 
 
 async def test_answer_without_think_passes_through(hass: HomeAssistant) -> None:
-    blob = sse_bytes(_msg("Plain answer "), _msg("no tags"), _end())
+    blob = _dify_sse(_msg("Plain answer "), _msg("no tags"), _end())
     assert _text_of(await _run(hass, blob, chunk=5)) == "Plain answer no tags"
 
 
 async def test_unclosed_think_emits_no_content(hass: HomeAssistant) -> None:
     # A truncated stream with an open <think> and no close must never speak the
     # partial reasoning (safe default: drop it entirely).
-    blob = sse_bytes(_msg("<think>\nthinking but cut off"), _end())
+    blob = _dify_sse(_msg("<think>\nthinking but cut off"), _end())
     assert _text_of(await _run(hass, blob, chunk=4)) == ""
 
 
 async def test_literal_angle_bracket_text_preserved(hass: HomeAssistant) -> None:
     # A bare "<" that is not a think tag must survive (no over-eager swallowing).
-    blob = sse_bytes(_msg("price is < 5 dollars"), _end())
+    blob = _dify_sse(_msg("price is < 5 dollars"), _end())
     assert _text_of(await _run(hass, blob, chunk=3)) == "price is < 5 dollars"
 
 
@@ -243,7 +348,7 @@ async def test_request_shape_first_turn_omits_conversation_id(hass: HomeAssistan
         captured["url"] = url
         captured["data"] = kwargs["data"]
         captured["headers"] = kwargs["headers"]
-        return FakeStreamResponse(chunk_bytes(sse_bytes(_msg("ok"), _end()), 8))
+        return FakeStreamResponse(chunk_bytes(_dify_sse(_msg("ok"), _end()), 8))
 
     session = MagicMock()
     session.post = MagicMock(side_effect=handler)
@@ -269,7 +374,7 @@ async def test_second_turn_echoes_captured_conversation_id(hass: HomeAssistant) 
 
     def handler(_url: str, **kwargs: Any) -> FakeStreamResponse:
         bodies.append(json.loads(cast("str", kwargs["data"])))
-        return FakeStreamResponse(chunk_bytes(sse_bytes(_msg("ok", cid="conv-xyz"), _end(cid="conv-xyz")), 8))
+        return FakeStreamResponse(chunk_bytes(_dify_sse(_msg("ok", cid="conv-xyz"), _end(cid="conv-xyz")), 8))
 
     session = MagicMock()
     session.post = MagicMock(side_effect=handler)
@@ -283,12 +388,12 @@ async def test_second_turn_echoes_captured_conversation_id(hass: HomeAssistant) 
 
 
 async def test_conversation_scope_not_persisted(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
-    await _run(hass, sse_bytes(_msg("ok", cid="conv-c"), _end(cid="conv-c")), chunk=8)
+    await _run(hass, _dify_sse(_msg("ok", cid="conv-c"), _end(cid="conv-c")), chunk=8)
     assert "llm_middleman.dify.e1" not in hass_storage
 
 
 async def test_device_scope_persists_conversation_id(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
-    blob = sse_bytes(_msg("ok", cid="conv-dev"), _end(cid="conv-dev"))
+    blob = _dify_sse(_msg("ok", cid="conv-dev"), _end(cid="conv-dev"))
     adapter = _adapter(hass, _session(blob, chunk=8))
     await _collect(
         adapter.stream_turn(_chat_log(), _input(), TurnContext(options={"memory_scope": "device"}, memory_key="dev-A"))
@@ -297,7 +402,7 @@ async def test_device_scope_persists_conversation_id(hass: HomeAssistant, hass_s
 
 
 async def test_device_map_persists_across_restart(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
-    blob = sse_bytes(_msg("ok", cid="conv-dev"), _end(cid="conv-dev"))
+    blob = _dify_sse(_msg("ok", cid="conv-dev"), _end(cid="conv-dev"))
 
     adapter1 = _adapter(hass, _session(blob, chunk=8))
     await _collect(
@@ -343,7 +448,7 @@ async def test_stale_conversation_id_dropped_and_retried_once(hass: HomeAssistan
             return FakeStreamResponse([], status=404, text=not_found_body)
         cid = "new-id" if state["served"] else "old-id"
         state["served"] += 1
-        return FakeStreamResponse(chunk_bytes(sse_bytes(_msg("recovered", cid=cid), _end(cid=cid)), 8))
+        return FakeStreamResponse(chunk_bytes(_dify_sse(_msg("recovered", cid=cid), _end(cid=cid)), 8))
 
     session = MagicMock()
     session.post = MagicMock(side_effect=handler)
@@ -382,7 +487,7 @@ async def test_stop_fired_on_cancel_midstream(hass: HomeAssistant) -> None:
         if url.endswith("/stop"):
             return FakeStreamResponse([b""])
         # No message_end: the generator stays suspended at the content yield.
-        return FakeStreamResponse(chunk_bytes(sse_bytes(_msg("Hi", task_id="task-9")), 8))
+        return FakeStreamResponse(chunk_bytes(_dify_sse(_msg("Hi", task_id="task-9")), 8))
 
     session = MagicMock()
     session.post = MagicMock(side_effect=handler)
@@ -401,11 +506,11 @@ async def test_no_stop_on_cancel_before_task_id_seen(hass: HomeAssistant) -> Non
     posted: list[str] = []
     # A content event with no task_id, and no message_end: the generator suspends at
     # the content yield with state["task_id"] still None.
-    no_task_id_event = ("agent_message", json.dumps({"answer": "Hi", "message_id": "m-1"}))
+    no_task_id_event = {"event": "agent_message", "answer": "Hi", "message_id": "m-1"}
 
     def handler(url: str, **_kwargs: Any) -> FakeStreamResponse:
         posted.append(url)
-        return FakeStreamResponse(chunk_bytes(sse_bytes(no_task_id_event), 8))
+        return FakeStreamResponse(chunk_bytes(_dify_sse(no_task_id_event), 8))
 
     session = MagicMock()
     session.post = MagicMock(side_effect=handler)
