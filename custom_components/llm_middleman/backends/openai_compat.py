@@ -14,14 +14,23 @@ schemas into the request ``tools`` field, accumulates streamed
 ``choices[].delta.tool_calls`` fragments by ``index``, emits ``llm.ToolInput`` deltas,
 and replays prior tool calls/results back into ``messages[]`` on the next iteration.
 The entity's bounded tool loop drives the re-entry; this adapter stays stateless.
+
+Token stats: requests ``stream_options.include_usage`` and traces the terminal ``usage``
+chunk as HA's ``{"stats": …}`` agent detail. Servers that reject ``stream_options`` get
+one retry without it, and the connection stops sending it. Streamed
+``delta.reasoning_content`` / ``delta.reasoning`` map to HA ``thinking_content`` (never
+spoken).
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import logging
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 
+import aiohttp
 from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
@@ -47,14 +56,31 @@ from .base import (
     TurnContext,
     bearer_headers,
     build_client_timeout,
+    loads_json_object,
     probe_json,
+    trace_token_stats,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 # The provider terminates the SSE stream with this literal payload, not JSON.
 _DONE_SENTINEL = "[DONE]"
 
 # Request-body option keys read from the subentry options, sent only when set.
 _OPTION_KEYS = (CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS)
+
+# Asks OpenAI-style servers for a terminal ``usage`` chunk on streamed responses.
+_STREAM_OPTIONS = {"include_usage": True}
+
+
+class _StreamOptionsRejectedError(Exception):
+    """The server refused the request because of the ``stream_options`` field."""
+
+
+async def _raise_if_stream_options_rejected(response: aiohttp.ClientResponse) -> None:
+    """Flag a 400/422 whose error body names ``stream_options`` (strict servers / old Azure)."""
+    if response.status in (400, 422) and "stream_options" in await response.text():
+        raise _StreamOptionsRejectedError
 
 
 def _base_url(data: Mapping[str, Any]) -> str:
@@ -81,6 +107,25 @@ def _accumulate_tool_call(tool_calls: dict[int, dict[str, str]], fragment: Any) 
     if hasattr(function, "get"):
         slot["name"] += function.get("name") or ""
         slot["args"] += function.get("arguments") or ""
+
+
+def _tool_input(call: dict[str, str]) -> llm.ToolInput | None:
+    """Build a ``ToolInput`` from an accumulated call, or ``None`` if its arguments are bad.
+
+    Small models sometimes stream truncated/invalid JSON arguments; dropping that one
+    call (logged) keeps the rest of the turn alive instead of failing it wholesale.
+    No streamed ``arguments`` (a no-arg call) means ``{}``.
+    """
+    args = loads_json_object(call["args"] or "{}")
+    if args is None:
+        _LOGGER.warning(
+            "Skipping tool call %s (%s): arguments are not a JSON object: %s",
+            call["id"],
+            call["name"],
+            call["args"][:200],
+        )
+        return None
+    return llm.ToolInput(id=call["id"], tool_name=call["name"], tool_args=args)
 
 
 def _convert_content(item: conversation.Content) -> dict[str, Any]:
@@ -121,6 +166,11 @@ class OpenAICompatAdapter(BackendAdapter):
     # Formats HA tool schemas + parses streamed tool_calls (LLMM-014), so the subentry
     # flow offers CONF_LLM_HASS_API and the entity runs the tool loop.
     supports_ha_tools: ClassVar[bool] = True
+    # Replays chat_log (whose system prompt carries HA's date/time); never reads user_input.text.
+    wants_time_prefix: ClassVar[bool] = False
+    # Connection capability, not per-turn state: flipped once when the server rejects
+    # stream_options so later turns skip the doomed attempt (a concurrent flip is benign).
+    _stream_options_supported: bool = True
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
@@ -177,6 +227,29 @@ class OpenAICompatAdapter(BackendAdapter):
             ]
         return body
 
+    @asynccontextmanager
+    async def _open_stream(
+        self, url: str, body: dict[str, Any], headers: dict[str, str], timeout: aiohttp.ClientTimeout
+    ) -> AsyncGenerator[aiohttp.ClientResponse]:
+        """POST the turn, asking for usage; retry once without ``stream_options`` if refused."""
+        label = "OpenAI-compatible backend"
+        if self._stream_options_supported:
+            try:
+                async with self._post_checked(
+                    url,
+                    label=label,
+                    json={**body, "stream_options": _STREAM_OPTIONS},
+                    headers=headers,
+                    timeout=timeout,
+                    on_error_status=_raise_if_stream_options_rejected,
+                ) as response:
+                    yield response
+                return
+            except _StreamOptionsRejectedError:
+                self._stream_options_supported = False
+        async with self._post_checked(url, label=label, json=body, headers=headers, timeout=timeout) as response:
+            yield response
+
     async def stream_turn(
         self,
         chat_log: conversation.ChatLog,
@@ -193,6 +266,8 @@ class OpenAICompatAdapter(BackendAdapter):
         [llm.ToolInput, …]}`` delta after ``[DONE]`` / EOF, so HA can run the tools and
         the entity's loop re-enters. ``[DONE]`` ends the stream; EOF without it also
         ends it (the entity guard supplies the fallback when nothing streamed).
+        Reasoning deltas stream as ``{"thinking_content": …}``; the last ``usage`` seen
+        is traced once as ``stats`` after the stream ends.
         """
         headers = {"Accept": "text/event-stream", **bearer_headers(self.connection_data.get(CONF_API_KEY))}
         url = f"{_base_url(self.connection_data)}/v1/chat/completions"
@@ -200,12 +275,9 @@ class OpenAICompatAdapter(BackendAdapter):
         # index -> partial call; id/name arrive on the first fragment, arguments stream
         # as a string concatenated across fragments (chat/completions delta.tool_calls).
         tool_calls: dict[int, dict[str, str]] = {}
-        async with self._post_checked(
-            url,
-            label="OpenAI-compatible backend",
-            json=self._build_body(chat_log, ctx),
-            headers=headers,
-            timeout=build_client_timeout(ctx.options),
+        usage: Any = None
+        async with self._open_stream(
+            url, self._build_body(chat_log, ctx), headers, build_client_timeout(ctx.options)
         ) as response:
             async for event in async_iter_sse(response.content.iter_any()):
                 if event.data == _DONE_SENTINEL:
@@ -215,6 +287,11 @@ class OpenAICompatAdapter(BackendAdapter):
                 # shape raises here and the entity's _guarded wrapper maps it to the
                 # fallback. hasattr guards the ``.get`` against non-object chunks.
                 chunk: Any = json.loads(event.data)
+                # include_usage puts usage on a terminal choices-less chunk; some servers
+                # repeat it on every chunk, so keep the last one seen.
+                chunk_usage: Any = chunk.get("usage") if hasattr(chunk, "get") else None
+                if hasattr(chunk_usage, "get"):
+                    usage = chunk_usage
                 choices: Any = chunk.get("choices") if hasattr(chunk, "get") else None
                 if not choices:
                     continue
@@ -223,6 +300,16 @@ class OpenAICompatAdapter(BackendAdapter):
                 if fragments:
                     for fragment in fragments:
                         _accumulate_tool_call(tool_calls, fragment)
+                # DeepSeek/vLLM/llama.cpp say reasoning_content, OpenRouter reasoning;
+                # servers mid-rename send both with the same text, so take one.
+                reasoning: Any = (
+                    (delta.get("reasoning_content") or delta.get("reasoning")) if hasattr(delta, "get") else None
+                )
+                if reasoning and isinstance(reasoning, str):
+                    if not role_sent:
+                        yield {"role": "assistant"}
+                        role_sent = True
+                    yield {"thinking_content": reasoning}
                 content: Any = delta.get("content") if hasattr(delta, "get") else None
                 if content is None:
                     continue
@@ -230,20 +317,20 @@ class OpenAICompatAdapter(BackendAdapter):
                     yield {"role": "assistant"}
                     role_sent = True
                 yield {"content": content}
+        if usage is not None:
+            details: Any = usage.get("prompt_tokens_details")
+            trace_token_stats(
+                chat_log,
+                input_tokens=int(usage.get("prompt_tokens") or 0),
+                cached_input_tokens=int((details.get("cached_tokens") if hasattr(details, "get") else None) or 0),
+                output_tokens=int(usage.get("completion_tokens") or 0),
+            )
         # Flush accumulated tool calls once, after [DONE]/EOF (some servers omit the id
         # on later fragments and/or the finish_reason, so index-keyed accumulation +
         # a single terminal flush is the tolerant contract).
-        if tool_calls:
+        tool_inputs = [tool_input for call in tool_calls.values() if (tool_input := _tool_input(call)) is not None]
+        if tool_inputs:
             if not role_sent:
                 yield {"role": "assistant"}
                 role_sent = True
-            yield {
-                "tool_calls": [
-                    llm.ToolInput(
-                        id=call["id"],
-                        tool_name=call["name"],
-                        tool_args=json.loads(call["args"] or "{}"),
-                    )
-                    for call in tool_calls.values()
-                ]
-            }
+            yield {"tool_calls": tool_inputs}

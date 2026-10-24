@@ -29,12 +29,14 @@
                 "data": {
                     "base_url": "Deployment URL",
                     "api_key": "API key",
+                    "auth_scheme": "API key header",
                     "assistant_id": "Assistant ID"
                 },
                 "data_description": {
                     "base_url": "LangGraph deployment URL (a trailing slash is stripped automatically).",
-                    "api_key": "Optional; sent as the x-api-key header.",
-                    "assistant_id": "Graph name or UUID (default: agent)."
+                    "api_key": "Optional. Required by LangSmith cloud deployments and servers with custom auth.",
+                    "auth_scheme": "How the API key is sent: the x-api-key header (LangSmith cloud and the default for self-hosted servers), or an Authorization: Bearer token (for custom auth handlers that read Authorization).",
+                    "assistant_id": "Graph name or assistant UUID (default: agent). Checked against the deployment when you save."
                 }
             },
             "ollama": {
@@ -100,9 +102,12 @@
             "cannot_connect": "Failed to connect. Check the URL and that the backend is reachable.",
             "invalid_auth": "Authentication failed. Check your credentials.",
             "not_chat_app": "This Dify API key belongs to a Workflow or Text Generator app. Use the key of a Chatbot, Agent, or Chatflow app.",
-            "agent_not_published": "The Dify Agent has no published version yet. Publish it in Dify, then try again."
+            "agent_not_published": "The Dify Agent has no published version yet. Publish it in Dify, then try again.",
+            "unknown": "Unexpected error",
+            "assistant_not_found": "The deployment has no assistant or graph with this ID."
         },
         "abort": {
+            "already_configured": "Service is already configured",
             "reconfigure_successful": "Re-configuration was successful"
         }
     },
@@ -126,7 +131,11 @@
                         "llm_hass_api": "Control Home Assistant",
                         "dify_inputs": "Dify app inputs",
                         "dify_ha_context": "Send Home Assistant context to Dify",
-                        "dify_user_from_ha": "Use the Home Assistant user as the Dify user"
+                        "dify_user_from_ha": "Use the Home Assistant user as the Dify user",
+                        "multitask_strategy": "Double-texting (LangGraph)",
+                        "input_messages_key": "Input messages key (LangGraph)",
+                        "response_node_filter": "Spoken node (LangGraph)",
+                        "stateless_runs": "Stateless runs (LangGraph)"
                     },
                     "data_description": {
                         "name": "Display name for this agent's conversation entity.",
@@ -138,7 +147,11 @@
                         "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent.",
                         "dify_inputs": "Values for the app's input variables, as a mapping of variable name to value (for example city: Berlin). Required variables must be set here. Variables this app declares: {dify_app_inputs}.",
                         "dify_ha_context": "Fill the app's input variables named ha_language, ha_device_id, ha_area, ha_satellite_id, and ha_extra_system_prompt from each turn. Only variables the app declares are sent; declare them as optional inputs in Dify (ha_extra_system_prompt as a paragraph) so a satellite's announced question reaches the follow-up turn.",
-                        "dify_user_from_ha": "Send the Home Assistant user ID as the Dify end user so conversations are attributed per person. Voice satellite turns have no user and keep the shared home-assistant identity."
+                        "dify_user_from_ha": "Send the Home Assistant user ID as the Dify end user so conversations are attributed per person. Voice satellite turns have no user and keep the shared home-assistant identity.",
+                        "multitask_strategy": "What happens to a reply still running on this thread when a new turn arrives. Roll back (default) cancels it and removes it from the thread's history; Interrupt cancels it but keeps its partial progress; Enqueue waits for it to finish first; Reject refuses the new turn.",
+                        "input_messages_key": "The graph state key the new message list is sent under (default: messages).",
+                        "response_node_filter": "Only speak text produced by this graph node. Leave empty to speak every node's AI messages.",
+                        "stateless_runs": "Run each turn without a server-side thread. The graph then keeps no memory between turns."
                     }
                 }
             },
@@ -146,8 +159,14 @@
                 "invalid_dify_inputs": "Enter a mapping of variable names to text, number, or true/false values."
             },
             "abort": {
+                "entry_not_loaded": "The backend connection is not loaded. Fix or reload it before managing its agents.",
                 "reconfigure_successful": "Re-configuration was successful"
             }
+        }
+    },
+    "exceptions": {
+        "backend_unavailable": {
+            "message": "Sorry, I could not reach the assistant right now. Please try again."
         }
     },
     "selector": {
@@ -179,6 +198,20 @@
                 "none": "None",
                 "basic": "Basic auth",
                 "custom_header": "Custom header"
+            }
+        },
+        "auth_scheme": {
+            "options": {
+                "x_api_key": "x-api-key header",
+                "bearer": "Authorization: Bearer"
+            }
+        },
+        "multitask_strategy": {
+            "options": {
+                "rollback": "Roll back",
+                "interrupt": "Interrupt",
+                "enqueue": "Enqueue",
+                "reject": "Reject"
             }
         }
     }

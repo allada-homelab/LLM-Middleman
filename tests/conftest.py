@@ -84,21 +84,27 @@ class MockChatLog(conversation.ChatLog):
 
 # HA 2026.10 wrapped tool payloads in ``llm.ToolResult`` (``ToolResultContent.result``,
 # returned by ``async_call_tool``); older HA used the bare JSON dict (``tool_result``).
-_HA_HAS_TOOL_RESULT_OBJ = "result" in {f.name for f in fields(conversation.ToolResultContent)}
+HA_HAS_TOOL_RESULT_OBJ = "result" in {f.name for f in fields(conversation.ToolResultContent)}
 
 
 def tool_call_result(data: Any) -> Any:
     """Return ``data`` in the shape ``llm.APIInstance.async_call_tool`` returns on this HA."""
-    return llm.ToolResult(data=data) if _HA_HAS_TOOL_RESULT_OBJ else data
+    return llm.ToolResult(data=data) if HA_HAS_TOOL_RESULT_OBJ else data
 
 
 def tool_result_content(
-    *, agent_id: str, tool_call_id: str, tool_name: str, data: Any
+    *, agent_id: str, tool_call_id: str, tool_name: str, data: Any, error: bool = False
 ) -> conversation.ToolResultContent:
-    """Build a ``ToolResultContent`` carrying ``data`` on both HA tool-result APIs."""
-    if _HA_HAS_TOOL_RESULT_OBJ:
+    """Build a ``ToolResultContent`` carrying ``data`` on both HA tool-result APIs.
+
+    ``error`` only exists on HA >= 2026.10 (``llm.ToolResult.error``); older HA drops it.
+    """
+    if HA_HAS_TOOL_RESULT_OBJ:
         return conversation.ToolResultContent(
-            agent_id=agent_id, tool_call_id=tool_call_id, tool_name=tool_name, result=llm.ToolResult(data=data)
+            agent_id=agent_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            result=llm.ToolResult(data=data, error=error),
         )
     # The pre-2026.10 signature; the type-checked (latest) HA no longer has it.
     return conversation.ToolResultContent(  # pyright: ignore[reportCallIssue]

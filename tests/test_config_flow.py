@@ -7,6 +7,7 @@ succeeds or raises the typed connection errors the flow maps.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -17,6 +18,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_LLM_HASS_API, CONF_NAME, CONF_PROMPT
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
     SelectSelector,  # pyright: ignore[reportUnknownVariableType]
     TextSelector,  # pyright: ignore[reportUnknownVariableType]
@@ -29,6 +31,7 @@ from custom_components.llm_middleman.backends.base import (
     BackendConnectionError,
 )
 from custom_components.llm_middleman.backends.dify import DifyAppError
+from custom_components.llm_middleman.backends.langgraph import AssistantNotFoundError
 from custom_components.llm_middleman.config_flow import (
     ConversationSubentryFlowHandler,
     LLMMiddlemanConfigFlow,
@@ -36,24 +39,35 @@ from custom_components.llm_middleman.config_flow import (
 from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
+    BACKEND_LANGGRAPH,
     BACKEND_N8N,
     BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
+    CONF_ASSISTANT_ID,
+    CONF_AUTH_SCHEME,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
     CONF_DIFY_HA_CONTEXT,
     CONF_DIFY_INPUTS,
     CONF_DIFY_USER_FROM_HA,
+    CONF_INPUT_MESSAGES_KEY,
     CONF_MAX_HISTORY,
     CONF_MEMORY_SCOPE,
     CONF_MODEL,
+    CONF_MULTITASK_STRATEGY,
+    CONF_RESPONSE_NODE_FILTER,
+    CONF_STATELESS_RUNS,
     CONF_TIMEOUT,
     CONF_WEBHOOK_URL,
     DOMAIN,
     SUBENTRY_TYPE_CONVERSATION,
 )
 
+from .test_conversation import FakeAdapter
+
 _REGISTRY_PATH = "custom_components.llm_middleman.config_flow.BACKEND_TO_CLS"
+# The registry async_setup_entry builds the adapter from (patched to a fake for reloads).
+_SETUP_REGISTRY_PATH = "custom_components.llm_middleman.backends.BACKEND_TO_CLS"
 
 
 def _fake_adapter(exc: Exception | None = None) -> type:
@@ -198,15 +212,42 @@ async def test_dify_app_error_shows_specific_error(hass: HomeAssistant, error_ke
     assert result["errors"] == {"base": error_key}
 
 
-async def test_no_duplicate_abort(hass: HomeAssistant) -> None:
-    """Two entries with the same base URL are both created (no unique_id, no abort)."""
-    with patch(_REGISTRY_PATH, _registry()):
-        for _ in range(2):
-            form = await _init_backend_step(hass, BACKEND_OPENAI_COMPAT)
-            result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://backend.local:8000"})
-            assert result["type"] is FlowResultType.CREATE_ENTRY
+async def test_unexpected_probe_error_shows_unknown(hass: HomeAssistant) -> None:
+    """An unexpected probe exception re-shows the form with ``unknown`` instead of crashing the flow."""
+    registry = {BACKEND_OPENAI_COMPAT: _fake_adapter(RuntimeError("bug"))}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_OPENAI_COMPAT)
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://backend.local:8000"})
 
-    assert len(hass.config_entries.async_entries(DOMAIN)) == 2
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "unknown"}
+
+
+async def _create_openai_entry(hass: HomeAssistant, user_input: dict[str, Any]) -> dict[str, Any]:
+    with patch(_REGISTRY_PATH, _registry()):
+        form = await _init_backend_step(hass, BACKEND_OPENAI_COMPAT)
+        return await _configure(hass, form["flow_id"], user_input)
+
+
+async def test_identical_connection_aborts_as_duplicate(hass: HomeAssistant) -> None:
+    """Adding the exact same connection twice aborts; agents belong in subentries."""
+    connection = {CONF_BASE_URL: "http://backend.local:8000", CONF_API_KEY: "k1"}
+    await _create_openai_entry(hass, connection)
+
+    result = await _create_openai_entry(hass, connection)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+
+
+async def test_same_url_with_other_credentials_is_not_a_duplicate(hass: HomeAssistant) -> None:
+    """One shared URL can back distinct connections (e.g. Dify Cloud apps differ only by key)."""
+    await _create_openai_entry(hass, {CONF_BASE_URL: "http://backend.local:8000", CONF_API_KEY: "k1"})
+
+    result = await _create_openai_entry(hass, {CONF_BASE_URL: "http://backend.local:8000", CONF_API_KEY: "k2"})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 @pytest.mark.parametrize(
@@ -273,6 +314,37 @@ async def test_reconfigure_updates_connection(hass: HomeAssistant) -> None:
     assert entry.data[CONF_BASE_URL] == "http://new.local:9000"
 
 
+async def test_reconfigure_reloads_once_via_update_listener(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A loaded entry reloads exactly once on reconfigure: the update listener owns the reload.
+
+    ``async_update_reload_and_abort`` would schedule a second reload on top of the
+    listener's and logs a deprecation that breaks in HA 2026.12.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        title="OpenAI-compatible",
+        data={CONF_BACKEND_TYPE: BACKEND_OPENAI_COMPAT, CONF_BASE_URL: "http://old.local:8000"},
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(_REGISTRY_PATH, _registry()),
+        patch.dict(_SETUP_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: FakeAdapter}),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        with patch.object(hass.config_entries, "async_reload", wraps=hass.config_entries.async_reload) as reload:
+            form: dict[str, Any] = dict(await entry.start_reconfigure_flow(hass))
+            await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://new.local:9000"})
+            await hass.async_block_till_done()
+
+    assert reload.call_count == 1
+    assert "should use it for scheduling a reload" not in caplog.text
+
+
 # --- Conversation subentry flow (LLMM-007) ------------------------------------
 
 
@@ -330,9 +402,10 @@ async def _configure_subentry(hass: HomeAssistant, flow_id: str, user_input: dic
 
 
 def _parent_entry(hass: HomeAssistant, backend_type: str, **kwargs: Any) -> MockConfigEntry:
-    """Add a configured parent backend entry to hass."""
+    """Add a configured, loaded parent backend entry to hass."""
     entry = MockConfigEntry(domain=DOMAIN, version=2, data={CONF_BACKEND_TYPE: backend_type}, **kwargs)
     entry.add_to_hass(hass)
+    entry.mock_state(hass, config_entries.ConfigEntryState.LOADED)
     return entry
 
 
@@ -391,6 +464,41 @@ async def test_create_conversation_subentry(hass: HomeAssistant) -> None:
     assert CONF_NAME not in result["data"]
 
 
+async def test_subentry_aborts_when_parent_not_loaded(hass: HomeAssistant) -> None:
+    """An agent can't be added under a parent entry that failed to load."""
+    entry = _parent_entry(hass, BACKEND_CONVERSE)
+    entry.mock_state(hass, config_entries.ConfigEntryState.SETUP_RETRY)
+    registry = {BACKEND_CONVERSE: _sub_adapter(backend_type=BACKEND_CONVERSE)}
+
+    with patch(_REGISTRY_PATH, registry):
+        result = await _init_subentry(hass, entry)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+
+
+async def test_reconfigure_drops_stale_llm_api_ids(hass: HomeAssistant) -> None:
+    """A stored LLM API id that no longer exists is not offered back as a selected value."""
+    entry = _parent_entry(
+        hass,
+        BACKEND_OPENAI_COMPAT,
+        subentries_data=[
+            {
+                "subentry_type": SUBENTRY_TYPE_CONVERSATION,
+                "data": {CONF_LLM_HASS_API: [llm.LLM_API_ASSIST, "removed_mcp_server"]},
+                "title": "Agent",
+                "unique_id": None,
+            }
+        ],
+    )
+    registry = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, supports_ha_tools=True)}
+
+    with patch(_REGISTRY_PATH, registry):
+        form: dict[str, Any] = dict(await entry.start_subentry_reconfigure_flow(hass, next(iter(entry.subentries))))
+
+    assert _suggested_values(form["data_schema"])[CONF_LLM_HASS_API] == [llm.LLM_API_ASSIST]
+
+
 async def test_model_dropdown_openai(hass: HomeAssistant) -> None:
     """A reachable model catalog yields a dropdown-with-free-text; a failed probe → text."""
     entry = _parent_entry(hass, BACKEND_OPENAI_COMPAT)
@@ -406,6 +514,25 @@ async def test_model_dropdown_openai(hass: HomeAssistant) -> None:
     registry = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, models_raise=True)}
     with patch(_REGISTRY_PATH, registry):
         form = await _init_subentry(hass, entry)
+    assert isinstance(_selector_for(form["data_schema"], CONF_MODEL), TextSelector)
+
+
+async def test_hanging_model_probe_falls_back_to_free_text(hass: HomeAssistant) -> None:
+    """A backend that never answers the catalog probe can't freeze the form: it times out to text."""
+    entry = _parent_entry(hass, BACKEND_OPENAI_COMPAT)
+
+    class _HangingCatalog(_sub_adapter(backend_type=BACKEND_OPENAI_COMPAT)):  # type: ignore[misc]
+        @classmethod
+        async def async_list_models(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> list[str] | None:
+            await asyncio.Event().wait()
+            return None
+
+    with (
+        patch(_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: _HangingCatalog}),
+        patch("custom_components.llm_middleman.config_flow.PROBE_TIMEOUT", 0.01),
+    ):
+        form = await _init_subentry(hass, entry)
+
     assert isinstance(_selector_for(form["data_schema"], CONF_MODEL), TextSelector)
 
 
@@ -556,3 +683,93 @@ async def test_dify_invalid_inputs_rejected(hass: HomeAssistant, bad_inputs: obj
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {CONF_DIFY_INPUTS: "invalid_dify_inputs"}
     assert _suggested_values(result["data_schema"])[CONF_DIFY_INPUTS] == bad_inputs
+
+
+# --- LangGraph-specific fields (LLMM-022) --------------------------------------------
+
+_LANGGRAPH_AGENT_KEYS = {
+    CONF_MULTITASK_STRATEGY,
+    CONF_INPUT_MESSAGES_KEY,
+    CONF_RESPONSE_NODE_FILTER,
+    CONF_STATELESS_RUNS,
+}
+
+
+async def test_langgraph_connection_stores_auth_scheme(hass: HomeAssistant) -> None:
+    registry = {BACKEND_LANGGRAPH: _fake_adapter()}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_LANGGRAPH)
+        result = await _configure(
+            hass,
+            form["flow_id"],
+            {
+                CONF_BASE_URL: "http://lg.local:2024",
+                CONF_API_KEY: "k",
+                CONF_AUTH_SCHEME: "bearer",
+                CONF_ASSISTANT_ID: "agent",
+            },
+        )
+
+    assert result["data"][CONF_AUTH_SCHEME] == "bearer"
+
+
+async def test_langgraph_auth_scheme_defaults_to_x_api_key(hass: HomeAssistant) -> None:
+    registry = {BACKEND_LANGGRAPH: _fake_adapter()}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_LANGGRAPH)
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://lg.local:2024"})
+
+    assert result["data"][CONF_AUTH_SCHEME] == "x_api_key"
+
+
+async def test_langgraph_unknown_assistant_shows_field_error(hass: HomeAssistant) -> None:
+    registry = {BACKEND_LANGGRAPH: _fake_adapter(AssistantNotFoundError("nope"))}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_LANGGRAPH)
+        result = await _configure(
+            hass, form["flow_id"], {CONF_BASE_URL: "http://lg.local:2024", CONF_ASSISTANT_ID: "x"}
+        )
+
+    assert result["errors"] == {CONF_ASSISTANT_ID: "assistant_not_found"}
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_langgraph_agent_options_are_offered(hass: HomeAssistant) -> None:
+    entry = _parent_entry(hass, BACKEND_LANGGRAPH)
+    registry = {BACKEND_LANGGRAPH: _sub_adapter(backend_type=BACKEND_LANGGRAPH, supports_memory_scope=True)}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+
+    assert _schema_keys(form["data_schema"]) >= _LANGGRAPH_AGENT_KEYS
+    assert _suggested_values(form["data_schema"])[CONF_MULTITASK_STRATEGY] == "rollback"
+
+
+async def test_langgraph_agent_options_absent_for_other_backends(hass: HomeAssistant) -> None:
+    entry = _parent_entry(hass, BACKEND_CONVERSE)
+    registry = {BACKEND_CONVERSE: _sub_adapter(backend_type=BACKEND_CONVERSE, supports_memory_scope=True)}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+
+    assert not _LANGGRAPH_AGENT_KEYS & _schema_keys(form["data_schema"])
+
+
+async def test_langgraph_agent_options_are_stored(hass: HomeAssistant) -> None:
+    entry = _parent_entry(hass, BACKEND_LANGGRAPH)
+    registry = {BACKEND_LANGGRAPH: _sub_adapter(backend_type=BACKEND_LANGGRAPH, supports_memory_scope=True)}
+    submitted = {
+        CONF_NAME: "Graph agent",
+        CONF_MULTITASK_STRATEGY: "enqueue",
+        CONF_INPUT_MESSAGES_KEY: "msgs",
+        CONF_RESPONSE_NODE_FILTER: "respond",
+        CONF_STATELESS_RUNS: True,
+    }
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+        result = await _configure_subentry(hass, form["flow_id"], submitted)
+
+    assert {key: result["data"][key] for key in _LANGGRAPH_AGENT_KEYS} == {
+        CONF_MULTITASK_STRATEGY: "enqueue",
+        CONF_INPUT_MESSAGES_KEY: "msgs",
+        CONF_RESPONSE_NODE_FILTER: "respond",
+        CONF_STATELESS_RUNS: True,
+    }

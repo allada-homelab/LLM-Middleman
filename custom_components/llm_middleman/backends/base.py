@@ -50,6 +50,7 @@ __all__ = [
     "loads_json_object",
     "probe_json",
     "rendered_system_prompt",
+    "trace_token_stats",
 ]
 
 
@@ -82,6 +83,25 @@ def rendered_system_prompt(chat_log: conversation.ChatLog) -> str | None:
     if isinstance(first, conversation.SystemContent) and first.content:
         return first.content
     return None
+
+
+def trace_token_stats(
+    chat_log: conversation.ChatLog,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int | None = None,
+) -> None:
+    """Record one round-trip's token usage on the conversation trace.
+
+    Same ``{"stats": {...}}`` agent-detail shape HA core's anthropic/openai/cloud
+    entities trace; ``cached_input_tokens`` only when the backend reports a cache.
+    """
+    stats: dict[str, int] = {"input_tokens": input_tokens}
+    if cached_input_tokens is not None:
+        stats["cached_input_tokens"] = cached_input_tokens
+    stats["output_tokens"] = output_tokens
+    chat_log.async_trace({"stats": stats})
 
 
 def bearer_headers(token: str | None) -> dict[str, str]:
@@ -184,6 +204,7 @@ class TurnContext:
     options: Mapping[str, Any]  # the agent subentry's options for this turn
     memory_key: str  # session key derived by the entity from the memory scope
     continue_conversation: bool = False  # adapter may set; entity ORs into result
+    fallback: bool = False  # entity-owned: the last round-trip ended in the fallback message
 
 
 class BackendAdapter(ABC):
@@ -211,6 +232,10 @@ class BackendAdapter(ABC):
     supports_ha_tools: ClassVar[bool] = False
     # Gates CONF_MEMORY_SCOPE in the subentry flow; stateful backends set True.
     supports_memory_scope: ClassVar[bool] = False
+    # Prefix the forwarded turn text with the local date/time. Adapters that replay the
+    # chat log or forward the rendered system prompt (which already carries HA's date/time
+    # prompt) opt out; the default keeps temporal context for text-only presets.
+    wants_time_prefix: ClassVar[bool] = True
 
     def __init__(
         self,

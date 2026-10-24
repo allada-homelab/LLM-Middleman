@@ -10,6 +10,7 @@ nothing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
@@ -18,6 +19,7 @@ from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     SOURCE_USER,
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
@@ -45,6 +47,7 @@ from homeassistant.helpers.selector import (
 from .backends import BACKEND_TO_CLS
 from .backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
 from .backends.dify import DifyAdapter, DifyAppError
+from .backends.langgraph import AssistantNotFoundError
 from .const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
@@ -54,6 +57,7 @@ from .const import (
     BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
     CONF_ASSISTANT_ID,
+    CONF_AUTH_SCHEME,
     CONF_AUTH_TYPE,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
@@ -62,26 +66,36 @@ from .const import (
     CONF_DIFY_USER_FROM_HA,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
+    CONF_INPUT_MESSAGES_KEY,
     CONF_MAX_HISTORY,
     CONF_MEMORY_SCOPE,
     CONF_MODEL,
+    CONF_MULTITASK_STRATEGY,
     CONF_PASSWORD,
+    CONF_RESPONSE_NODE_FILTER,
+    CONF_STATELESS_RUNS,
     CONF_TARGET_TYPE,
     CONF_TIMEOUT,
     CONF_TOKEN,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
+    DEFAULT_INPUT_MESSAGES_KEY,
     DEFAULT_MAX_HISTORY,
+    DEFAULT_MULTITASK_STRATEGY,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    LANGGRAPH_AUTH_BEARER,
+    LANGGRAPH_AUTH_X_API_KEY,
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
+    MULTITASK_STRATEGIES,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_AUTH_NONE,
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
+    PROBE_TIMEOUT,
     SUBENTRY_TYPE_CONVERSATION,
 )
 
@@ -133,6 +147,14 @@ def _langgraph_schema() -> vol.Schema:
         {
             vol.Required(CONF_BASE_URL): _url_field(),
             vol.Optional(CONF_API_KEY): _password_field(),
+            # Entries created before this field existed have no value -> x-api-key.
+            vol.Required(CONF_AUTH_SCHEME, default=LANGGRAPH_AUTH_X_API_KEY): SelectSelector(
+                SelectSelectorConfig(
+                    options=[LANGGRAPH_AUTH_X_API_KEY, LANGGRAPH_AUTH_BEARER],
+                    translation_key="auth_scheme",
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
             vol.Required(CONF_ASSISTANT_ID, default="agent"): TextSelector(),
         }
     )
@@ -351,12 +373,22 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_auth"
             except DifyAppError as err:
                 errors["base"] = err.error_key  # not_chat_app / agent_not_published
+            except AssistantNotFoundError:
+                errors[CONF_ASSISTANT_ID] = "assistant_not_found"
             except BackendConnectionError:
                 errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected error validating the %s connection", self._backend_type)
+                errors["base"] = "unknown"
             else:
                 entry_data = {CONF_BACKEND_TYPE: self._backend_type, **data}
+                if self.source != SOURCE_RECONFIGURE:
+                    # Only an identical connection is a duplicate: one URL can back distinct
+                    # connections (Dify Cloud apps differ only by key; LangGraph by assistant).
+                    self._async_abort_entries_match(entry_data)
                 if self.source == SOURCE_RECONFIGURE:
-                    return self.async_update_reload_and_abort(self._get_reconfigure_entry(), data=entry_data)
+                    # The entry's update listener reloads it; a second reload here is deprecated.
+                    return self.async_update_and_abort(self._get_reconfigure_entry(), data=entry_data)
                 return self.async_create_entry(title=_BACKEND_TITLES[self._backend_type], data=entry_data)
 
         return self.async_show_form(
@@ -392,6 +424,9 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
     async def async_step_set_options(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Show/handle the common agent options form (create vs reconfigure)."""
         entry = self._get_entry()
+        # Core openai/ollama pattern: agents are only managed under a loaded connection.
+        if entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="entry_not_loaded")
         adapter_cls = BACKEND_TO_CLS[entry.data[CONF_BACKEND_TYPE]]
         errors: dict[str, str] = {}
 
@@ -438,7 +473,7 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
             schema[vol.Required(CONF_NAME, default=_DEFAULT_AGENT_NAME)] = TextSelector()
 
         # Per-agent system prompt (a Jinja template; converse/n8n also forward it,
-        # langgraph prepends it under MessagesState).
+        # langgraph sends it in the run context).
         schema[
             vol.Optional(
                 CONF_PROMPT,
@@ -489,20 +524,29 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         # list and pulls in the tools of every named API (device control + any HA
         # MCP-client entry). Unset/empty means "no tools" — no default is stored.
         if adapter_cls.supports_ha_tools:
+            apis = llm.async_get_apis(self.hass)
+            # Drop stored ids of APIs that no longer exist (e.g. a removed MCP server) so
+            # the form doesn't preselect an option it can't render (core openai pattern).
+            valid_ids = {api.id for api in apis}
+            suggested_apis = options.get(CONF_LLM_HASS_API)
+            if suggested_apis:
+                suggested_apis = [api_id for api_id in suggested_apis if api_id in valid_ids]
             schema[
                 vol.Optional(
                     CONF_LLM_HASS_API,
-                    description={"suggested_value": options.get(CONF_LLM_HASS_API)},
+                    description={"suggested_value": suggested_apis},
                 )
             ] = SelectSelector(
                 SelectSelectorConfig(
-                    options=[SelectOptionDict(value=api.id, label=api.name) for api in llm.async_get_apis(self.hass)],
+                    options=[SelectOptionDict(value=api.id, label=api.name) for api in apis],
                     multiple=True,
                 )
             )
 
         if entry.data[CONF_BACKEND_TYPE] == BACKEND_DIFY:
             schema.update(_dify_fields(options))
+        if adapter_cls.backend_type == BACKEND_LANGGRAPH:
+            _add_langgraph_fields(schema, options)
 
         return vol.Schema(schema)
 
@@ -524,8 +568,10 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         field). Probe failure → a plain text field, so the form still renders.
         """
         try:
-            models = await adapter_cls.async_list_models(self.hass, entry.data)
-        except Exception:  # any probe failure must still render the form (free-text)
+            # Bounded well under the probe's own 60 s so a dead backend can't freeze the form.
+            async with asyncio.timeout(PROBE_TIMEOUT):
+                models = await adapter_cls.async_list_models(self.hass, entry.data)
+        except Exception:  # any probe failure (timeout included) must still render the form (free-text)
             _LOGGER.debug("Model probe failed for %s; falling back to free text", adapter_cls.backend_type)
             return TextSelector()  # pyright: ignore[reportUnknownVariableType]
         if models is None:
@@ -533,3 +579,31 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         return SelectSelector(  # pyright: ignore[reportUnknownVariableType]
             SelectSelectorConfig(options=models, custom_value=True, mode=SelectSelectorMode.DROPDOWN)
         )
+
+
+def _add_langgraph_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
+    """Add the LangGraph-only agent options (graph wiring + double-text policy) to ``schema``."""
+    schema[
+        vol.Optional(
+            CONF_MULTITASK_STRATEGY,
+            description={"suggested_value": options.get(CONF_MULTITASK_STRATEGY, DEFAULT_MULTITASK_STRATEGY)},
+        )
+    ] = SelectSelector(
+        SelectSelectorConfig(
+            options=list(MULTITASK_STRATEGIES),
+            translation_key="multitask_strategy",
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+    schema[
+        vol.Optional(
+            CONF_INPUT_MESSAGES_KEY,
+            description={"suggested_value": options.get(CONF_INPUT_MESSAGES_KEY, DEFAULT_INPUT_MESSAGES_KEY)},
+        )
+    ] = TextSelector()
+    schema[
+        vol.Optional(CONF_RESPONSE_NODE_FILTER, description={"suggested_value": options.get(CONF_RESPONSE_NODE_FILTER)})
+    ] = TextSelector()
+    schema[
+        vol.Optional(CONF_STATELESS_RUNS, description={"suggested_value": options.get(CONF_STATELESS_RUNS, False)})
+    ] = BooleanSelector()

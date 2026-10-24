@@ -17,13 +17,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 import voluptuous as vol
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import Context, HomeAssistant
-from homeassistant.helpers import llm
+from homeassistant.helpers import intent, llm
 
+from custom_components.llm_middleman.backends import BACKEND_TO_CLS
 from custom_components.llm_middleman.backends.base import (
     BackendAdapter,
     DeltaStream,
@@ -33,6 +35,8 @@ from custom_components.llm_middleman.backends.base import (
 from custom_components.llm_middleman.backends.ollama import OllamaAdapter
 from custom_components.llm_middleman.backends.openai_compat import OpenAICompatAdapter
 from custom_components.llm_middleman.const import (
+    BACKEND_CONVERSE,
+    BACKEND_DIFY,
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_MEMORY_SCOPE,
@@ -68,6 +72,7 @@ class FakeAdapter(BackendAdapter):
         self.raise_after: int = 0
         self.set_continue: bool = False
         self.received_ctx: TurnContext | None = None
+        self.received_text: str | None = None
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
@@ -80,6 +85,7 @@ class FakeAdapter(BackendAdapter):
         ctx: TurnContext,
     ) -> DeltaStream:
         self.received_ctx = ctx
+        self.received_text = user_input.text
         if self.set_continue:
             ctx.continue_conversation = True
         for index, delta in enumerate(self.deltas):
@@ -217,10 +223,44 @@ async def test_guard_exception_after_content(hass: HomeAssistant, mock_chat_log:
 
     last = mock_chat_log.content[-1]
     assert isinstance(last, conversation.AssistantContent)
-    assert last.content is not None
-    assert "partial" in last.content
-    assert ERROR_MESSAGE in last.content
+    assert last.content == f"partial\n{ERROR_MESSAGE}"
     logger.exception.assert_called_once()
+
+
+async def test_fallback_result_is_an_error_response(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A turn answered by the fallback reports an error, not a successful action."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[], exc=RuntimeError("down"), raise_after=0))
+
+    result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert result.response.response_type is intent.IntentResponseType.ERROR
+    assert result.response.error_code is intent.IntentResponseErrorCode.UNKNOWN
+    assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+
+
+async def test_successful_turn_is_not_an_error_response(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A normally streamed reply keeps HA's default (non-error) response type."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}]))
+
+    result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert result.response.response_type is intent.IntentResponseType.ACTION_DONE
+
+
+async def test_fallback_message_uses_the_turn_language(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """The fallback text comes from the integration's translated exception string."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[]))
+    translated = {f"component.{DOMAIN}.exceptions.backend_unavailable.message": "Backend nicht erreichbar."}
+
+    with patch(
+        "custom_components.llm_middleman.conversation.translation.async_get_translations",
+        AsyncMock(return_value=translated),
+    ) as lookup:
+        result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert result.response.speech["plain"]["speech"] == "Backend nicht erreichbar."
+    assert lookup.await_args is not None
+    assert lookup.await_args.args[1:] == ("en", "exceptions", {DOMAIN})
 
 
 @pytest.mark.parametrize("status", [401, 500])
@@ -251,7 +291,7 @@ async def test_guard_injects_role_first(hass: HomeAssistant, mock_chat_log: Mock
     entity = _make_entity(hass, adapter)
     ctx = TurnContext(options={}, memory_key="k")
 
-    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx)))
+    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
 
     assert collected[0] == {"role": "assistant"}
     assert collected[1] == {"content": "x"}
@@ -263,7 +303,7 @@ async def test_empty_delta_passes_untrimmed(hass: HomeAssistant, mock_chat_log: 
     entity = _make_entity(hass, adapter)
     ctx = TurnContext(options={}, memory_key="k")
 
-    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx)))
+    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
 
     assert {"content": ""} in collected
     assert {"content": "a"} in collected
@@ -384,6 +424,44 @@ async def test_converse_error_is_returned(hass: HomeAssistant) -> None:
 
     assert isinstance(result, conversation.ConversationResult)
     assert adapter.received_ctx is None
+
+
+# --- temporal context ---------------------------------------------------------
+
+
+class _NoTimePrefixAdapter(FakeAdapter):
+    wants_time_prefix = False
+
+
+async def test_time_prefix_added_for_adapters_that_want_it(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, freezer: FrozenDateTimeFactory
+) -> None:
+    """An adapter that forwards only the turn text gets it prefixed with HA's local time."""
+    await hass.config.async_update(time_zone="Europe/Berlin")
+    freezer.move_to("2026-07-04 10:00:00+00:00")
+    adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}])
+
+    await _make_entity(hass, adapter)._async_handle_message(_user_input(), mock_chat_log)
+
+    assert adapter.received_text == "[2026-07-04 12:00:00 CEST] hello"
+
+
+async def test_time_prefix_skipped_for_adapters_that_opt_out(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """An adapter whose system prompt already carries the time gets the user's text verbatim."""
+    adapter = _NoTimePrefixAdapter(hass, MagicMock(), {})
+    adapter.deltas = [{"role": "assistant"}, {"content": "ok"}]
+
+    await _make_entity(hass, adapter)._async_handle_message(_user_input(), mock_chat_log)
+
+    assert adapter.received_text == "hello"
+
+
+def test_time_prefix_opt_out_for_prompt_forwarding_and_replay_presets() -> None:
+    """Only presets that forward neither the rendered prompt nor the chat log keep the prefix."""
+    assert {cls.backend_type for cls in BACKEND_TO_CLS.values() if cls.wants_time_prefix} == {
+        BACKEND_CONVERSE,
+        BACKEND_DIFY,
+    }
 
 
 # --- CONTROL feature gating (LLMM-014) ---------------------------------------
@@ -509,7 +587,7 @@ async def test_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: MockChat
     tool_messages = [m for m in body2["messages"] if m.get("role") == "tool"]
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "call_1"
-    assert json.loads(tool_messages[0]["content"]) == {"now": str(now)}
+    assert json.loads(tool_messages[0]["content"]) == {"data": {"now": str(now)}, "error": False}
 
     # Final spoken answer is the turn-2 text.
     last = mock_chat_log.content[-1]
@@ -551,6 +629,7 @@ async def test_tool_loop_iteration_cap(hass: HomeAssistant, mock_chat_log: MockC
     assert adapter.calls == MAX_TOOL_ITERATIONS  # bounded, no hang
     assert isinstance(result, conversation.ConversationResult)
     assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+    assert result.response.response_type is intent.IntentResponseType.ERROR
     logger.warning.assert_called_once()
 
 
@@ -591,7 +670,7 @@ async def test_ollama_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: M
     body2 = session.post.call_args_list[1].kwargs["json"]
     tool_messages = [m for m in body2["messages"] if m.get("role") == "tool"]
     assert len(tool_messages) == 1
-    assert json.loads(tool_messages[0]["content"]) == {"now": str(now)}
+    assert json.loads(tool_messages[0]["content"]) == {"data": {"now": str(now)}, "error": False}
 
     # Final spoken answer is the turn-2 text.
     last = mock_chat_log.content[-1]

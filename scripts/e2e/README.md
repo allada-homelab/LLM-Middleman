@@ -197,6 +197,12 @@ docker exec llmm-e2e-ha curl -sS http://$LG_IP:2024/ok  # from HA -> {"ok":true}
   longer looks for one). `event: error` is the failure signal → fallback.
 - Continuity: two same-`conversation_id` turns land on the **same** server-side `thread_id`
   (check `/threads/search` → one thread, two runs).
+- **Adapter-level live suite (LLMM-022):** [`langgraph/`](langgraph/) holds LLM-free graphs
+  (ReAct tool loop, `interrupt()`, a 40 s silent step, a context echo) and
+  [`langgraph_live_e2e.py`](langgraph_live_e2e.py) drives the real adapter against them
+  (tool output not spoken, prompt once per thread, interrupt → resume, double-text, cancel,
+  recreate after DELETE, slow step, assistant check, one POST per tool turn). Recipe in the
+  module docstring; last results in `docs/implementation/e2e-results/langgraph-tier1.md`.
 
 ### ollama — local container + small model
 

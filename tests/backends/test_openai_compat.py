@@ -41,6 +41,7 @@ from custom_components.llm_middleman.const import (
     IDLE_TIMEOUT,
 )
 from tests.conftest import (
+    HA_HAS_TOOL_RESULT_OBJ,
     TEST_API_KEY,
     TEST_BASE_URL,
     TOOL_SCHEMA_PROPERTIES,
@@ -351,6 +352,36 @@ async def test_empty_arguments_default_to_empty_object(hass: HomeAssistant, mock
     assert calls[0].tool_args == {}
 
 
+async def test_malformed_tool_arguments_skip_only_that_call(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Unparsable streamed arguments drop that one call (logged), not the whole turn.
+    blob = (
+        _tc_frame({"index": 0, "id": "bad", "function": {"name": "a", "arguments": '{"x": '}})
+        + _tc_frame({"index": 1, "id": "ok", "function": {"name": "b", "arguments": '{"y": 1}'}})
+        + b"data: [DONE]\n\n"
+    )
+    with caplog.at_level("WARNING"):
+        deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+
+    calls = deltas[-1].get("tool_calls")
+    assert calls is not None
+    assert [(call.id, call.tool_args) for call in calls] == [("ok", {"y": 1})]
+    assert "bad" in caplog.text
+
+
+async def test_only_malformed_tool_call_keeps_the_text_reply(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # With every call dropped no tool_calls delta is emitted; streamed text still stands.
+    blob = (
+        _data_frame({"content": "On it."})
+        + _tc_frame({"index": 0, "id": "bad", "function": {"name": "a", "arguments": "not json"}})
+        + b"data: [DONE]\n\n"
+    )
+    deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+
+    assert deltas == [{"role": "assistant"}, {"content": "On it."}]
+
+
 async def test_tools_field_sent_when_llm_api_set(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
     mock_chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([_FakeTool()]))
     session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
@@ -426,7 +457,33 @@ async def test_history_replays_tool_calls_and_results_default_str(
     }
     assert messages[3]["role"] == "tool"
     assert messages[3]["tool_call_id"] == "call_1"
-    assert json.loads(messages[3]["content"]) == {"now": str(now)}
+    assert json.loads(messages[3]["content"]) == {"data": {"now": str(now)}, "error": False}
+
+
+@pytest.mark.skipif(not HA_HAS_TOOL_RESULT_OBJ, reason="llm.ToolResult.error needs HA >= 2026.10")
+async def test_failed_tool_result_is_flagged_as_error(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # A failed tool call reaches the model flagged, as core openai/ollama send it.
+    mock_chat_log.content = [
+        conversation.SystemContent(content="sys"),
+        tool_result_content(agent_id="a", tool_call_id="c1", tool_name="t", data={"error": "boom"}, error=True),
+    ]
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    _ = [d async for d in _adapter(hass, session).stream_turn(mock_chat_log, _input(), _ctx())]
+
+    assert json.loads(_posted_body(session)["messages"][1]["content"]) == {"data": {"error": "boom"}, "error": True}
+
+
+class _UndescribedTool(_FakeTool):
+    description = None
+
+
+async def test_tool_without_description_omits_field(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # A tool with no description sends no "description" key rather than null.
+    mock_chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([_UndescribedTool()]))
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    _ = [d async for d in _adapter(hass, session).stream_turn(mock_chat_log, _input(), _ctx())]
+
+    assert "description" not in _posted_body(session)["tools"][0]["function"]
 
 
 # --- registration ---------------------------------------------------------------
@@ -532,3 +589,130 @@ async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_cha
     assert timeout.total is None
     assert timeout.sock_connect == 120
     assert timeout.sock_read == IDLE_TIMEOUT
+
+
+# --- token stats (trace) ----------------------------------------------------------
+
+
+def _usage_frame(usage: dict[str, Any]) -> bytes:
+    """The terminal ``include_usage`` chunk: empty ``choices`` plus a ``usage`` object."""
+    return b"data: " + json.dumps({"choices": [], "usage": usage}).encode() + b"\n\n"
+
+
+async def test_stream_options_requests_usage(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    _ = [d async for d in _adapter(hass, session).stream_turn(mock_chat_log, _input(), _ctx())]
+    assert _posted_body(session)["stream_options"] == {"include_usage": True}
+
+
+async def test_usage_chunk_traced_as_stats(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    usage = {"prompt_tokens": 120, "completion_tokens": 7, "prompt_tokens_details": {"cached_tokens": 64}}
+    blob = _data_frame({"content": "Hi"}) + _usage_frame(usage) + b"data: [DONE]\n\n"
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        deltas = await _collect(hass, mock_chat_log, chunk_bytes(blob, 7), _ctx())
+    assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
+    trace.assert_called_once_with({"stats": {"input_tokens": 120, "cached_input_tokens": 64, "output_tokens": 7}})
+
+
+async def test_usage_without_cache_details_and_repeated_usage_traced_once(
+    hass: HomeAssistant, mock_chat_log: MockChatLog
+) -> None:
+    # Some servers (vLLM continuous usage stats) attach usage to every chunk: trace the
+    # last one, once per round-trip; a missing prompt_tokens_details means 0 cached.
+    blob = (
+        b'data: {"choices":[{"delta":{"content":"a"}}],"usage":{"prompt_tokens":5,"completion_tokens":1}}\n\n'
+        + _usage_frame({"prompt_tokens": 5, "completion_tokens": 2})
+    )
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+    assert deltas == [{"role": "assistant"}, {"content": "a"}]
+    trace.assert_called_once_with({"stats": {"input_tokens": 5, "cached_input_tokens": 0, "output_tokens": 2}})
+
+
+async def test_no_usage_no_trace(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    blob = _data_frame({"content": "Hi"}) + b'data: {"choices":[],"usage":null}\n\n' + b"data: [DONE]\n\n"
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        await _collect(hass, mock_chat_log, [blob], _ctx())
+    trace.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [400, 422])
+async def test_stream_options_rejected_retries_without_and_remembers(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, status: int
+) -> None:
+    rejected = FakeStreamResponse(
+        [], status=status, text='{"error": {"message": "Unrecognized request argument supplied: stream_options"}}'
+    )
+    ok = [FakeStreamResponse([_data_frame({"content": "Hi"}) + b"data: [DONE]\n\n"]) for _ in range(2)]
+    session = MagicMock()
+    session.post = MagicMock(side_effect=[rejected, *ok])
+    adapter = _adapter(hass, session)
+    deltas = [d async for d in adapter.stream_turn(mock_chat_log, _input(), _ctx())]
+    assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
+    first, retry = (call.kwargs["json"] for call in session.post.call_args_list)
+    assert first["stream_options"] == {"include_usage": True}
+    assert "stream_options" not in retry
+    # The rejection is remembered for the connection: the next turn skips the probe.
+    _ = [d async for d in adapter.stream_turn(mock_chat_log, _input(), _ctx())]
+    assert session.post.call_count == 3
+    assert "stream_options" not in session.post.call_args.kwargs["json"]
+
+
+async def test_unrelated_400_not_retried(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    response = FakeStreamResponse([], status=400, text='{"error": {"message": "model not found"}}')
+    session = fake_aiohttp_session(response=response)
+    with pytest.raises(BackendStreamError):
+        _ = [d async for d in _adapter(hass, session).stream_turn(mock_chat_log, _input(), _ctx())]
+    assert session.post.call_count == 1
+
+
+# --- reasoning passthrough --------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", ["reasoning_content", "reasoning"])
+async def test_reasoning_delta_maps_to_thinking_content(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, key: str
+) -> None:
+    blob = (
+        _data_frame({"role": "assistant", key: "Let me ", "content": None})
+        + _data_frame({key: "think."})
+        + _data_frame({"content": "Done."})
+        + b"data: [DONE]\n\n"
+    )
+    deltas = await _collect(hass, mock_chat_log, chunk_bytes(blob, 5), _ctx())
+    assert deltas == [
+        {"role": "assistant"},
+        {"thinking_content": "Let me "},
+        {"thinking_content": "think."},
+        {"content": "Done."},
+    ]
+
+
+async def test_reasoning_both_keys_emitted_once(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # Servers mid-rename send the same text under both keys; emit it once, not twice.
+    blob = (
+        _data_frame({"reasoning_content": "hmm", "reasoning": "hmm"})
+        + _data_frame({"reasoning": "", "content": "ok"})
+        + b"data: [DONE]\n\n"
+    )
+    deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+    assert deltas == [{"role": "assistant"}, {"thinking_content": "hmm"}, {"content": "ok"}]
+
+
+async def test_reasoning_never_reaches_spoken_content(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # Through the real ChatLog: reasoning lands in thinking_content, the spoken text is
+    # only the content (inline <think> tags in content pass through untouched).
+    blob = (
+        _data_frame({"reasoning_content": "secret plan"})
+        + _data_frame({"content": "<think>x</think>Hello"})
+        + b"data: [DONE]\n\n"
+    )
+    response = FakeStreamResponse([blob])
+    adapter = _adapter(hass, fake_aiohttp_session(response=response))
+    stream = adapter.stream_turn(mock_chat_log, _input(), _ctx())
+    results = [c async for c in mock_chat_log.async_add_delta_content_stream("agent-1", stream)]
+    assert len(results) == 1
+    message = results[0]
+    assert isinstance(message, conversation.AssistantContent)
+    assert message.content == "<think>x</think>Hello"
+    assert message.thinking_content == "secret plan"

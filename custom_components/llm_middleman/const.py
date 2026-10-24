@@ -55,6 +55,10 @@ CONVERSE_PATH = "/v1/converse"
 # so we fall back rather than hang the pipeline.
 DEFAULT_TIMEOUT = 60
 
+# Bound on a non-turn backend round-trip (setup reachability probe, subentry model
+# list): a dead backend must not stall HA startup or freeze a config form.
+PROBE_TIMEOUT = 10
+
 # --- v1 re-architecture (LLMM-005) ---
 
 # Per-agent (conversation subentry) option keys.
@@ -101,6 +105,17 @@ DEFAULT_INPUT_MESSAGES_KEY = "messages"
 CONF_RESPONSE_NODE_FILTER = "response_node_filter"
 # Agent option: run without a server-side thread (POST /runs/stream).
 CONF_STATELESS_RUNS = "stateless_runs"
+# Agent option: what the server does with a run still in flight on the thread when a
+# new turn arrives (double-texting). rollback drops the superseded run from the thread,
+# so its unanswered utterance never lingers in history (LLMM-022).
+CONF_MULTITASK_STRATEGY = "multitask_strategy"
+MULTITASK_STRATEGIES = ("rollback", "interrupt", "enqueue", "reject")
+DEFAULT_MULTITASK_STRATEGY = "rollback"
+# Connection option: header the API key is sent in. Entries created before LLMM-022
+# have no value and keep the x-api-key header.
+CONF_AUTH_SCHEME = "auth_scheme"
+LANGGRAPH_AUTH_X_API_KEY = "x_api_key"
+LANGGRAPH_AUTH_BEARER = "bearer"
 # helpers.storage.Store schema version for the session_key -> thread_id map.
 STORAGE_VERSION = 1
 
