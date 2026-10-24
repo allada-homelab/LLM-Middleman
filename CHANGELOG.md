@@ -6,8 +6,35 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-10-24
+
+### Changed
+
+- **Minimum Home Assistant is now 2026.7.0** (`hacs.json`). The test suite now runs
+  against the latest HA (2026.10.3) and this floor in CI; older versions were never
+  verified and the n8n basic-auth path already needed aiohttp ≥3.14. (#88)
+- **The agent timeout now bounds connecting to the backend, not the whole reply.** (#84)
+
 ### Fixed
 
+- **HA tool calling works again on HA ≥2026.9.** HA moved tool schemas to `probatio`,
+  which `voluptuous-openapi` can't convert, so `openai_compat`/`ollama` sent broken tool
+  definitions. Schemas are now converted the way HA's own integrations do, with a
+  fallback for older HA; tool results and the v0 device migration also follow HA
+  2026.10's renamed APIs. (#88)
+- **Long streaming replies are no longer cut off.** A reply still producing tokens after
+  the agent timeout (60 s; 30 s for n8n) was killed and the error message appended to
+  the partial text. A backend that goes silent for 30 s is still dropped. (#84)
+- **Dify: dispatch on the event name inside the JSON.** Dify sends bare `data:` frames,
+  so mid-stream `error` events were swallowed, Agent apps spoke their answer twice, and
+  `message_end`/`message_replace` were not recognized. (#86)
+- **The agent prompt now reaches LangGraph and n8n.** They read a key nothing wrote; the
+  HA-rendered prompt is now sent as `context.system_prompt` (LangGraph threads) or
+  `systemPrompt` (n8n). (#87)
+- **`openai_compat` logs and falls back on HTTP errors** instead of ending silently on a
+  401/500. (#83)
+- **Drop `aiohttp` from `manifest.json` requirements**, which current hassfest rejects as
+  an HA core dependency. (#85)
 - **Declare the `voluptuous-openapi` runtime dependency in `manifest.json`.** The
   `ollama`/`openai_compat` backends import `voluptuous_openapi`, but it was never
   declared in `requirements`. It previously arrived in the HA runtime transitively
