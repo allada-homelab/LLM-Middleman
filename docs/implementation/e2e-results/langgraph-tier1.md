@@ -35,7 +35,8 @@ Command (server from a scratch copy of `scripts/e2e/langgraph/` on port 2025):
 
 ```
 LANGGRAPH_E2E_URL=http://127.0.0.1:2025 uv run python -m pytest -p no:cacheprovider scripts/e2e/langgraph_live_e2e.py -v -s
-→ 9 passed in 92.26s
+→ 9 passed in 92.26s   (first run, commit 9ae4fc4)
+→ 9 passed in 92.24s   (re-run after merging origin/main #97/#98, commit 993606e; same observations)
 ```
 
 | Row | Result | Observed (`E2E …` line) |
