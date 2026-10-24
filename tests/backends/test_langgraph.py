@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import aiohttp
 import pytest
 from homeassistant.components import conversation
+from homeassistant.const import CONF_PROMPT
 from homeassistant.core import Context, HomeAssistant
 
 from custom_components.llm_middleman.backends.base import (
@@ -34,7 +35,7 @@ from custom_components.llm_middleman.backends.langgraph import (
     _extract_text,
     _parse_messages_frame,
 )
-from tests.conftest import _FakeStreamContent, chunk_bytes, sse_bytes
+from tests.conftest import MockChatLog, _FakeStreamContent, build_entity, chunk_bytes, sse_bytes
 
 _BASE_URL = "http://lg.local:2024"
 _CONN: dict[str, Any] = {"base_url": _BASE_URL, "api_key": None, "assistant_id": "agent", "entry_id": "e1"}
@@ -99,9 +100,11 @@ def _input(text: str = "hi") -> conversation.ConversationInput:
     )
 
 
-def _chat_log() -> conversation.ChatLog:
-    # The adapter deletes chat_log immediately (server-side history); shape is irrelevant.
-    return cast("conversation.ChatLog", MagicMock())
+def _chat_log(system_prompt: str = "") -> conversation.ChatLog:
+    # Only the rendered system prompt (content[0]) is read; history stays server-side.
+    chat_log = MagicMock()
+    chat_log.content = [conversation.SystemContent(content=system_prompt)]
+    return cast("conversation.ChatLog", chat_log)
 
 
 def _msg_frame(text: str, *, node: str = "agent") -> tuple[str, str]:
@@ -239,9 +242,9 @@ async def test_run_body_and_headers(hass: HomeAssistant) -> None:
     session.post = MagicMock(side_effect=post_handler)
     conn = {**_CONN, "api_key": "sk-1", "assistant_id": "my-graph"}
     adapter = _adapter(hass, session, conn)
-    opts: dict[str, Any] = {"stateless_runs": True, "system_prompt": "Be nice", "input_messages_key": "msgs"}
+    opts: dict[str, Any] = {"stateless_runs": True, "input_messages_key": "msgs"}
 
-    await _collect(adapter.stream_turn(_chat_log(), _input("hi"), TurnContext(options=opts, memory_key="k")))
+    await _collect(adapter.stream_turn(_chat_log("Be nice"), _input("hi"), TurnContext(options=opts, memory_key="k")))
 
     assert cast("str", captured["url"]).endswith("/runs/stream")
     assert captured["headers"]["x-api-key"] == "sk-1"
@@ -252,6 +255,47 @@ async def test_run_body_and_headers(hass: HomeAssistant) -> None:
         {"role": "system", "content": "Be nice"},
         {"role": "user", "content": "hi"},
     ]
+    # Stateless runs carry the prompt in the input only — never twice.
+    assert "context" not in body
+
+
+async def test_threaded_run_sends_prompt_as_context_not_input(hass: HomeAssistant) -> None:
+    # A persistent thread's add_messages reducer would accumulate a system message per
+    # turn, so the prompt rides out of band in the run's ``context``.
+    session, state = _threaded_session(sse_bytes(_msg_frame("ok")))
+    adapter = _adapter(hass, session)
+
+    await _collect(adapter.stream_turn(_chat_log("Be nice"), _input("hi"), TurnContext(options={}, memory_key="k")))
+
+    run_call = session.post.call_args_list[-1]
+    assert run_call.args[0] == state["run_urls"][0]
+    body = json.loads(cast("str", run_call.kwargs["data"]))
+    assert body["context"] == {"system_prompt": "Be nice"}
+    assert body["input"]["messages"] == [{"role": "user", "content": "hi"}]
+
+
+async def test_empty_prompt_sends_no_context(hass: HomeAssistant) -> None:
+    session, _ = _threaded_session(sse_bytes(_msg_frame("ok")))
+    adapter = _adapter(hass, session)
+
+    await _collect(adapter.stream_turn(_chat_log(), _input("hi"), TurnContext(options={}, memory_key="k")))
+
+    body = json.loads(cast("str", session.post.call_args_list[-1].kwargs["data"]))
+    assert "context" not in body
+
+
+async def test_configured_prompt_reaches_context_rendered(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """The agent's CONF_PROMPT template arrives rendered via the real provide-llm-data path."""
+    session, _ = _threaded_session(sse_bytes(_msg_frame("ok")))
+    entity = build_entity(hass, _adapter(hass, session), {CONF_PROMPT: "Hi {{ 'x' | upper }}"})
+
+    await entity._async_handle_message(_input(), mock_chat_log)
+
+    body = json.loads(cast("str", session.post.call_args_list[-1].kwargs["data"]))
+    system_prompt = body["context"]["system_prompt"]
+    assert system_prompt.startswith("Hi X\n")
+    assert "{{" not in system_prompt
+    assert all(message["role"] == "user" for message in body["input"]["messages"])
 
 
 async def test_no_api_key_omits_header(hass: HomeAssistant) -> None:

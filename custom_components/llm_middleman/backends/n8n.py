@@ -36,12 +36,9 @@ from ..const import (  # noqa: TID252 — sibling package const module
     CONF_OUTPUT_FIELD,
     CONF_PASSWORD,
     CONF_SESSION_FIELD,
-    CONF_SYSTEM_PROMPT,
     CONF_TARGET_TYPE,
-    CONF_TIMEOUT,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
-    IDLE_TIMEOUT,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_AUTH_NONE,
@@ -52,7 +49,15 @@ from ..const import (  # noqa: TID252 — sibling package const module
     N8N_OUTPUT_FIELD_FALLBACK,
     N8N_TARGET_WEBHOOK,
 )
-from .base import BackendAdapter, BackendConnectionError, BackendStreamError, DeltaStream, TurnContext
+from .base import (
+    BackendAdapter,
+    BackendConnectionError,
+    BackendStreamError,
+    DeltaStream,
+    TurnContext,
+    build_client_timeout,
+    rendered_system_prompt,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -133,13 +138,12 @@ class N8nAdapter(BackendAdapter):
     ) -> DeltaStream:
         """POST the turn to the webhook and stream the reply back as HA deltas.
 
-        ``chat_log`` is unused: n8n is stateful and owns its own history, so only the
-        new turn text is sent, keyed on ``ctx.memory_key``.
+        n8n is stateful and owns its own history, so only the new turn text (plus the
+        rendered system prompt from ``chat_log``) is sent, keyed on ``ctx.memory_key``.
         """
         url = self.connection_data[CONF_WEBHOOK_URL]
-        body = self._request_body(user_input, ctx)
+        body = self._request_body(user_input, ctx, rendered_system_prompt(chat_log))
         headers = self._request_headers()
-        timeout = ctx.options.get(CONF_TIMEOUT, N8N_DEFAULT_TIMEOUT)
         # Log the auth *type* only — never the credential value.
         _LOGGER.debug("n8n POST %s (auth=%s)", url, self._auth_type())
         try:
@@ -147,7 +151,7 @@ class N8nAdapter(BackendAdapter):
                 url,
                 data=json.dumps(body, default=str),
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=timeout, sock_read=IDLE_TIMEOUT),
+                timeout=build_client_timeout(ctx.options, N8N_DEFAULT_TIMEOUT),
             ) as response:
                 async for delta in self._iter_deltas(response, ctx):
                     yield delta
@@ -157,7 +161,9 @@ class N8nAdapter(BackendAdapter):
     def _auth_type(self) -> str:
         return self.connection_data.get(CONF_AUTH_TYPE, N8N_AUTH_NONE)
 
-    def _request_body(self, user_input: conversation.ConversationInput, ctx: TurnContext) -> dict[str, Any]:
+    def _request_body(
+        self, user_input: conversation.ConversationInput, ctx: TurnContext, system_prompt: str | None
+    ) -> dict[str, Any]:
         """Build the request body: session key + turn text (+ optional action/system prompt)."""
         session_field = ctx.options.get(CONF_SESSION_FIELD, N8N_DEFAULT_SESSION_FIELD)
         input_field = ctx.options.get(CONF_INPUT_FIELD, N8N_DEFAULT_INPUT_FIELD)
@@ -165,7 +171,7 @@ class N8nAdapter(BackendAdapter):
         # Only the Chat Trigger node uses ``action``; plain Webhook + Respond-to-Webhook omits it.
         if self.connection_data.get(CONF_TARGET_TYPE) != N8N_TARGET_WEBHOOK:
             body["action"] = _ACTION_SEND_MESSAGE
-        if system_prompt := ctx.options.get(CONF_SYSTEM_PROMPT):
+        if system_prompt:
             body["systemPrompt"] = system_prompt
         return body
 

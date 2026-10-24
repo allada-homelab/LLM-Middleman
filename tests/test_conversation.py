@@ -99,7 +99,7 @@ def _make_adapter(hass: HomeAssistant, **script: Any) -> FakeAdapter:
 
 def _make_entity(
     hass: HomeAssistant,
-    adapter: FakeAdapter,
+    adapter: BackendAdapter,
     *,
     subentry_data: Mapping[str, Any] | None = None,
     subentry_id: str = "sub-1",
@@ -223,6 +223,28 @@ async def test_guard_exception_after_content(hass: HomeAssistant, mock_chat_log:
     logger.exception.assert_called_once()
 
 
+@pytest.mark.parametrize("status", [401, 500])
+async def test_openai_compat_http_error_logs_and_falls_back(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture, status: int
+) -> None:
+    """A non-200 from openai_compat is logged with the body excerpt; the user gets the fallback."""
+    body = '{"error": {"message": "Incorrect API key provided"}}'
+    session = MagicMock()
+    session.post = MagicMock(return_value=FakeStreamResponse([], status=status, text=body))
+    adapter = OpenAICompatAdapter(hass, session, {CONF_BASE_URL: "http://backend.test", CONF_API_KEY: "sk-secret-key"})
+    entity = _make_entity(hass, adapter)
+
+    with caplog.at_level("ERROR"):
+        await entity._async_run_turn(_user_input(), mock_chat_log)
+
+    last = mock_chat_log.content[-1]
+    assert isinstance(last, conversation.AssistantContent)
+    assert last.content == ERROR_MESSAGE
+    assert f"HTTP {status}" in caplog.text
+    assert "Incorrect API key provided" in caplog.text
+    assert "sk-secret-key" not in caplog.text
+
+
 async def test_guard_injects_role_first(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
     """A first delta lacking a role gets a leading {'role': 'assistant'} injected."""
     adapter = _make_adapter(hass, deltas=[{"content": "x"}])
@@ -251,17 +273,19 @@ async def test_empty_delta_passes_untrimmed(hass: HomeAssistant, mock_chat_log: 
 
 
 def test_build_client_timeout_defaults() -> None:
-    """No option → total=DEFAULT_TIMEOUT, sock_read=IDLE_TIMEOUT."""
+    """No option → no total, sock_connect=DEFAULT_TIMEOUT, sock_read=IDLE_TIMEOUT."""
     timeout = build_client_timeout({})
     assert isinstance(timeout, aiohttp.ClientTimeout)
-    assert timeout.total == DEFAULT_TIMEOUT
+    assert timeout.total is None
+    assert timeout.sock_connect == DEFAULT_TIMEOUT
     assert timeout.sock_read == IDLE_TIMEOUT
 
 
 def test_build_client_timeout_per_agent() -> None:
-    """The per-agent CONF_TIMEOUT overrides the total; sock_read stays idle."""
+    """The per-agent CONF_TIMEOUT overrides the connect bound; no total, sock_read stays idle."""
     timeout = build_client_timeout({CONF_TIMEOUT: 120})
-    assert timeout.total == 120
+    assert timeout.total is None
+    assert timeout.sock_connect == 120
     assert timeout.sock_read == IDLE_TIMEOUT
 
 

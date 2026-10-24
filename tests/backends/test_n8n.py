@@ -17,6 +17,7 @@ from typing import Any, cast
 import aiohttp
 import pytest
 from homeassistant.components import conversation
+from homeassistant.const import CONF_PROMPT
 from homeassistant.core import Context, HomeAssistant
 
 from custom_components.llm_middleman.backends import BACKEND_TO_CLS
@@ -36,16 +37,16 @@ from custom_components.llm_middleman.const import (
     CONF_PASSWORD,
     CONF_SESSION_FIELD,
     CONF_STREAMING,
-    CONF_SYSTEM_PROMPT,
     CONF_TARGET_TYPE,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
+    IDLE_TIMEOUT,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
 )
-from tests.conftest import FakeStreamResponse, chunk_bytes, fake_aiohttp_session
+from tests.conftest import FakeStreamResponse, MockChatLog, build_entity, chunk_bytes, fake_aiohttp_session
 
 _WEBHOOK = "https://n8n.local/webhook/abc/chat"
 
@@ -77,8 +78,10 @@ def _adapter(
 async def _collect(
     adapter: N8nAdapter,
     ctx: TurnContext,
+    *,
+    system_prompt: str = "",
 ) -> list[conversation.AssistantContentDeltaDict]:
-    chat_log = cast("conversation.ChatLog", object())
+    chat_log = conversation.ChatLog(adapter.hass, "conv-1", [conversation.SystemContent(content=system_prompt)])
     return [delta async for delta in adapter.stream_turn(chat_log, _make_input(), ctx)]
 
 
@@ -228,8 +231,11 @@ async def test_action_included_for_chat_trigger(hass: HomeAssistant) -> None:
     # Session key and turn text are sent under the default field names.
     assert body["sessionId"] == "conv-1"
     assert body["chatInput"] == "hi there"
-    # Default per-turn deadline is the n8n-specific 30 s (lower than the global default).
-    assert session.post.call_args.kwargs["timeout"].total == 30
+    # Default connect bound is the n8n-specific 30 s; no total deadline so a live stream isn't cut off.
+    timeout = session.post.call_args.kwargs["timeout"]
+    assert timeout.total is None
+    assert timeout.sock_connect == 30
+    assert timeout.sock_read == IDLE_TIMEOUT
 
 
 async def test_action_omitted_for_plain_webhook(hass: HomeAssistant) -> None:
@@ -251,14 +257,33 @@ async def test_custom_fields_and_system_prompt(hass: HomeAssistant) -> None:
             **{
                 CONF_SESSION_FIELD: "sid",
                 CONF_INPUT_FIELD: "prompt",
-                CONF_SYSTEM_PROMPT: "be terse",
             }
         ),
+        system_prompt="be terse",
     )
     body = _posted_body(session)
     assert body["sid"] == "conv-1"
     assert body["prompt"] == "hi there"
     assert body["systemPrompt"] == "be terse"
+
+
+async def test_empty_system_prompt_omitted(hass: HomeAssistant) -> None:
+    response = _response([b'{"output":"ok"}'], "application/json")
+    session = fake_aiohttp_session(response=response)
+    await _collect(_adapter(hass, session), _ctx())
+    assert "systemPrompt" not in _posted_body(session)
+
+
+async def test_configured_prompt_reaches_body_rendered(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """The agent's CONF_PROMPT template arrives rendered via the real provide-llm-data path."""
+    session = fake_aiohttp_session(response=_response([b'{"output":"ok"}'], "application/json"))
+    entity = build_entity(hass, _adapter(hass, session), {CONF_PROMPT: "Hi {{ 'x' | upper }}"})
+
+    await entity._async_handle_message(_make_input(), mock_chat_log)
+
+    system_prompt = _posted_body(session)["systemPrompt"]
+    assert system_prompt.startswith("Hi X\n")
+    assert "{{" not in system_prompt
 
 
 # --- auth + redaction --------------------------------------------------------

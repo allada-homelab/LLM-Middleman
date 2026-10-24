@@ -502,5 +502,6 @@ async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_cha
     adapter = _adapter(hass, session)
     await _run(adapter, mock_chat_log, options={CONF_MODEL: "llama3", CONF_TIMEOUT: 45})
     timeout = session.post.call_args.kwargs["timeout"]
-    assert timeout.total == 45
+    assert timeout.total is None
+    assert timeout.sock_connect == 45
     assert timeout.sock_read == IDLE_TIMEOUT

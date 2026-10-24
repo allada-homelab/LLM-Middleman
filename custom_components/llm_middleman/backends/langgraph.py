@@ -46,7 +46,6 @@ from custom_components.llm_middleman.const import (
     CONF_INPUT_MESSAGES_KEY,
     CONF_RESPONSE_NODE_FILTER,
     CONF_STATELESS_RUNS,
-    CONF_SYSTEM_PROMPT,
     DEFAULT_ASSISTANT_ID,
     DEFAULT_INPUT_MESSAGES_KEY,
     DEFAULT_TIMEOUT,
@@ -61,6 +60,7 @@ from .base import (
     BackendConnectionError,
     DeltaStream,
     build_client_timeout,
+    rendered_system_prompt,
 )
 
 if TYPE_CHECKING:
@@ -212,15 +212,15 @@ class LangGraphAdapter(BackendAdapter):
     ) -> DeltaStream:
         """Ensure a thread for ``ctx.memory_key`` and stream the new turn's reply.
 
-        ``chat_log`` is intentionally unused: LangGraph owns history server-side, so only
-        the new turn is sent (stateful contract).
+        LangGraph owns history server-side, so only the new turn is sent (stateful
+        contract); ``chat_log`` is read solely for the rendered system prompt.
         """
-        del chat_log  # server-side history; only the new turn is forwarded
         options = ctx.options
         timeout = build_client_timeout(options)
+        system_prompt = rendered_system_prompt(chat_log)
 
         if bool(options.get(CONF_STATELESS_RUNS, False)):
-            async for delta in self._run_stream(None, user_input, options, timeout):
+            async for delta in self._run_stream(None, user_input, options, timeout, system_prompt):
                 yield delta
             return
 
@@ -229,14 +229,14 @@ class LangGraphAdapter(BackendAdapter):
         session_key = ctx.memory_key
         thread_id = await self._ensure_thread(session_key, persist, timeout)
         try:
-            async for delta in self._run_stream(thread_id, user_input, options, timeout):
+            async for delta in self._run_stream(thread_id, user_input, options, timeout, system_prompt):
                 yield delta
         except _ThreadNotFound:
             # Persisted/cached thread was GC'd server-side: recreate and retry once.
             _LOGGER.debug("LangGraph thread %s gone; recreating", thread_id)
             thread_id = await self._create_thread(timeout)
             await self._store_thread(session_key, thread_id, persist)
-            async for delta in self._run_stream(thread_id, user_input, options, timeout):
+            async for delta in self._run_stream(thread_id, user_input, options, timeout, system_prompt):
                 yield delta
 
     # --- thread mapping ------------------------------------------------------
@@ -292,19 +292,34 @@ class LangGraphAdapter(BackendAdapter):
 
     # --- streaming -----------------------------------------------------------
 
-    def _build_body(self, user_input: conversation.ConversationInput, options: Mapping[str, Any]) -> dict[str, Any]:
-        """Assemble the run request body carrying only the new turn."""
+    def _build_body(
+        self,
+        user_input: conversation.ConversationInput,
+        options: Mapping[str, Any],
+        system_prompt: str | None,
+        *,
+        threaded: bool,
+    ) -> dict[str, Any]:
+        """Assemble the run request body carrying only the new turn.
+
+        On a persistent thread the prompt goes in the run's ``context`` (read by the
+        graph as ``runtime.context.system_prompt``): a system message in ``input`` would
+        be appended to the thread's state by the ``add_messages`` reducer every turn. A
+        stateless run has no accumulated state, so it leads the input messages instead.
+        """
         messages: list[dict[str, str]] = []
-        system_prompt = str(options.get(CONF_SYSTEM_PROMPT, "") or "")
-        if system_prompt:
+        if system_prompt and not threaded:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": user_input.text})
         input_key = str(options.get(CONF_INPUT_MESSAGES_KEY, DEFAULT_INPUT_MESSAGES_KEY))
-        return {
+        body: dict[str, Any] = {
             "assistant_id": self._assistant_id,
             "input": {input_key: messages},
             "stream_mode": "messages-tuple",
         }
+        if system_prompt and threaded:
+            body["context"] = {"system_prompt": system_prompt}
+        return body
 
     async def _run_stream(
         self,
@@ -312,6 +327,7 @@ class LangGraphAdapter(BackendAdapter):
         user_input: conversation.ConversationInput,
         options: Mapping[str, Any],
         timeout: aiohttp.ClientTimeout,
+        system_prompt: str | None,
     ) -> DeltaStream:
         """POST a (threaded or stateless) run and yield role-first token deltas.
 
@@ -323,7 +339,9 @@ class LangGraphAdapter(BackendAdapter):
             url = f"{self._base_url}/runs/stream"
         else:
             url = f"{self._base_url}/threads/{thread_id}/runs/stream"
-        body = json.dumps(self._build_body(user_input, options), default=str)
+        body = json.dumps(
+            self._build_body(user_input, options, system_prompt, threaded=thread_id is not None), default=str
+        )
         node_filter = str(options.get(CONF_RESPONSE_NODE_FILTER, "") or "")
 
         async with self.session.post(url, data=body, headers=_headers(self._api_key), timeout=timeout) as resp:
