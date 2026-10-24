@@ -42,6 +42,7 @@ __all__ = [
     "BackendAuthError",
     "BackendConnectionError",
     "BackendStatusError",
+    "BackendStreamAuthError",
     "BackendStreamError",
     "DeltaStream",
     "TurnContext",
@@ -125,6 +126,13 @@ class BackendAuthError(BackendConnectionError):
 
 class BackendStatusError(BackendConnectionError):
     """A probe got a non-auth HTTP error status (distinct from a transport failure)."""
+
+
+class BackendStreamAuthError(BackendStreamError, BackendAuthError):
+    """A turn request was rejected with 401/403; the entity starts reauth on it.
+
+    Subclasses both turn-error types ``_post_checked`` raises, so existing catches hold.
+    """
 
 
 async def probe_json(
@@ -253,6 +261,8 @@ class BackendAdapter(ABC):
         error); if it returns, the body (first 500 chars) is logged at ERROR as
         ``"<label> returned HTTP <status>: <body>"`` and ``error_cls`` is raised, so an
         error status always reaches the entity guard named, never as a silent empty stream.
+        A 401/403 raises :class:`BackendStreamAuthError` instead (a subclass of both
+        ``error_cls`` values in use) so the entity can start reauth for every preset.
         """
         async with self.session.post(url, json=json, data=data, headers=headers, timeout=timeout) as response:
             if response.status >= 400:
@@ -260,6 +270,8 @@ class BackendAdapter(ABC):
                     await on_error_status(response)
                 detail = (await response.text())[:500]
                 _LOGGER.error("%s returned HTTP %s: %s", label, response.status, detail)
+                if response.status in (401, 403):
+                    raise BackendStreamAuthError(f"{label} returned HTTP {response.status}")
                 raise error_cls(f"{label} returned HTTP {response.status}")
             yield response
 
