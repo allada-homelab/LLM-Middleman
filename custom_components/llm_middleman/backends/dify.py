@@ -29,8 +29,13 @@ chunks with one ``message`` carrying the COMPLETE answer, so a ``message`` after
 ``message_replace`` (output moderation) replaces the answer: spoken only when nothing has
 been spoken yet, otherwise recorded in the trace and logged (streamed TTS cannot be
 un-spoken); further answer chunks are dropped either way. Chatflow ``reasoning_chunk``
-deltas become ``thinking_content`` (shown, never spoken). ``agent_thought`` is
-debug-logged; ``message_file``/``tts_*``/``workflow_*``/``node_*``/… are not spoken.
+deltas become ``thinking_content`` (shown, never spoken). Tool activity — Agent
+``agent_thought`` tool/tool_input/observation and Chatflow ``tool`` nodes
+(``node_started``/``node_finished``) — is recorded as external tool calls + results via
+``_compat`` (shown in the Assist chat, never spoken, never executed by HA). A run that used
+tools must still end with spoken text, else it raises so the entity appends its fallback
+(ending on a tool result would re-enter the entity's tool loop and re-send the turn).
+``message_file``/``tts_*``/``workflow_*``/other ``node_*``/… are not spoken.
 
 Dify owns conversation memory server-side: the first turn returns a ``conversation_id``
 on every event, and echoing it back continues the conversation → stateful
@@ -63,6 +68,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import aiohttp
@@ -89,6 +95,7 @@ from custom_components.llm_middleman.const import (
     STORAGE_VERSION,
 )
 
+from ._compat import external_tool_call_delta, external_tool_result_delta
 from ._sse import BackendStreamError, async_iter_sse
 from .base import (
     BackendAdapter,
@@ -100,6 +107,7 @@ from .base import (
     build_client_timeout,
     loads_json_object,
     probe_json,
+    trace_token_stats,
 )
 
 if TYPE_CHECKING:
@@ -131,7 +139,12 @@ _EVENT_ERROR = "error"
 _EVENT_MESSAGE_REPLACE = "message_replace"
 _EVENT_REASONING_CHUNK = "reasoning_chunk"
 _EVENT_WORKFLOW_PAUSED = "workflow_paused"
-_LOGGED_IGNORED_EVENTS = frozenset({"agent_thought"})
+_EVENT_AGENT_THOUGHT = "agent_thought"
+_EVENT_NODE_STARTED = "node_started"
+_EVENT_NODE_FINISHED = "node_finished"
+_NODE_EVENTS = frozenset({_EVENT_NODE_STARTED, _EVENT_NODE_FINISHED})
+# Chatflow node statuses that mean the tool failed (StreamEventNodeFinished.status).
+_NODE_FAILED = frozenset({"failed", "exception"})
 
 # Spoken when a Chatflow pauses at a Human Input node (see module docstring).
 PAUSED_NOTICE = "The assistant paused and is waiting for input in Dify."
@@ -246,6 +259,82 @@ async def _fetch_parameters(session: aiohttp.ClientSession, base_url: str, api_k
     return payload
 
 
+@dataclass(frozen=True)
+class _ToolActivity:
+    """One backend-run tool call as seen so far: args once known, result once finished."""
+
+    call_id: str
+    name: str
+    args: dict[str, Any] | None
+    result: Any = None
+    error: bool = False
+
+
+def _loads_any(raw: object) -> object:
+    """Parse a JSON string field, or ``None`` when it is empty/not JSON."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _thought_tools(payload: Mapping[str, Any]) -> list[_ToolActivity]:
+    """Tool activity of an ``agent_thought`` (spec StreamEventChatAgentThought).
+
+    ``tool`` lists the tools ``;``-separated; ``tool_input`` is JSON — for Dify agents an
+    object keyed by tool name (``{"dalle3": {"prompt": ...}}``); ``observation`` is the
+    tools' output, likewise keyed by tool name when several ran. Ids are the thought id +
+    tool name, stable across the repeated updates of one thought.
+    """
+    names = [name.strip() for name in str(payload.get("tool") or "").split(";") if name.strip()]
+    if not names:
+        return []
+    thought_id = str(payload.get("id") or payload.get("position") or "thought")
+    raw_input, raw_observation = payload.get("tool_input"), payload.get("observation")
+    inputs, observation = _loads_any(raw_input), _loads_any(raw_observation)
+    activities: list[_ToolActivity] = []
+    for name in names:
+        args: dict[str, Any] | None = None
+        if isinstance(raw_input, str) and raw_input.strip():
+            keyed = cast("dict[str, Any]", inputs).get(name) if isinstance(inputs, dict) else None
+            if isinstance(keyed, dict):
+                args = cast("dict[str, Any]", keyed)
+            elif keyed is not None:
+                args = {"input": keyed}
+            elif isinstance(inputs, dict) and len(names) == 1:
+                args = cast("dict[str, Any]", inputs)
+            else:
+                args = {"input": raw_input}
+        result: Any = None
+        if isinstance(raw_observation, str) and raw_observation.strip():
+            by_tool = cast("dict[str, Any]", observation) if isinstance(observation, dict) else {}
+            result = by_tool.get(name, raw_observation)
+        activities.append(_ToolActivity(f"{thought_id}:{name}", name, args, result))
+    return activities
+
+
+def _node_tool(event: str, payload: Mapping[str, Any]) -> _ToolActivity | None:
+    """Tool activity of a Chatflow ``node_started``/``node_finished`` for a ``tool`` node."""
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    data = cast("dict[str, Any]", data)
+    call_id = data.get("id")
+    if data.get("node_type") != "tool" or not isinstance(call_id, str) or not call_id:
+        return None
+    name = str(data.get("title") or data.get("node_id") or "tool")
+    inputs = data.get("inputs")
+    args = cast("dict[str, Any]", inputs) if isinstance(inputs, dict) else {}
+    if event != _EVENT_NODE_FINISHED:
+        return _ToolActivity(call_id, name, args)
+    if data.get("status") in _NODE_FAILED:
+        return _ToolActivity(call_id, name, args, {"error": data.get("error") or "tool failed"}, error=True)
+    outputs = data.get("outputs")
+    return _ToolActivity(call_id, name, args, outputs if isinstance(outputs, dict) else {})
+
+
 def _end_user(options: Mapping[str, Any], user_input: conversation.ConversationInput) -> str:
     """Return the Dify ``user``: the HA user id when opted in and known, else the default.
 
@@ -259,8 +348,8 @@ def _end_user(options: Mapping[str, Any], user_input: conversation.ConversationI
 def _trace_usage(chat_log: conversation.ChatLog, message_end: Mapping[str, Any]) -> None:
     """Record ``message_end.metadata.usage`` in the conversation trace.
 
-    ``stats`` mirrors core's token-stats shape (anthropic ``_create_token_stats``) when Dify
-    reports both token counts; the full usage (price, currency, latency) rides along as
+    Token counts go through the shared :func:`trace_token_stats` (core's ``stats`` shape)
+    when Dify reports both; the full usage (price, currency, latency) is traced as
     ``dify_usage``. The spec's Agent example carries only ``total_tokens``/``latency``.
     """
     metadata = message_end.get("metadata")
@@ -268,11 +357,10 @@ def _trace_usage(chat_log: conversation.ChatLog, message_end: Mapping[str, Any])
     if not isinstance(usage, dict):
         return
     usage = cast("dict[str, Any]", usage)
-    details: dict[str, Any] = {"dify_usage": usage}
     prompt_tokens, completion_tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
     if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
-        details["stats"] = {"input_tokens": prompt_tokens, "output_tokens": completion_tokens}
-    chat_log.async_trace(details)
+        trace_token_stats(chat_log, input_tokens=prompt_tokens, output_tokens=completion_tokens)
+    chat_log.async_trace({"dify_usage": usage})
 
 
 _THINK_OPEN = "<think>"
@@ -482,20 +570,42 @@ class DifyAdapter(BackendAdapter):
         if conversation_id is not None:
             request["conversation_id"] = conversation_id
 
-        role_sent = False
+        block_open = False  # an assistant block that may take more content is open
         content_sent = False
+        needs_reply = False  # tool activity happened since the last spoken text
         replaced = False
         captured = False
         agent_streamed = False
         stripper = _ThinkStripper()
+        calls_sent: set[str] = set()
+        results_sent: set[str] = set()
 
         def opened(delta: conversation.AssistantContentDeltaDict) -> list[conversation.AssistantContentDeltaDict]:
-            # Role-first invariant: the first delta of the block carries the role.
-            nonlocal role_sent
-            if role_sent:
+            # Role-first invariant: the first delta of each block carries the role.
+            nonlocal block_open, needs_reply
+            if "content" in delta:
+                needs_reply = False
+            if block_open:
                 return [delta]
-            role_sent = True
+            block_open = True
             return [{"role": "assistant"}, delta]
+
+        def tool_deltas(activity: _ToolActivity) -> list[conversation.AssistantContentDeltaDict]:
+            # Agent thoughts repeat as they fill in, so each call/result is emitted once; a
+            # result never precedes its call.
+            nonlocal block_open, needs_reply
+            deltas: list[conversation.AssistantContentDeltaDict] = []
+            if activity.call_id not in calls_sent and (activity.args is not None or activity.result is not None):
+                calls_sent.add(activity.call_id)
+                deltas.append(external_tool_call_delta(activity.call_id, activity.name, activity.args or {}))
+            if activity.result is not None and activity.call_id not in results_sent:
+                results_sent.add(activity.call_id)
+                deltas.append(
+                    external_tool_result_delta(activity.call_id, activity.name, activity.result, error=activity.error)
+                )
+            if deltas:
+                block_open, needs_reply = False, True
+            return deltas
 
         async def _on_error_status(resp: aiohttp.ClientResponse) -> None:
             if resp.status in (401, 403):
@@ -546,6 +656,11 @@ class DifyAdapter(BackendAdapter):
                         for delta in opened({"content": tail}):
                             yield delta
                     _trace_usage(chat_log, payload)
+                    if needs_reply:
+                        # Ending on a tool result would re-enter the entity's tool loop and
+                        # re-send the turn; raising lets the guard append the fallback reply.
+                        state["task_id"] = None  # the task finished; nothing to stop
+                        raise BackendStreamError("Dify run used tools but produced no reply text")
                     return
                 if event == _EVENT_WORKFLOW_PAUSED:
                     _LOGGER.warning("Dify chatflow paused waiting for human input; finish it in Dify")
@@ -577,8 +692,16 @@ class DifyAdapter(BackendAdapter):
                         for delta in opened({"thinking_content": reasoning}):
                             yield delta
                     continue
-                if event in _LOGGED_IGNORED_EVENTS:
-                    _LOGGER.debug("Dify %s event ignored: %s", event, sse.data[:200])
+                if event == _EVENT_AGENT_THOUGHT:
+                    for activity in _thought_tools(payload):
+                        for delta in tool_deltas(activity):
+                            yield delta
+                    continue
+                if event in _NODE_EVENTS:
+                    node_activity = _node_tool(event, payload)
+                    if node_activity is not None:
+                        for delta in tool_deltas(node_activity):
+                            yield delta
                     continue
                 if event not in _CONTENT_EVENTS:
                     continue  # message_file / tts_* / workflow_* / node_* / unknown

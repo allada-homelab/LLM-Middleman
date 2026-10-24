@@ -33,6 +33,7 @@ from homeassistant.components.conversation import trace
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import llm
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.llm_middleman.backends.base import (
@@ -44,7 +45,8 @@ from custom_components.llm_middleman.backends.base import (
     TurnContext,
 )
 from custom_components.llm_middleman.backends.dify import PAUSED_NOTICE, DifyAdapter, DifyAppError
-from tests.conftest import FakeStreamResponse, chunk_bytes, sse_bytes
+from custom_components.llm_middleman.const import ERROR_MESSAGE
+from tests.conftest import FakeStreamResponse, MockChatLog, build_entity, chunk_bytes, sse_bytes
 
 _BASE_URL = "https://api.dify.ai/v1"
 _CONN: dict[str, Any] = {"base_url": _BASE_URL, "api_key": "app-key", "entry_id": "e1"}
@@ -312,20 +314,9 @@ async def test_message_end_terminates_stream(hass: HomeAssistant) -> None:
     assert _text_of(await _run(hass, blob, chunk=6)) == "Hi"
 
 
-async def test_legacy_agent_thought_and_file_events_produce_no_content(hass: HomeAssistant) -> None:
-    # Spec "Response Example - Streaming (Agent)": thought/tool step + file + agent_message.
-    thought = _ev(
-        "agent_thought",
-        id="8dcf3648-fbad-407a-85dd-73a6f43aeb9f",
-        position=1,
-        thought="Thinking about calling a tool...",
-        tool="dalle3",
-        tool_input='{"dalle3": {"prompt": "a cute cat"}}',
-        observation="",
-        message_files=[],
-    )
+async def test_legacy_agent_file_and_tts_events_produce_no_content(hass: HomeAssistant) -> None:
     file_event = _ev("message_file", id="file_id_1", type="image", belongs_to="assistant", url="https://x/cat.png")
-    blob = _dify_sse(_PING, thought, file_event, _ev("tts_message", audio="..."), _msg("answer"), _end())
+    blob = _dify_sse(_PING, file_event, _ev("tts_message", audio="..."), _msg("answer"), _end())
     assert await _run(hass, blob, chunk=7) == [{"role": "assistant"}, {"content": "answer"}]
 
 
@@ -486,14 +477,14 @@ async def test_message_replace_after_text_is_traced_not_spoken(
 
 async def test_usage_recorded_in_trace(hass: HomeAssistant) -> None:
     _, details = await _run_traced(hass, _dify_sse(_msg("ok", event="message"), _end()))
-    assert {"dify_usage": _USAGE, "stats": {"input_tokens": 1033, "output_tokens": 128}} in details
+    assert details[-2:] == [{"stats": {"input_tokens": 1033, "output_tokens": 128}}, {"dify_usage": _USAGE}]
 
 
 async def test_usage_without_token_split_omits_stats(hass: HomeAssistant) -> None:
     # The spec's Agent example reports only total_tokens/latency.
     usage = {"total_tokens": 50, "latency": 2.5}
     _, details = await _run_traced(hass, _dify_sse(_msg("ok"), _end(usage=usage)))
-    assert {"dify_usage": usage} in details
+    assert details == [{"dify_usage": usage}]
 
 
 # --- <think> reasoning stripped from spoken output --------------------------
@@ -997,3 +988,176 @@ async def test_gone_conversation_dropped_from_persisted_map(hass: HomeAssistant,
 
     assert "conversation_id" not in rec.bodies[2]
     assert hass_storage["llm_middleman.dify.e1"]["data"] == {"dev-A": "new-id"}
+
+
+# --- tool activity (external tool calls in the Assist chat) -------------------------
+
+
+_THOUGHT_ID = "8dcf3648-fbad-407a-85dd-73a6f43aeb9f"
+
+
+def _thought(*, tool: str, tool_input: str = "", observation: str = "", thought: str = "") -> dict[str, Any]:
+    # Spec StreamEventChatAgentThought; Dify re-sends the same thought id as it fills in.
+    return _ev(
+        "agent_thought",
+        id=_THOUGHT_ID,
+        position=1,
+        thought=thought,
+        tool=tool,
+        tool_input=tool_input,
+        observation=observation,
+        message_files=[],
+    )
+
+
+def _tool_node(event: str, **fields: Any) -> dict[str, Any]:
+    node = {"id": "ne_tool_1", "node_id": "node_weather", "node_type": "tool", "title": "Weather", "index": 2}
+    return _wf(event, **node, **fields)
+
+
+def _tool_events(deltas: list[Any]) -> list[tuple[Any, ...]]:
+    """Flatten external tool calls/results out of a delta stream."""
+    out: list[tuple[Any, ...]] = []
+    for delta in deltas:
+        raw = cast("dict[str, Any]", delta)
+        calls = cast("list[llm.ToolInput]", raw.get("tool_calls") or [])
+        out.extend(("call", c.id, c.tool_name, c.tool_args, c.external) for c in calls)
+        if raw.get("role") == "tool_result":
+            data = raw["result"].data if "result" in raw else raw["tool_result"]
+            out.append(("result", raw["tool_call_id"], raw["tool_name"], data))
+    return out
+
+
+async def test_agent_thought_tool_call_and_result_emitted_once(hass: HomeAssistant) -> None:
+    # Spec Agent example: the call appears with tool_input, the result once observation fills in.
+    blob = _dify_sse(
+        _thought(tool="dalle3", tool_input='{"dalle3": {"prompt": "a cute cat"}}', thought="Calling a tool..."),
+        _thought(tool="dalle3", tool_input='{"dalle3": {"prompt": "a cute cat"}}', observation="image created"),
+        _thought(tool="dalle3", tool_input='{"dalle3": {"prompt": "a cute cat"}}', observation="image created"),
+        _msg("Here is the image."),
+        _end(),
+    )
+    deltas = await _run(hass, blob, chunk=13)
+    call_id = f"{_THOUGHT_ID}:dalle3"
+    assert _tool_events(deltas) == [
+        ("call", call_id, "dalle3", {"prompt": "a cute cat"}, True),
+        ("result", call_id, "dalle3", {"result": "image created"}),
+    ]
+    # The answer opens a fresh assistant block after the tool result; tool I/O is never spoken.
+    assert deltas[-2:] == [{"role": "assistant"}, {"content": "Here is the image."}]
+    assert _text_of(deltas) == "Here is the image."
+
+
+async def test_agent_thought_with_several_tools_splits_inputs_and_observations(hass: HomeAssistant) -> None:
+    blob = _dify_sse(
+        _thought(
+            tool="weather;clock",
+            tool_input='{"weather": {"city": "Berlin"}, "clock": {"tz": "CET"}}',
+            observation='{"weather": "sunny", "clock": {"time": "12:00"}}',
+        ),
+        _msg("Sunny, noon."),
+        _end(),
+    )
+    events = _tool_events(await _run(hass, blob, chunk=17))
+    assert events == [
+        ("call", f"{_THOUGHT_ID}:weather", "weather", {"city": "Berlin"}, True),
+        ("result", f"{_THOUGHT_ID}:weather", "weather", {"result": "sunny"}),
+        ("call", f"{_THOUGHT_ID}:clock", "clock", {"tz": "CET"}, True),
+        ("result", f"{_THOUGHT_ID}:clock", "clock", {"time": "12:00"}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tool_input", "args"),
+    [('{"query": "lights"}', {"query": "lights"}), ("turn on the lights", {"input": "turn on the lights"})],
+)
+async def test_agent_thought_unkeyed_or_plain_tool_input(
+    hass: HomeAssistant, tool_input: str, args: dict[str, Any]
+) -> None:
+    blob = _dify_sse(_thought(tool="search", tool_input=tool_input), _msg("Done."), _end())
+    assert _tool_events(await _run(hass, blob, chunk=11)) == [("call", f"{_THOUGHT_ID}:search", "search", args, True)]
+
+
+async def test_agent_thought_without_tool_emits_nothing(hass: HomeAssistant) -> None:
+    blob = _dify_sse(_thought(tool="", thought="Let me think."), _msg("Hi"), _end())
+    assert await _run(hass, blob, chunk=9) == [{"role": "assistant"}, {"content": "Hi"}]
+
+
+async def test_chatflow_tool_node_emits_call_and_result(hass: HomeAssistant) -> None:
+    blob = _dify_sse(
+        _WF_STARTED,
+        _tool_node("node_started", inputs={"city": "Berlin"}),
+        _tool_node("node_finished", inputs={"city": "Berlin"}, status="succeeded", outputs={"text": "sunny"}),
+        _NODE_STARTED,  # an llm node: not a tool
+        _msg("It is sunny.", event="message"),
+        _end(),
+    )
+    deltas = await _run(hass, blob, chunk=11)
+    assert _tool_events(deltas) == [
+        ("call", "ne_tool_1", "Weather", {"city": "Berlin"}, True),
+        ("result", "ne_tool_1", "Weather", {"text": "sunny"}),
+    ]
+    assert _text_of(deltas) == "It is sunny."
+
+
+async def test_chatflow_failed_tool_node_records_error_result(hass: HomeAssistant) -> None:
+    failed = _tool_node("node_finished", inputs={}, status="failed", error="HTTP 500 from weather API")
+    blob = _dify_sse(_WF_STARTED, failed, _msg("Weather is unavailable.", event="message"), _end())
+    events = _tool_events(await _run(hass, blob, chunk=11))
+    # node_finished without a seen node_started still emits the call before its result.
+    assert events == [
+        ("call", "ne_tool_1", "Weather", {}, True),
+        ("result", "ne_tool_1", "Weather", {"error": "HTTP 500 from weather API"}),
+    ]
+
+
+async def test_tools_without_answer_raise_without_stopping(hass: HomeAssistant) -> None:
+    blob = _dify_sse(_thought(tool="search", tool_input='{"q": "x"}', observation="found"), _end())
+    rec = _Recorder(_reply(blob))
+    adapter = _adapter(hass, rec.session())
+    with pytest.raises(BackendStreamError):
+        await _collect(adapter.stream_turn(_chat_log(hass), _input(), TurnContext(options={}, memory_key="k")))
+    await hass.async_block_till_done()
+    assert rec.urls == [_CHAT_URL]  # message_end arrived: the task is over, nothing to stop
+
+
+# --- through the entity (tool loop) -----------------------------------------------
+
+
+_TOOL_TURN = _dify_sse(
+    _thought(tool="lights", tool_input='{"lights": {"area": "kitchen"}}'),
+    _thought(tool="lights", tool_input='{"lights": {"area": "kitchen"}}', observation="ok"),
+    _msg("Kitchen lights are on."),
+    _end(),
+)
+
+
+async def test_turn_with_tool_activity_posts_exactly_once(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """External tool results must not re-enter the entity's HA tool loop (one POST per turn)."""
+    rec = _Recorder(_reply(_TOOL_TURN), _reply(_TOOL_TURN))
+    entity = build_entity(hass, _adapter(hass, rec.session()), {})
+
+    result = await entity._async_handle_message(_input(), mock_chat_log)
+
+    assert rec.urls == [_CHAT_URL]
+    assert result.response.speech["plain"]["speech"] == "Kitchen lights are on."
+    call, tool_result, reply = mock_chat_log.content[-3:]
+    assert isinstance(call, conversation.AssistantContent)
+    assert call.tool_calls is not None
+    assert call.tool_calls[0].external is True
+    assert isinstance(tool_result, conversation.ToolResultContent)
+    assert isinstance(reply, conversation.AssistantContent)
+    assert reply.content == "Kitchen lights are on."
+
+
+async def test_tools_without_answer_post_once_and_speak_fallback(
+    hass: HomeAssistant, mock_chat_log: MockChatLog
+) -> None:
+    blob = _dify_sse(_thought(tool="lights", tool_input="{}", observation="ok"), _end())
+    rec = _Recorder(_reply(blob), _reply(blob))
+    entity = build_entity(hass, _adapter(hass, rec.session()), {})
+
+    result = await entity._async_handle_message(_input(), mock_chat_log)
+
+    assert rec.urls == [_CHAT_URL]
+    assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
