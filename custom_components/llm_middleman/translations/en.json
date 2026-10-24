@@ -85,7 +85,7 @@
             },
             "dify": {
                 "title": "Dify connection",
-                "description": "Connect to a Dify chat, agent, or chatflow app. The app's prompt, model, and tools are configured inside Dify itself and are not set here.",
+                "description": "Connect to a Dify Chatbot, Agent, Legacy Agent, or Chatflow app. The app's prompt, model, and tools are configured inside Dify itself and are not set here.",
                 "data": {
                     "base_url": "Base URL",
                     "api_key": "API key"
@@ -98,7 +98,9 @@
         },
         "error": {
             "cannot_connect": "Failed to connect. Check the URL and that the backend is reachable.",
-            "invalid_auth": "Authentication failed. Check your credentials."
+            "invalid_auth": "Authentication failed. Check your credentials.",
+            "not_chat_app": "This Dify API key belongs to a Workflow or Text Generator app. Use the key of a Chatbot, Agent, or Chatflow app.",
+            "agent_not_published": "The Dify Agent has no published version yet. Publish it in Dify, then try again."
         },
         "abort": {
             "reconfigure_successful": "Re-configuration was successful"
@@ -121,7 +123,10 @@
                         "max_history": "Max history",
                         "timeout": "Timeout (seconds)",
                         "memory_scope": "Memory scope",
-                        "llm_hass_api": "Control Home Assistant"
+                        "llm_hass_api": "Control Home Assistant",
+                        "dify_inputs": "Dify app inputs",
+                        "dify_ha_context": "Send Home Assistant context to Dify",
+                        "dify_user_from_ha": "Use the Home Assistant user as the Dify user"
                     },
                     "data_description": {
                         "name": "Display name for this agent's conversation entity.",
@@ -130,9 +135,15 @@
                         "max_history": "How many past turns to replay to stateless backends. Higher costs more per turn; full-replay backends may ignore it.",
                         "timeout": "How long to wait to reach the backend. A reply that keeps streaming is never cut off; a backend that goes silent for 30 seconds is dropped and the pipeline falls back.",
                         "memory_scope": "Which conversations share memory on stateful backends: per conversation, per device, or one continuous thread for the agent.",
-                        "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent."
+                        "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent.",
+                        "dify_inputs": "Values for the app's input variables, as a mapping of variable name to value (for example city: Berlin). Required variables must be set here. Variables this app declares: {dify_app_inputs}.",
+                        "dify_ha_context": "Fill the app's input variables named ha_language, ha_device_id, ha_area, ha_satellite_id, and ha_extra_system_prompt from each turn. Only variables the app declares are sent; declare them as optional inputs in Dify (ha_extra_system_prompt as a paragraph) so a satellite's announced question reaches the follow-up turn.",
+                        "dify_user_from_ha": "Send the Home Assistant user ID as the Dify end user so conversations are attributed per person. Voice satellite turns have no user and keep the shared home-assistant identity."
                     }
                 }
+            },
+            "error": {
+                "invalid_dify_inputs": "Enter a mapping of variable names to text, number, or true/false values."
             },
             "abort": {
                 "reconfigure_successful": "Re-configuration was successful"

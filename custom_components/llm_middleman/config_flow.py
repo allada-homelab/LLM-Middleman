@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
@@ -27,9 +27,11 @@ from homeassistant.const import CONF_LLM_HASS_API, CONF_NAME, CONF_PROMPT
 from homeassistant.core import callback
 from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
+    BooleanSelector,  # pyright: ignore[reportUnknownVariableType]
     NumberSelector,  # pyright: ignore[reportUnknownVariableType]
     NumberSelectorConfig,
     NumberSelectorMode,
+    ObjectSelector,  # pyright: ignore[reportUnknownVariableType]
     SelectOptionDict,
     SelectSelector,  # pyright: ignore[reportUnknownVariableType]
     SelectSelectorConfig,
@@ -42,6 +44,7 @@ from homeassistant.helpers.selector import (
 
 from .backends import BACKEND_TO_CLS
 from .backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
+from .backends.dify import DifyAdapter, DifyAppError
 from .const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
@@ -54,6 +57,9 @@ from .const import (
     CONF_AUTH_TYPE,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_DIFY_HA_CONTEXT,
+    CONF_DIFY_INPUTS,
+    CONF_DIFY_USER_FROM_HA,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
     CONF_MAX_HISTORY,
@@ -183,6 +189,33 @@ def _n8n_schema() -> vol.Schema:
             vol.Optional(CONF_HEADER_NAME): TextSelector(),
             vol.Optional(CONF_HEADER_VALUE): _password_field(),
         }
+    )
+
+
+def _dify_fields(options: Mapping[str, Any]) -> dict[Any, Any]:
+    """Dify-only agent options (LLMM-021): inputs mapping, HA context, end-user identity."""
+    return {
+        vol.Optional(CONF_DIFY_INPUTS, description={"suggested_value": options.get(CONF_DIFY_INPUTS)}): (
+            ObjectSelector()  # pyright: ignore[reportUnknownVariableType]
+        ),
+        vol.Optional(CONF_DIFY_HA_CONTEXT, default=bool(options.get(CONF_DIFY_HA_CONTEXT, False))): (
+            BooleanSelector()  # pyright: ignore[reportUnknownVariableType]
+        ),
+        vol.Optional(CONF_DIFY_USER_FROM_HA, default=bool(options.get(CONF_DIFY_USER_FROM_HA, False))): (
+            BooleanSelector()  # pyright: ignore[reportUnknownVariableType]
+        ),
+    }
+
+
+def _valid_dify_inputs(value: object) -> bool:
+    """True for an unset mapping or a ``{variable: scalar}`` object (Dify ``inputs`` shape)."""
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    return all(
+        isinstance(key, str) and key and isinstance(item, str | int | float | bool)
+        for key, item in cast("dict[object, object]", value).items()
     )
 
 
@@ -316,6 +349,8 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 await adapter_cls.async_validate_connection(self.hass, data)
             except BackendAuthError:
                 errors["base"] = "invalid_auth"
+            except DifyAppError as err:
+                errors["base"] = err.error_key  # not_chat_app / agent_not_published
             except BackendConnectionError:
                 errors["base"] = "cannot_connect"
             else:
@@ -358,17 +393,27 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         """Show/handle the common agent options form (create vs reconfigure)."""
         entry = self._get_entry()
         adapter_cls = BACKEND_TO_CLS[entry.data[CONF_BACKEND_TYPE]]
+        errors: dict[str, str] = {}
 
         if user_input is not None:
-            if self._is_new:
+            if not _valid_dify_inputs(user_input.get(CONF_DIFY_INPUTS)):
+                errors[CONF_DIFY_INPUTS] = "invalid_dify_inputs"
+            elif self._is_new:
                 # The name is the subentry title, not stored option data.
                 return self.async_create_entry(title=user_input.pop(CONF_NAME), data=user_input)
-            return self.async_update_and_abort(entry, self._get_reconfigure_subentry(), data=user_input)
+            else:
+                return self.async_update_and_abort(entry, self._get_reconfigure_subentry(), data=user_input)
 
-        options = {} if self._is_new else dict(self._get_reconfigure_subentry().data)
+        if user_input is not None:
+            options: Mapping[str, Any] = user_input  # re-show the rejected submission
+        else:
+            options = {} if self._is_new else dict(self._get_reconfigure_subentry().data)
+        placeholders = await self._dify_placeholders(entry) if entry.data[CONF_BACKEND_TYPE] == BACKEND_DIFY else None
         return self.async_show_form(
             step_id="set_options",
             data_schema=await self._build_schema(adapter_cls, entry, options),
+            errors=errors,
+            description_placeholders=placeholders,
         )
 
     async_step_user = async_step_set_options
@@ -456,7 +501,20 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
                 )
             )
 
+        if entry.data[CONF_BACKEND_TYPE] == BACKEND_DIFY:
+            schema.update(_dify_fields(options))
+
         return vol.Schema(schema)
+
+    async def _dify_placeholders(self, entry: ConfigEntry) -> dict[str, str]:
+        """Describe the app's declared ``inputs`` (from ``GET /parameters``) for the form."""
+        try:
+            declared = await DifyAdapter.async_fetch_input_form(self.hass, entry.data)
+        except BackendConnectionError:
+            _LOGGER.debug("Dify parameters probe failed; input list unavailable in the agent form")
+            return {"dify_app_inputs": "unavailable (Dify could not be reached)"}
+        names = [f"{name} (required)" if control.get("required") else name for name, control in declared.items()]
+        return {"dify_app_inputs": ", ".join(names) or "none"}
 
     async def _model_selector(self, adapter_cls: type[BackendAdapter], entry: ConfigEntry) -> Any:
         """Return the model field selector, or ``None`` for catalog-less backends.
