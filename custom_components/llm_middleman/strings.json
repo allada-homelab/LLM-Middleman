@@ -98,9 +98,11 @@
         },
         "error": {
             "cannot_connect": "Failed to connect. Check the URL and that the backend is reachable.",
-            "invalid_auth": "Authentication failed. Check your credentials."
+            "invalid_auth": "Authentication failed. Check your credentials.",
+            "unknown": "[%key:common::config_flow::error::unknown%]"
         },
         "abort": {
+            "already_configured": "[%key:common::config_flow::abort::already_configured_service%]",
             "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
         }
     },
@@ -135,8 +137,14 @@
                 }
             },
             "abort": {
+                "entry_not_loaded": "The backend connection is not loaded. Fix or reload it before managing its agents.",
                 "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
             }
+        }
+    },
+    "exceptions": {
+        "backend_unavailable": {
+            "message": "Sorry, I could not reach the assistant right now. Please try again."
         }
     },
     "selector": {

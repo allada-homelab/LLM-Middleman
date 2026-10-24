@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -179,7 +179,19 @@ class ScriptedBackend:
         app.router.add_post("/chat-messages/{task_id}/stop", self._ok)
         for path in _TURN_PATHS:
             app.router.add_post(path, self._turn)
+        # Connection probes async_setup_entry runs (converse accepts any HTTP response).
+        app.router.add_get("/v1/models", self._probe({"data": []}))
+        app.router.add_get("/api/tags", self._probe({"models": []}))
+        app.router.add_get("/ok", self._probe({"ok": True}))
+        app.router.add_get("/info", self._probe({"mode": "advanced-chat"}))
         return app
+
+    @staticmethod
+    def _probe(body: dict[str, Any]) -> Callable[[web.Request], Awaitable[web.Response]]:
+        async def handler(request: web.Request) -> web.Response:
+            return web.json_response(body)
+
+        return handler
 
     async def _thread(self, request: web.Request) -> web.Response:
         return web.json_response({"thread_id": "t1"})

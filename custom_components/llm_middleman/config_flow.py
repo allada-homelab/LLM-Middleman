@@ -10,6 +10,7 @@ nothing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
@@ -18,6 +19,7 @@ from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     SOURCE_USER,
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
@@ -76,6 +78,7 @@ from .const import (
     N8N_AUTH_NONE,
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
+    PROBE_TIMEOUT,
     SUBENTRY_TYPE_CONVERSATION,
 )
 
@@ -318,10 +321,18 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_auth"
             except BackendConnectionError:
                 errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected error validating the %s connection", self._backend_type)
+                errors["base"] = "unknown"
             else:
                 entry_data = {CONF_BACKEND_TYPE: self._backend_type, **data}
+                if self.source != SOURCE_RECONFIGURE:
+                    # Only an identical connection is a duplicate: one URL can back distinct
+                    # connections (Dify Cloud apps differ only by key; LangGraph by assistant).
+                    self._async_abort_entries_match(entry_data)
                 if self.source == SOURCE_RECONFIGURE:
-                    return self.async_update_reload_and_abort(self._get_reconfigure_entry(), data=entry_data)
+                    # The entry's update listener reloads it; a second reload here is deprecated.
+                    return self.async_update_and_abort(self._get_reconfigure_entry(), data=entry_data)
                 return self.async_create_entry(title=_BACKEND_TITLES[self._backend_type], data=entry_data)
 
         return self.async_show_form(
@@ -357,6 +368,9 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
     async def async_step_set_options(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Show/handle the common agent options form (create vs reconfigure)."""
         entry = self._get_entry()
+        # Core openai/ollama pattern: agents are only managed under a loaded connection.
+        if entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="entry_not_loaded")
         adapter_cls = BACKEND_TO_CLS[entry.data[CONF_BACKEND_TYPE]]
 
         if user_input is not None:
@@ -444,14 +458,21 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         # list and pulls in the tools of every named API (device control + any HA
         # MCP-client entry). Unset/empty means "no tools" — no default is stored.
         if adapter_cls.supports_ha_tools:
+            apis = llm.async_get_apis(self.hass)
+            # Drop stored ids of APIs that no longer exist (e.g. a removed MCP server) so
+            # the form doesn't preselect an option it can't render (core openai pattern).
+            valid_ids = {api.id for api in apis}
+            suggested_apis = options.get(CONF_LLM_HASS_API)
+            if suggested_apis:
+                suggested_apis = [api_id for api_id in suggested_apis if api_id in valid_ids]
             schema[
                 vol.Optional(
                     CONF_LLM_HASS_API,
-                    description={"suggested_value": options.get(CONF_LLM_HASS_API)},
+                    description={"suggested_value": suggested_apis},
                 )
             ] = SelectSelector(
                 SelectSelectorConfig(
-                    options=[SelectOptionDict(value=api.id, label=api.name) for api in llm.async_get_apis(self.hass)],
+                    options=[SelectOptionDict(value=api.id, label=api.name) for api in apis],
                     multiple=True,
                 )
             )
@@ -466,8 +487,10 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         field). Probe failure → a plain text field, so the form still renders.
         """
         try:
-            models = await adapter_cls.async_list_models(self.hass, entry.data)
-        except Exception:  # any probe failure must still render the form (free-text)
+            # Bounded well under the probe's own 60 s so a dead backend can't freeze the form.
+            async with asyncio.timeout(PROBE_TIMEOUT):
+                models = await adapter_cls.async_list_models(self.hass, entry.data)
+        except Exception:  # any probe failure (timeout included) must still render the form (free-text)
             _LOGGER.debug("Model probe failed for %s; falling back to free text", adapter_cls.backend_type)
             return TextSelector()  # pyright: ignore[reportUnknownVariableType]
         if models is None:

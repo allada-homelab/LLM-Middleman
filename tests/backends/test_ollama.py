@@ -479,7 +479,7 @@ async def test_history_replays_tool_calls_and_results_default_str(
         "tool_calls": [{"function": {"name": "get_time", "arguments": {"tz": "utc"}}}],
     }
     assert messages[3]["role"] == "tool"
-    assert json.loads(messages[3]["content"]) == {"now": str(now)}
+    assert json.loads(messages[3]["content"]) == {"data": {"now": str(now)}, "error": False}
 
 
 # --- Registration + classvars ---

@@ -135,6 +135,8 @@ class OllamaAdapter(BackendAdapter):
     # repair (LLMM-015), so the subentry flow offers CONF_LLM_HASS_API and the entity
     # runs the tool loop.
     supports_ha_tools: ClassVar[bool] = True
+    # Replays chat_log (whose system prompt carries HA's date/time); never reads user_input.text.
+    wants_time_prefix: ClassVar[bool] = False
 
     @classmethod
     async def _async_get_models(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> list[dict[str, Any]]:
