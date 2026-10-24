@@ -21,6 +21,7 @@ from .backends.langgraph import LangGraphAdapter
 from .const import (
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_DIFY_INPUTS,
     CONF_HEADER_VALUE,
     CONF_PASSWORD,
     CONF_SYSTEM_PROMPT,
@@ -53,6 +54,8 @@ TO_REDACT = {
     # not-yet-migrated entry may still carry.
     CONF_PROMPT,
     CONF_SYSTEM_PROMPT,
+    # Dify app inputs are free-form values (names, addresses, keys a workflow needs).
+    CONF_DIFY_INPUTS,
 }
 
 
