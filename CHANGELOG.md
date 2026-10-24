@@ -35,7 +35,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **More agent options in the form:** temperature, top P and maximum tokens
   (`openai_compat`); context window, keep alive and think (`ollama`); message, reply and
   session field names (`n8n`). The adapters already honoured these, but the form never
-  offered them. Left empty, the backend's default applies.
+  offered them. Left empty, the backend's default applies. (#102)
 
 ### Changed
 
@@ -43,7 +43,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   device's session. For Dify and LangGraph, an existing device session is kept by the
   first agent that talks on that device after the upgrade; others start fresh. n8n and
   custom `/v1/converse` device sessions start fresh once (the session key the backend
-  sees changes).
+  sees changes). (#102)
 - **Setup probes the backend.** A backend that is down now makes HA retry setup instead
   of loading and answering every turn with the fallback; adding an identical connection
   aborts as already configured. (#97)
@@ -85,9 +85,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **LangGraph no longer speaks tool output.** (#99)
 - **Switching agents mid-conversation no longer confuses `openai_compat` / `ollama`.**
   Tool calls a LangGraph or Dify backend ran itself were replayed to the next model as
-  if it had made them.
+  if it had made them. (#102)
 - **Removing a connection deletes all of its stored data**, including LangGraph's
-  pending-interrupt state (previously only the session map). (#97)
+  pending-interrupt state (previously only the session map). (#97, #102)
+- **The README now explains how to remove the integration.** (#102)
 
 ## [1.1.4] - 2026-10-24
 
