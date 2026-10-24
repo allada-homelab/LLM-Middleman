@@ -28,6 +28,7 @@ from custom_components.llm_middleman.backends.base import (
     BackendAuthError,
     BackendConnectionError,
 )
+from custom_components.llm_middleman.backends.langgraph import AssistantNotFoundError
 from custom_components.llm_middleman.config_flow import (
     ConversationSubentryFlowHandler,
     LLMMiddlemanConfigFlow,
@@ -35,14 +36,21 @@ from custom_components.llm_middleman.config_flow import (
 from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
+    BACKEND_LANGGRAPH,
     BACKEND_N8N,
     BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
+    CONF_ASSISTANT_ID,
+    CONF_AUTH_SCHEME,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_INPUT_MESSAGES_KEY,
     CONF_MAX_HISTORY,
     CONF_MEMORY_SCOPE,
     CONF_MODEL,
+    CONF_MULTITASK_STRATEGY,
+    CONF_RESPONSE_NODE_FILTER,
+    CONF_STATELESS_RUNS,
     CONF_TIMEOUT,
     CONF_WEBHOOK_URL,
     DOMAIN,
@@ -473,3 +481,93 @@ async def test_reconfigure_prefills(hass: HomeAssistant) -> None:
     assert result["reason"] == "reconfigure_successful"
     assert entry.subentries[subentry_id].data[CONF_PROMPT] == "Updated prompt"
     assert entry.subentries[subentry_id].data[CONF_MAX_HISTORY] == 3
+
+
+# --- LangGraph-specific fields (LLMM-022) --------------------------------------------
+
+_LANGGRAPH_AGENT_KEYS = {
+    CONF_MULTITASK_STRATEGY,
+    CONF_INPUT_MESSAGES_KEY,
+    CONF_RESPONSE_NODE_FILTER,
+    CONF_STATELESS_RUNS,
+}
+
+
+async def test_langgraph_connection_stores_auth_scheme(hass: HomeAssistant) -> None:
+    registry = {BACKEND_LANGGRAPH: _fake_adapter()}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_LANGGRAPH)
+        result = await _configure(
+            hass,
+            form["flow_id"],
+            {
+                CONF_BASE_URL: "http://lg.local:2024",
+                CONF_API_KEY: "k",
+                CONF_AUTH_SCHEME: "bearer",
+                CONF_ASSISTANT_ID: "agent",
+            },
+        )
+
+    assert result["data"][CONF_AUTH_SCHEME] == "bearer"
+
+
+async def test_langgraph_auth_scheme_defaults_to_x_api_key(hass: HomeAssistant) -> None:
+    registry = {BACKEND_LANGGRAPH: _fake_adapter()}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_LANGGRAPH)
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://lg.local:2024"})
+
+    assert result["data"][CONF_AUTH_SCHEME] == "x_api_key"
+
+
+async def test_langgraph_unknown_assistant_shows_field_error(hass: HomeAssistant) -> None:
+    registry = {BACKEND_LANGGRAPH: _fake_adapter(AssistantNotFoundError("nope"))}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_LANGGRAPH)
+        result = await _configure(
+            hass, form["flow_id"], {CONF_BASE_URL: "http://lg.local:2024", CONF_ASSISTANT_ID: "x"}
+        )
+
+    assert result["errors"] == {CONF_ASSISTANT_ID: "assistant_not_found"}
+    assert not hass.config_entries.async_entries(DOMAIN)
+
+
+async def test_langgraph_agent_options_are_offered(hass: HomeAssistant) -> None:
+    entry = _parent_entry(hass, BACKEND_LANGGRAPH)
+    registry = {BACKEND_LANGGRAPH: _sub_adapter(backend_type=BACKEND_LANGGRAPH, supports_memory_scope=True)}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+
+    assert _schema_keys(form["data_schema"]) >= _LANGGRAPH_AGENT_KEYS
+    assert _suggested_values(form["data_schema"])[CONF_MULTITASK_STRATEGY] == "rollback"
+
+
+async def test_langgraph_agent_options_absent_for_other_backends(hass: HomeAssistant) -> None:
+    entry = _parent_entry(hass, BACKEND_CONVERSE)
+    registry = {BACKEND_CONVERSE: _sub_adapter(backend_type=BACKEND_CONVERSE, supports_memory_scope=True)}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+
+    assert not _LANGGRAPH_AGENT_KEYS & _schema_keys(form["data_schema"])
+
+
+async def test_langgraph_agent_options_are_stored(hass: HomeAssistant) -> None:
+    entry = _parent_entry(hass, BACKEND_LANGGRAPH)
+    registry = {BACKEND_LANGGRAPH: _sub_adapter(backend_type=BACKEND_LANGGRAPH, supports_memory_scope=True)}
+    submitted = {
+        CONF_NAME: "Graph agent",
+        CONF_MULTITASK_STRATEGY: "enqueue",
+        CONF_INPUT_MESSAGES_KEY: "msgs",
+        CONF_RESPONSE_NODE_FILTER: "respond",
+        CONF_STATELESS_RUNS: True,
+    }
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_subentry(hass, entry)
+        result = await _configure_subentry(hass, form["flow_id"], submitted)
+
+    assert {key: result["data"][key] for key in _LANGGRAPH_AGENT_KEYS} == {
+        CONF_MULTITASK_STRATEGY: "enqueue",
+        CONF_INPUT_MESSAGES_KEY: "msgs",
+        CONF_RESPONSE_NODE_FILTER: "respond",
+        CONF_STATELESS_RUNS: True,
+    }

@@ -262,3 +262,24 @@ async def test_diagnostics_http_download_path(
     assert _SECRETS["api_key"] not in blob
     assert _SECRETS["base_url"] not in blob
     assert _SECRETS["prompt"] not in blob
+
+
+async def test_diagnostics_include_langgraph_runtime_state(hass: HomeAssistant) -> None:
+    """A loaded LangGraph entry adds its last run id / counters — never thread ids or secrets."""
+    entry = _build_entry(hass, BACKEND_LANGGRAPH)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    entry.runtime_data.last_run_id = "run-123"
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["langgraph"] == {
+        "last_run_id": "run-123",
+        "threads_awaiting_resume": None,
+        "legacy_thread_map_entries": None,
+    }
+
+
+async def test_diagnostics_omit_runtime_state_when_not_loaded(hass: HomeAssistant) -> None:
+    result = await async_get_config_entry_diagnostics(hass, _build_entry(hass, BACKEND_LANGGRAPH))
+    assert "langgraph" not in result

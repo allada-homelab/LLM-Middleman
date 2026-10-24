@@ -27,6 +27,7 @@ from homeassistant.const import CONF_LLM_HASS_API, CONF_NAME, CONF_PROMPT
 from homeassistant.core import callback
 from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
+    BooleanSelector,  # pyright: ignore[reportUnknownVariableType]
     NumberSelector,  # pyright: ignore[reportUnknownVariableType]
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -42,6 +43,7 @@ from homeassistant.helpers.selector import (
 
 from .backends import BACKEND_TO_CLS
 from .backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
+from .backends.langgraph import AssistantNotFoundError
 from .const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
@@ -51,26 +53,36 @@ from .const import (
     BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
     CONF_ASSISTANT_ID,
+    CONF_AUTH_SCHEME,
     CONF_AUTH_TYPE,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
+    CONF_INPUT_MESSAGES_KEY,
     CONF_MAX_HISTORY,
     CONF_MEMORY_SCOPE,
     CONF_MODEL,
+    CONF_MULTITASK_STRATEGY,
     CONF_PASSWORD,
+    CONF_RESPONSE_NODE_FILTER,
+    CONF_STATELESS_RUNS,
     CONF_TARGET_TYPE,
     CONF_TIMEOUT,
     CONF_TOKEN,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
+    DEFAULT_INPUT_MESSAGES_KEY,
     DEFAULT_MAX_HISTORY,
+    DEFAULT_MULTITASK_STRATEGY,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    LANGGRAPH_AUTH_BEARER,
+    LANGGRAPH_AUTH_X_API_KEY,
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
+    MULTITASK_STRATEGIES,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_AUTH_NONE,
@@ -127,6 +139,14 @@ def _langgraph_schema() -> vol.Schema:
         {
             vol.Required(CONF_BASE_URL): _url_field(),
             vol.Optional(CONF_API_KEY): _password_field(),
+            # Entries created before this field existed have no value -> x-api-key.
+            vol.Required(CONF_AUTH_SCHEME, default=LANGGRAPH_AUTH_X_API_KEY): SelectSelector(
+                SelectSelectorConfig(
+                    options=[LANGGRAPH_AUTH_X_API_KEY, LANGGRAPH_AUTH_BEARER],
+                    translation_key="auth_scheme",
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
             vol.Required(CONF_ASSISTANT_ID, default="agent"): TextSelector(),
         }
     )
@@ -316,6 +336,8 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 await adapter_cls.async_validate_connection(self.hass, data)
             except BackendAuthError:
                 errors["base"] = "invalid_auth"
+            except AssistantNotFoundError:
+                errors[CONF_ASSISTANT_ID] = "assistant_not_found"
             except BackendConnectionError:
                 errors["base"] = "cannot_connect"
             else:
@@ -393,7 +415,7 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
             schema[vol.Required(CONF_NAME, default=_DEFAULT_AGENT_NAME)] = TextSelector()
 
         # Per-agent system prompt (a Jinja template; converse/n8n also forward it,
-        # langgraph prepends it under MessagesState).
+        # langgraph sends it in the run context).
         schema[
             vol.Optional(
                 CONF_PROMPT,
@@ -456,6 +478,9 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
                 )
             )
 
+        if adapter_cls.backend_type == BACKEND_LANGGRAPH:
+            _add_langgraph_fields(schema, options)
+
         return vol.Schema(schema)
 
     async def _model_selector(self, adapter_cls: type[BackendAdapter], entry: ConfigEntry) -> Any:
@@ -475,3 +500,31 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         return SelectSelector(  # pyright: ignore[reportUnknownVariableType]
             SelectSelectorConfig(options=models, custom_value=True, mode=SelectSelectorMode.DROPDOWN)
         )
+
+
+def _add_langgraph_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
+    """Add the LangGraph-only agent options (graph wiring + double-text policy) to ``schema``."""
+    schema[
+        vol.Optional(
+            CONF_MULTITASK_STRATEGY,
+            description={"suggested_value": options.get(CONF_MULTITASK_STRATEGY, DEFAULT_MULTITASK_STRATEGY)},
+        )
+    ] = SelectSelector(
+        SelectSelectorConfig(
+            options=list(MULTITASK_STRATEGIES),
+            translation_key="multitask_strategy",
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+    schema[
+        vol.Optional(
+            CONF_INPUT_MESSAGES_KEY,
+            description={"suggested_value": options.get(CONF_INPUT_MESSAGES_KEY, DEFAULT_INPUT_MESSAGES_KEY)},
+        )
+    ] = TextSelector()
+    schema[
+        vol.Optional(CONF_RESPONSE_NODE_FILTER, description={"suggested_value": options.get(CONF_RESPONSE_NODE_FILTER)})
+    ] = TextSelector()
+    schema[
+        vol.Optional(CONF_STATELESS_RUNS, description={"suggested_value": options.get(CONF_STATELESS_RUNS, False)})
+    ] = BooleanSelector()
