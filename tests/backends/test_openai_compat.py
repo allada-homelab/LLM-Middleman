@@ -500,6 +500,13 @@ async def test_validate_connection_transport_error(hass: HomeAssistant) -> None:
         await OpenAICompatAdapter.async_validate_connection(hass, _CONNECTION)
 
 
+async def test_validate_connection_non_object_body_is_connection_error(hass: HomeAssistant) -> None:
+    """A 200 whose JSON body is not an object fails validation instead of passing silently."""
+    session = _get_session(response=_FakeGetResponse(200, [{"id": "gpt-4"}]))
+    with _patch_session(session), pytest.raises(BackendConnectionError):
+        await OpenAICompatAdapter.async_validate_connection(hass, _CONNECTION)
+
+
 async def test_list_models_parses_ids(hass: HomeAssistant) -> None:
     payload = {"data": [{"id": "gpt-4"}, {"id": "llama-3"}, {"object": "no-id"}]}
     session = _get_session(response=_FakeGetResponse(200, payload))

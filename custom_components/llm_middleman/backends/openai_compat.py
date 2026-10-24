@@ -18,12 +18,10 @@ The entity's bounded tool loop drives the re-entry; this adapter stays stateless
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar
 
-import aiohttp
 from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
@@ -38,7 +36,6 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_TEMPERATURE,
     CONF_TOP_P,
-    DEFAULT_TIMEOUT,
 )
 
 from ._compat import schema_to_openapi, tool_result_data
@@ -46,12 +43,11 @@ from ._history import trim_history
 from ._sse import async_iter_sse
 from .base import (
     BackendAdapter,
-    BackendAuthError,
-    BackendConnectionError,
     DeltaStream,
     TurnContext,
     bearer_headers,
     build_client_timeout,
+    probe_json,
 )
 
 # The provider terminates the SSE stream with this literal payload, not JSON.
@@ -160,28 +156,16 @@ class OpenAICompatAdapter(BackendAdapter):
     async def _fetch_models(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> list[str]:
         """GET ``/v1/models`` and return the parsed model-id list.
 
-        Maps 401/403 → :class:`BackendAuthError`, any other non-200 and every
-        transport/timeout failure → :class:`BackendConnectionError`.
+        Maps 401/403 → :class:`BackendAuthError`; any other error status, transport/timeout
+        failure, or non-object body → :class:`BackendConnectionError` (``probe_json``).
         """
-        session = async_get_clientsession(hass)
-        url = f"{_base_url(data)}/v1/models"
-        try:
-            async with (
-                asyncio.timeout(DEFAULT_TIMEOUT),
-                session.get(url, headers=bearer_headers(data.get(CONF_API_KEY))) as response,
-            ):
-                if response.status in (401, 403):
-                    raise BackendAuthError(f"Backend rejected credentials (HTTP {response.status})")
-                if response.status != 200:
-                    raise BackendConnectionError(f"Model probe failed (HTTP {response.status})")
-                payload = await response.json()
-        except BackendConnectionError:
-            raise
-        except (TimeoutError, aiohttp.ClientError) as err:
-            raise BackendConnectionError(f"Cannot reach backend at {url}") from err
-        # response.json() is Any; access via Any (isinstance-narrowing a dict yields
-        # dict[Unknown, Unknown] under strict mode). hasattr guards a non-object body.
-        entries: Any = payload.get("data", []) if hasattr(payload, "get") else []
+        payload = await probe_json(
+            async_get_clientsession(hass),
+            f"{_base_url(data)}/v1/models",
+            label="OpenAI-compatible backend",
+            headers=bearer_headers(data.get(CONF_API_KEY)),
+        )
+        entries: Any = payload.get("data", [])
         models: list[str] = []
         for entry in entries:
             entry_id: Any = entry.get("id") if hasattr(entry, "get") else None

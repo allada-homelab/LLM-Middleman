@@ -22,12 +22,10 @@ stays stateless.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncGenerator, AsyncIterable, Callable, Mapping
 from typing import Any, ClassVar, cast
 
-import aiohttp
 from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
@@ -42,7 +40,6 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_NUM_CTX,
     CONF_THINK,
-    DEFAULT_TIMEOUT,
     KEEP_ALIVE_FOREVER,
 )
 
@@ -50,13 +47,13 @@ from ._compat import schema_to_openapi, tool_result_data
 from ._history import trim_history
 from .base import (
     BackendAdapter,
-    BackendAuthError,
     BackendConnectionError,
     BackendStreamError,
     DeltaStream,
     TurnContext,
     bearer_headers,
     build_client_timeout,
+    probe_json,
 )
 
 
@@ -173,22 +170,14 @@ class OllamaAdapter(BackendAdapter):
         """Probe ``GET /api/tags`` and return the installed-model objects.
 
         Raises :class:`BackendAuthError` on 401/403 and :class:`BackendConnectionError`
-        on any other failure (bad status, timeout, transport error).
+        on any other failure (bad status, timeout, transport error, non-object body).
         """
-        session = async_get_clientsession(hass)
-        base_url = data[CONF_BASE_URL].rstrip("/")
-        try:
-            async with (
-                asyncio.timeout(DEFAULT_TIMEOUT),
-                session.get(f"{base_url}/api/tags", headers=bearer_headers(data.get(CONF_API_KEY))) as response,
-            ):
-                if response.status in (401, 403):
-                    raise BackendAuthError(f"Ollama rejected credentials (HTTP {response.status})")
-                if response.status != 200:
-                    raise BackendConnectionError(f"Ollama /api/tags returned HTTP {response.status}")
-                payload = await response.json()
-        except (TimeoutError, aiohttp.ClientError) as err:
-            raise BackendConnectionError(f"Could not reach Ollama at {base_url}: {err}") from err
+        payload = await probe_json(
+            async_get_clientsession(hass),
+            f"{data[CONF_BASE_URL].rstrip('/')}/api/tags",
+            label="Ollama",
+            headers=bearer_headers(data.get(CONF_API_KEY)),
+        )
         return cast("list[dict[str, Any]]", payload.get("models", []))
 
     @classmethod

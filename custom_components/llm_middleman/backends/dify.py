@@ -39,7 +39,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import aiohttp
 from homeassistant.core import HomeAssistant
@@ -69,6 +69,7 @@ from .base import (
     bearer_headers,
     build_client_timeout,
     loads_json_object,
+    probe_json,
 )
 
 if TYPE_CHECKING:
@@ -204,8 +205,8 @@ class DifyAdapter(BackendAdapter):
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
         """Probe ``GET {base}/info``; reject bad keys and non-chat app types.
 
-        401/403 -> :class:`BackendAuthError`; transport failure or any other non-2xx ->
-        :class:`BackendConnectionError`. When the app metadata reports a ``mode`` that is
+        401/403 -> :class:`BackendAuthError`; transport failure, any other error status, or
+        a non-object body -> :class:`BackendConnectionError`. When the app metadata reports a ``mode`` that is
         not a chat-type app (the entry points at a workflow/completion app) ->
         :class:`BackendConnectionError`.
         """
@@ -213,19 +214,8 @@ class DifyAdapter(BackendAdapter):
         base_url = str(data.get(CONF_BASE_URL, "")).rstrip("/")
         api_key = data.get(CONF_API_KEY) or None
         headers = bearer_headers(api_key)
-        timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
-        try:
-            async with session.get(f"{base_url}/info", headers=headers, timeout=timeout) as resp:
-                if resp.status in (401, 403):
-                    raise BackendAuthError("Dify rejected the API key")
-                if resp.status >= 400:
-                    raise BackendConnectionError(f"Dify /info returned HTTP {resp.status}")
-                payload: object = await resp.json()
-        except BackendConnectionError:
-            raise
-        except (TimeoutError, aiohttp.ClientError) as err:
-            raise BackendConnectionError(f"Cannot reach Dify at {base_url}") from err
-        mode = cast("dict[str, object]", payload).get("mode") if isinstance(payload, dict) else None
+        payload = await probe_json(session, f"{base_url}/info", label="Dify", headers=headers)
+        mode = payload.get("mode")
         if isinstance(mode, str) and mode not in _CHAT_APP_MODES:
             raise BackendConnectionError(f"Dify app mode {mode!r} is not a chat app")
 

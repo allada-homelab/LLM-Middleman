@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Literal, cast
 
 import aiohttp
 from homeassistant.components import conversation
@@ -41,12 +41,14 @@ __all__ = [
     "BackendAdapter",
     "BackendAuthError",
     "BackendConnectionError",
+    "BackendStatusError",
     "BackendStreamError",
     "DeltaStream",
     "TurnContext",
     "bearer_headers",
     "build_client_timeout",
     "loads_json_object",
+    "probe_json",
     "rendered_system_prompt",
 ]
 
@@ -119,6 +121,53 @@ class BackendConnectionError(HomeAssistantError):
 
 class BackendAuthError(BackendConnectionError):
     """A backend rejected credentials (config flow maps to ``invalid_auth``)."""
+
+
+class BackendStatusError(BackendConnectionError):
+    """A probe got a non-auth HTTP error status (distinct from a transport failure)."""
+
+
+async def probe_json(
+    session: aiohttp.ClientSession,
+    url: str,
+    *,
+    label: str,
+    headers: Mapping[str, str],
+    method: Literal["GET", "POST"] = "GET",
+    data: str | None = None,
+    parse: bool = True,
+) -> dict[str, Any]:
+    """Run a config-flow probe request and return its JSON-object body.
+
+    401/403 -> :class:`BackendAuthError`; any other status >= 400 ->
+    :class:`BackendStatusError`; a transport failure/timeout, an unparsable body, or a
+    non-object JSON body -> :class:`BackendConnectionError`. With ``parse=False`` only the
+    status is checked and ``{}`` is returned (for endpoints whose body is not an object).
+    ``session`` is passed in so each adapter keeps its own ``async_get_clientsession``.
+    """
+    timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
+    try:
+        request = (
+            session.post(url, data=data, headers=headers, timeout=timeout)
+            if method == "POST"
+            else session.get(url, headers=headers, timeout=timeout)
+        )
+        async with request as response:
+            if response.status in (401, 403):
+                raise BackendAuthError(f"{label} rejected credentials (HTTP {response.status})")
+            if response.status >= 400:
+                raise BackendStatusError(f"{label} probe returned HTTP {response.status}")
+            if not parse:
+                return {}
+            try:
+                payload: object = await response.json()
+            except ValueError as err:
+                raise BackendConnectionError(f"{label} probe returned invalid JSON") from err
+    except (TimeoutError, aiohttp.ClientError) as err:
+        raise BackendConnectionError(f"Cannot reach {label} at {url}: {err}") from err
+    if not isinstance(payload, dict):
+        raise BackendConnectionError(f"{label} probe returned a non-object JSON body")
+    return cast("dict[str, Any]", payload)
 
 
 @dataclass
