@@ -6,7 +6,7 @@
 
 Everything we learned about talking to LLM backends for agentic, multi-tool control —
 distilled to what the external agent needs. Deeper HA-side context is in
-`01-home-assistant-reference.md` §4–§5; the *prior* implementation's provider code (a working,
+`../archive/01-home-assistant-reference.md` §4–§5; the *prior* implementation's provider code (a working,
 reviewed reference) lives in the sibling repo at
 `LLM-Home-Controller/custom_components/llm_home_controller/providers/`.
 

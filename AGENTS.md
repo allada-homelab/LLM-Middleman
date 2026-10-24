@@ -13,15 +13,17 @@ Assist/Voice as a streaming text-only `ConversationEntity` and **forwards each r
 turn to an external backend**, streaming the reply back into the pipeline (→ streaming TTS
 and the Assist chat). It runs **no LLM of its own** — intelligence lives in the backend.
 
-**Current state (2026-07): v1 shipped — maintenance mode.** The v1 multi-backend
-re-architecture is **complete and released as `v1.0.0`** (tag `v1.0.0`, `manifest.json`
-version `1.0.0`). The code on `main` is the v1 architecture, not the old v0 shim. What
+**Current state (2026-10): v1 shipped — maintenance mode.** The v1 multi-backend
+re-architecture was released as `v1.0.0`; the latest release is **`v1.1.4`** (the
+`manifest.json` `version` is the source of truth; `pyproject.toml` mirrors it, enforced by
+`tests/test_versions.py`). Minimum Home Assistant is **2026.7.0** (`hacs.json`). What
 shipped:
 
-- **Five backend presets** behind a common adapter layer, dispatched by
+- **Six backend presets** behind a common adapter layer, dispatched by
   `backends/BACKEND_TO_CLS` (`get_backend_cls`): `converse` (the old v0 `/v1/converse`
   contract, now one preset among many), `openai_compat`, `ollama` (native), `langgraph`,
-  and `n8n`. Each adapter subclasses `BackendAdapter` (`backends/base.py`).
+  `n8n`, and `dify` (added in v1.1.0). Each adapter subclasses `BackendAdapter`
+  (`backends/base.py`).
 - **Parent-entry + conversation-subentry config model** — a connection (backend type, URL,
   auth) is the parent entry; each conversation agent (name, prompt, options) is a
   `conversation` subentry.
@@ -41,11 +43,11 @@ model, voice-hardware checks) — see `docs/implementation/HANDOFF.md`.
 > **fast-follow roadmap** for post-v1 features) and workflow rules still govern new work.
 >
 > `docs/knowledge/` is background research (HA reference, decisions, glossary) — mostly
-> sound but partly stale relative to the shipped code. **Caution:** `docs/knowledge/01-*.md`
-> is retained verbatim from the sibling LLM-Home-Controller repo and describes code that
-> does NOT exist here. `docs/external-agent-handoff/` specs a *separate* external-agent
-> service (its own repo); its "frozen" `/v1/converse` contract is just the `converse` preset
-> here. **When any doc conflicts with the code, the code wins — fix the doc.**
+> sound but partly stale relative to the shipped code. `docs/archive/` holds docs kept only
+> for reference — its `01-home-assistant-reference.md` is from the sibling
+> LLM-Home-Controller repo and describes code that does NOT exist here.
+> `docs/external-agent-handoff/` specs a *separate* external-agent service (its own repo);
+> its "frozen" `/v1/converse` contract is just the `converse` preset here. **When any doc conflicts with the code, the code wins — fix the doc.**
 
 This is a **HACS custom integration, not a pip package** — there is intentionally no
 `[build-system]`. Runtime deps are declared in `custom_components/llm_middleman/manifest.json`
@@ -67,8 +69,14 @@ This is a **HACS custom integration, not a pip package** — there is intentiona
 - `scripts/e2e/` — the throwaway-HA E2E regression rig: `README.md` (the repeatable recipe
   for re-running the preset matrix after an HA bump), `converse_sse_stub.py` (the converse
   backend stub), `E2E-ENABLEMENT-GUIDE.md` (what the owner must provide for owner-gated rows).
-- `docs/knowledge/` — background knowledge base; `docs/external-agent-handoff/` — spec
-  bundle for the separate external-agent service (don't build that here).
+- `docs/knowledge/` — background knowledge base; `docs/archive/` — reference-only docs
+  that don't describe this repo; `docs/external-agent-handoff/` — spec bundle for the
+  separate external-agent service (don't build that here).
+- `.github/workflows/` — CI: `lint.yml` (lockfile check, ruff, basedpyright, pytest on an HA
+  matrix — `locked` = latest HA in `uv.lock` with the coverage gate, `floor` = the
+  `hacs.json` minimum — plus pre-commit and a full-history gitleaks scan), `validate.yml`
+  (hassfest + HACS validation), and `release.yml` (on a `vX.Y.Z` tag: checks the tag
+  against `manifest.json` and `CHANGELOG.md`, then creates the GitHub release).
 - `pyproject.toml` — dev dependencies and tool config (ruff, basedpyright, pytest);
   `pyrightconfig.json` scopes the type-check to `custom_components/llm_middleman` + `tests`.
 - `justfile` — the task runner; every routine command has a recipe.
@@ -100,10 +108,12 @@ stats, external tool-activity surfacing, more presets).
 
 Run `just` (or `just --list`) to see everything. The core loop:
 
-- `just sync` — sync the dev dependency group (`uv sync --locked --dev`). The
-  devcontainer's `.devcontainer/post-create.sh` runs `uv sync --all-groups` and installs
-  the pre-commit hooks on create; run those two by hand outside the container.
+- `just sync` — sync deps to the lockfile (`uv sync --locked --all-groups --all-extras`);
+  `just install` also installs the pre-commit hooks. The devcontainer's
+  `.devcontainer/post-create.sh` does both on create.
 - `just test` — run the unit suite.
+- `just coverage` — the suite under coverage with the `fail_under` gate (`pyproject.toml`).
+- `just lock-check` — verify `uv.lock` is current.
 - `just lint` / `just lint-fix` — ruff check (with autofix).
 - `just fmt` / `just fmt-check` — ruff format.
 - `just typecheck` — basedpyright (strict).
