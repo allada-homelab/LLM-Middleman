@@ -23,7 +23,7 @@ stays stateless.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator, AsyncIterable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, Mapping
 from typing import Any, ClassVar, cast
 
 from homeassistant.components import conversation
@@ -43,8 +43,8 @@ from custom_components.llm_middleman.const import (
     KEEP_ALIVE_FOREVER,
 )
 
-from ._compat import schema_to_openapi, tool_result_data
 from ._history import trim_history
+from ._tools import format_function_tool, tool_result_json
 from .base import (
     BackendAdapter,
     BackendConnectionError,
@@ -55,23 +55,6 @@ from .base import (
     build_client_timeout,
     probe_json,
 )
-
-
-def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None) -> dict[str, Any]:
-    """Format one HA tool as an Ollama ``/api/chat`` function-tool spec.
-
-    Ollama's wire shape nests ``name``/``parameters``/``description`` under ``function``
-    and, unlike OpenAI's, omits ``description`` when the tool has none (core
-    ``ollama/entity.py:_format_tool``). ``schema_to_openapi`` renders the
-    probatio/voluptuous schema to JSON Schema; ``custom_serializer`` handles HA selector types.
-    """
-    function: dict[str, Any] = {
-        "name": tool.name,
-        "parameters": schema_to_openapi(tool.parameters, custom_serializer),
-    }
-    if tool.description:
-        function["description"] = tool.description
-    return {"type": "function", "function": function}
 
 
 def _fix_invalid_arguments(value: Any) -> Any:
@@ -122,7 +105,7 @@ def _convert_content(content: conversation.Content) -> dict[str, Any]:
             ]
         return message
     # Only ToolResultContent remains (Content is a closed union).
-    return {"role": "tool", "content": json.dumps(tool_result_data(content), default=str)}
+    return {"role": "tool", "content": tool_result_json(content)}
 
 
 async def _iter_ndjson(stream: AsyncIterable[bytes]) -> AsyncGenerator[dict[str, Any]]:
@@ -213,7 +196,10 @@ class OllamaAdapter(BackendAdapter):
             body["think"] = options[CONF_THINK]
         # HA tool schemas, only when an LLM API is configured for this agent.
         if chat_log.llm_api is not None and chat_log.llm_api.tools:
-            body["tools"] = [_format_tool(tool, chat_log.llm_api.custom_serializer) for tool in chat_log.llm_api.tools]
+            body["tools"] = [
+                format_function_tool(tool, chat_log.llm_api.custom_serializer, omit_empty_description=True)
+                for tool in chat_log.llm_api.tools
+            ]
         return body
 
     async def stream_turn(

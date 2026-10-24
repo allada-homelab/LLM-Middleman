@@ -392,6 +392,18 @@ async def test_tools_field_sent_when_llm_api_set(hass: HomeAssistant, mock_chat_
     assert isinstance(tools[0]["function"]["parameters"], dict)
 
 
+class _UndescribedTool(_FakeTool):
+    description = None
+
+
+async def test_tool_without_description_omits_field(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    """Ollama's wire shape drops ``description`` when the tool has none (core ollama)."""
+    mock_chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([_UndescribedTool()]))
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), mock_chat_log)
+    assert "description" not in session.post.call_args.kwargs["json"]["tools"][0]["function"]
+
+
 async def _posted_tool_parameters(hass: HomeAssistant, chat_log: conversation.ChatLog, parameters: Any) -> Any:
     """Send one turn offering a single tool with ``parameters``; return its rendered JSON Schema."""
     tool = _FakeTool()

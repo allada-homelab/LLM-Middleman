@@ -19,7 +19,7 @@ The entity's bounded tool loop drives the re-entry; this adapter stays stateless
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from homeassistant.components import conversation
@@ -38,9 +38,9 @@ from custom_components.llm_middleman.const import (
     CONF_TOP_P,
 )
 
-from ._compat import schema_to_openapi, tool_result_data
 from ._history import trim_history
 from ._sse import async_iter_sse
+from ._tools import format_function_tool, tool_result_json
 from .base import (
     BackendAdapter,
     DeltaStream,
@@ -64,26 +64,6 @@ def _base_url(data: Mapping[str, Any]) -> str:
     ``/v1/chat/completions``; the parent flow normalizes it, but strip defensively.
     """
     return str(data[CONF_BASE_URL]).rstrip("/")
-
-
-def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None) -> dict[str, Any]:
-    """Format one HA tool as an OpenAI chat/completions function-tool spec.
-
-    Chat/completions nests the spec under ``function`` (not the flat Responses shape
-    core openai uses). ``schema_to_openapi`` renders the probatio/voluptuous schema
-    to JSON Schema; ``custom_serializer`` handles HA-specific selector types. The
-    unsupported-JSON-Schema-key strip core applies is intentionally omitted: most
-    OpenAI-compatible servers tolerate ``enum``/``anyOf``/… and stripping them silently
-    degrades the schema — add it only if a target server actually 400s (LLMM-018 probe).
-    """
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": schema_to_openapi(tool.parameters, custom_serializer),
-        },
-    }
 
 
 def _accumulate_tool_call(tool_calls: dict[int, dict[str, str]], fragment: Any) -> None:
@@ -130,7 +110,7 @@ def _convert_content(item: conversation.Content) -> dict[str, Any]:
     return {
         "role": "tool",
         "tool_call_id": item.tool_call_id,
-        "content": json.dumps(tool_result_data(item), default=str),
+        "content": tool_result_json(item),
     }
 
 
@@ -192,7 +172,9 @@ class OpenAICompatAdapter(BackendAdapter):
                 body[key] = value
         # HA tool schemas, only when an LLM API is configured for this agent.
         if chat_log.llm_api is not None and chat_log.llm_api.tools:
-            body["tools"] = [_format_tool(tool, chat_log.llm_api.custom_serializer) for tool in chat_log.llm_api.tools]
+            body["tools"] = [
+                format_function_tool(tool, chat_log.llm_api.custom_serializer) for tool in chat_log.llm_api.tools
+            ]
         return body
 
     async def stream_turn(
