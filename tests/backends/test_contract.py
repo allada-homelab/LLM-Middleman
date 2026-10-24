@@ -80,21 +80,39 @@ async def test_multi_piece_reply_is_spoken_verbatim(
     assert speech(result) == "".join(PIECES)
 
 
+def _integration_error_texts(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Message plus logged exception text of every ERROR record from the integration."""
+    return [
+        f"{record.getMessage()} | {record.exc_info[1] if record.exc_info else ''}"
+        for record in caplog.records
+        if record.levelno >= logging.ERROR and record.name.startswith("custom_components.llm_middleman")
+    ]
+
+
 @pytest.mark.parametrize("status", [401, 500])
-async def test_http_error_status_is_logged_and_voiced_as_fallback(
-    hass: HomeAssistant, live_backend: ScriptedBackend, preset: str, status: int, caplog: pytest.LogCaptureFixture
+async def test_http_error_status_is_voiced_as_fallback(
+    hass: HomeAssistant, live_backend: ScriptedBackend, preset: str, status: int
 ) -> None:
-    """A non-200 turn response surfaces as a logged error plus the fallback, never silence."""
+    """A non-200 turn response is voiced as the fallback, never a silent empty reply."""
     live_backend.serve(preset, PIECES, status=status)
     _, entity_id = await setup_agent(hass, preset, live_backend.base_url)
 
     result = await run_pipeline_turn(hass, entity_id)
 
     assert speech(result) == ERROR_MESSAGE
-    integration_errors = [
-        r for r in caplog.records if r.levelno >= logging.ERROR and r.name.startswith("custom_components.llm_middleman")
-    ]
-    assert integration_errors
+
+
+@pytest.mark.parametrize("status", [401, 500])
+async def test_http_error_status_is_logged_with_its_status_code(
+    hass: HomeAssistant, live_backend: ScriptedBackend, preset: str, status: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The logged error names the HTTP status, so a fallback reached by accident can't pass."""
+    live_backend.serve(preset, PIECES, status=status)
+    _, entity_id = await setup_agent(hass, preset, live_backend.base_url)
+
+    await run_pipeline_turn(hass, entity_id)
+
+    assert any(f"HTTP {status}" in text for text in _integration_error_texts(caplog))
 
 
 async def test_reply_without_content_is_voiced_as_fallback(
