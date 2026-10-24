@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import voluptuous as vol
+from aiohttp import web
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigSubentry, ConfigSubentryData
 from homeassistant.const import CONF_PROMPT
@@ -29,6 +30,7 @@ from custom_components.llm_middleman.const import (
     DOMAIN,
 )
 from custom_components.llm_middleman.conversation import LLMMiddlemanConversationEntity
+from tests.live_backend import PRESETS, ScriptedBackend
 
 TEST_URL = "http://middleman.local:8000"
 TEST_TOKEN = "test-token"
@@ -334,3 +336,22 @@ def build_config_entry(
 def mock_config_entry(hass: HomeAssistant) -> MockConfigEntry:
     """Return a parent entry with one conversation subentry, added to hass."""
     return build_config_entry(hass)
+
+
+@pytest.fixture(params=PRESETS)
+def preset(request: pytest.FixtureRequest) -> str:
+    """Parametrize a test over every backend preset registered in ``BACKEND_TO_CLS``."""
+    return str(request.param)
+
+
+@pytest.fixture
+async def live_backend(socket_enabled: None) -> AsyncGenerator[ScriptedBackend]:
+    """Yield a real scripted backend server listening on an ephemeral 127.0.0.1 port."""
+    backend = ScriptedBackend()
+    runner = web.AppRunner(backend.app())
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    backend.base_url = f"http://127.0.0.1:{site.port}"
+    yield backend
+    await runner.cleanup()
