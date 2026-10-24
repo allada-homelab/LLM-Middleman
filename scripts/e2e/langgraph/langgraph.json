@@ -1,0 +1,11 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./graphs.py:echo_graph",
+    "react": "./graphs.py:react",
+    "interrupt": "./graphs.py:interrupter",
+    "slow": "./graphs.py:slow",
+    "ctx": "./graphs.py:ctxgraph"
+  },
+  "python_version": "3.12"
+}
