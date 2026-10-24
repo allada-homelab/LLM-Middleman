@@ -73,6 +73,11 @@ feedback/suggested-question endpoints, TTS audio events, submitting human-input 
 - `auto_generate_name: false` kept deliberately: title generation is an extra LLM call per
   new Dify conversation (one per voice command under conversation scope), competing with the
   next turn on single-GPU local models.
+- Time context: Dify keeps the entity's `[timestamp] ` query prefix unconditionally (the
+  default of `BackendAdapter.wants_time_prefix` from the robustness PR #97). No `ha_*` time
+  input is added: the prefix already reaches every app (incl. "New Jarvis") with no app
+  changes, while dropping it only for apps that declare a time input would need per-turn
+  dynamic gating that the ClassVar flag doesn't support.
 - HA APIs verified on both the locked (2026.10.3) and floor (2026.7.0) HA:
   `ChatLog.async_trace`, `ChatLog.extra_system_prompt` (persisted by
   `async_provide_llm_data`), `AssistantContentDeltaDict.thinking_content`.
