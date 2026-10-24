@@ -28,3 +28,4 @@ Fill in one row per check (date, HA version, Dify version/Cloud, app type, obser
 | 10 | Required-input app works with mapping | Chatbot or Chatflow | NOT RUN | |
 | 11 | HA context + satellite `ask_question` follow-up | any | NOT RUN | |
 | 12 | Regression on the owner's "New Jarvis" app | owner's app | NOT RUN | |
+| 13 | Tool activity in the Assist chat, one Dify message per turn | Agent, Chatflow | NOT RUN | |

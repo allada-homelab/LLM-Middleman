@@ -1,7 +1,7 @@
 ---
 id: LLMM-021
 title: Dify tier-1 (spec-exact streaming, stop/recreate hardening, inputs, identity, tool activity)
-status: in-progress
+status: in-review
 phase: 5
 depends_on: [LLMM-020]
 ---
@@ -50,8 +50,8 @@ owner-run E2E docs/scripts):
 12. 429 `too_many_requests`/`rate_limit_error` (and `invalid_param`, `agent_not_published`,
     `not_chat_app`) → named log hint, still fallback. `auto_generate_name` stays `false`.
 13. Tool activity (Agent `agent_thought` tool/tool_input/observation; Chatflow tool `node_*`)
-    as external tool calls in the Assist chat — **built on the shared helper the LangGraph
-    tier-1 branch adds to `backends/_compat.py`; not implemented until that lands on main.**
+    as external tool calls in the Assist chat, built on the shared `backends/_compat.py`
+    helpers from LLMM-022 (PR #99).
 
 **Out:** HA tools passthrough (no API for it), forwarding `CONF_PROMPT`, file/vision upload,
 feedback/suggested-question endpoints, TTS audio events, submitting human-input forms.
@@ -78,6 +78,19 @@ feedback/suggested-question endpoints, TTS audio events, submitting human-input 
   input is added: the prefix already reaches every app (incl. "New Jarvis") with no app
   changes, while dropping it only for apps that declare a time input would need per-turn
   dynamic gating that the ClassVar flag doesn't support.
+- Tool activity: `_thought_tools` splits `agent_thought.tool` on `;`, takes per-tool args
+  from `tool_input` JSON (keyed by tool name, else the whole object, else `{"input": raw}`)
+  and per-tool results from `observation`; `tool_call_id = "{thought id}:{tool}"`. The call is
+  emitted once `tool_input` appears, the result once `observation` appears, deduped across
+  the repeated thought updates. `_node_tool` maps `node_type: "tool"` `node_started` /
+  `node_finished` (id = node execution id, name = node title, `failed`/`exception` → error
+  result). Tool deltas close the open assistant block; text after them reopens one. If tools
+  ran but no text follows by `message_end`, the adapter raises (without a stop, the task
+  is over) so the entity guard appends the fallback; ending on a tool result would
+  re-enter the entity's tool loop and re-POST the turn.
+- Usage stats go through the shared `base.trace_token_stats` (LLMM-022/#98); the full Dify
+  usage is a separate `dify_usage` trace record.
+- Diagnostics redact `dify_inputs` (`TO_REDACT`).
 - HA APIs verified on both the locked (2026.10.3) and floor (2026.7.0) HA:
   `ChatLog.async_trace`, `ChatLog.extra_system_prompt` (persisted by
   `async_provide_llm_data`), `AssistantContentDeltaDict.thinking_content`.
@@ -95,24 +108,29 @@ feedback/suggested-question endpoints, TTS audio events, submitting human-input 
 - [x] 10 — `/parameters` probed at setup (`agent_not_published` → own error); declared inputs listed in the agent form.
 - [x] 11 — `reasoning_chunk` → `thinking_content`.
 - [x] 12 — 429/known-code hints logged; `auto_generate_name` decision documented.
-- [ ] 13 — tool activity surfaced via the shared `_compat.py` helper (pending the helper on main).
+- [x] 13 — tool activity surfaced via the shared `_compat.py` helpers; one POST per turn proven through the entity; tools-without-answer → fallback.
 - [ ] Owner-run live E2E rows in `docs/implementation/e2e-results/dify.md` (NOT RUN).
 
 ## Verification
-Agent-run (devcontainer, 2026-10-24) — commands and results:
-- `uv run pytest -q` → `483 passed` (baseline on `4fc5463`: `443 passed`; +40, none regressed).
-- `uv run coverage run -m pytest -q && uv run coverage report` → TOTAL 97% (≥ 94 floor;
-  baseline 96%); `backends/dify.py` 98%.
+Agent-run (devcontainer, 2026-10-24) — commands and results, on the branch after merging
+`origin/main` (#97/#98/#99) and adding item 13:
+- `uv run pytest -q` → `644 passed` (original baseline on `4fc5463`: `443`; items 1–12
+  brought the branch to `483`; the merged tree before item 13 ran `633`; item 13 +
+  diagnostics add 11; nothing regressed).
+- `uv run coverage run -m pytest -q && uv run coverage report` → TOTAL 97% (≥ 94 floor);
+  `backends/dify.py` 98%.
 - `uv run ruff check .` → `All checks passed!`; `uv run ruff format --check .` → clean.
 - `uv run basedpyright` → `0 errors, 0 warnings, 0 notes`.
 - `uv run pre-commit run --all-files` → all hooks passed.
-- CI floor leg (throwaway detached worktree, HA 2026.7.0 overlay per `.github/workflows/lint.yml`):
-  `uv run --no-sync pytest -q tests/` → `481 passed, 2 skipped` (the 2 skips are the
-  pre-existing probatio-only tests).
-- Mutation check: reverting the `agent` mode, the stop-on-exception, or the EOF raise each
-  turns 2 Dify tests red.
+- CI floor leg (throwaway detached worktree, HA 2026.7.0 overlay per `.github/workflows/lint.yml`,
+  removed after): `uv run --no-sync pytest -q tests/` → `640 passed, 4 skipped`. All four
+  skips are HA-version gates from main: probatio ×2, and tool-result `error` flag ×2, which
+  needs HA ≥ 2026.10.
+- Mutation checks: reverting the `agent` mode, the stop-on-exception, or the EOF raise each
+  turns 2 Dify tests red; disabling the tools-without-reply raise turns 2 red (incl. the
+  entity one-POST test); disabling result dedupe turns 1 red.
 
-Owner-run: the 12-row checklist in `scripts/e2e/README.md` (dify section), driven partly by
+Owner-run: the 13-row checklist in `scripts/e2e/README.md` (dify section), driven partly by
 `scripts/e2e/dify_e2e.py`; results go in `docs/implementation/e2e-results/dify.md` (NOT RUN).
 
 ## Risks / open questions
@@ -123,4 +141,3 @@ Owner-run: the 12-row checklist in `scripts/e2e/README.md` (dify section), drive
   new Dify conversation via the 404 recreate path. Documented, not "fixed".
 - `max_length` truncation of HA-context inputs relies on Dify returning `max_length` in
   `user_input_form` (present in Dify responses, not in the spec's schema) — **inferred**.
-- Diagnostics do not redact `dify_inputs` (`diagnostics.py` `TO_REDACT`); static inputs could carry personal context — candidate follow-up to add the key.

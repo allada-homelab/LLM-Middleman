@@ -27,8 +27,8 @@ Pick one preset per connection. Each streams the reply token-by-token
 | **Dify** | a Dify Chatbot / Agent / Legacy Agent / Chatflow app (`/chat-messages`) | SSE, `agent_message`/`message`/`message_end` | No¹ |
 
 ¹ These backends run their own tools server-side — the integration passes text through and
-does not expose Home Assistant's tools to them. LangGraph's tool calls and results are shown
-in the Assist chat log as *external* tool activity (never executed by Home Assistant, never
+does not expose Home Assistant's tools to them. LangGraph's and Dify's tool calls and results
+(Dify: Agent tool steps and Chatflow tool nodes) are shown in the Assist chat log as *external* tool activity (never executed by Home Assistant, never
 spoken).
 
 ## Configuration model
