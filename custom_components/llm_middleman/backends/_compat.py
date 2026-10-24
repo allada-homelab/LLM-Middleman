@@ -24,6 +24,8 @@ from homeassistant.components import conversation
 from homeassistant.helpers import llm
 from voluptuous_openapi import convert  # pyright: ignore[reportUnknownVariableType]
 
+from .base import json_object
+
 type AssistantDelta = conversation.AssistantContentDeltaDict
 
 
@@ -85,7 +87,9 @@ def external_tool_result_delta(
     delta type because ``DeltaStream`` is declared assistant-only, while HA's
     ``async_add_delta_content_stream`` (the only consumer) accepts both.
     """
-    data: dict[str, Any] = cast(dict[str, Any], result) if isinstance(result, dict) else {"result": result}
+    data = json_object(result)
+    if data is None:
+        data = {"result": result}
     delta: dict[str, Any] = {"role": "tool_result", "tool_call_id": tool_call_id, "tool_name": tool_name}
     if _DELTA_HAS_RESULT_OBJ:
         delta["result"] = llm.ToolResult(data=data, error=error)

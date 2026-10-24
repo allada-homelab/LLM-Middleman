@@ -48,7 +48,7 @@ import logging
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import aiohttp
 from homeassistant.core import HomeAssistant
@@ -90,6 +90,8 @@ from .base import (
     DeltaStream,
     bearer_headers,
     build_client_timeout,
+    json_list,
+    json_object,
     rendered_system_prompt,
     trace_token_stats,
 )
@@ -151,13 +153,12 @@ def _extract_text(content: object) -> str:
     """
     if isinstance(content, str):
         return content
-    if isinstance(content, list):
+    if (blocks := json_list(content)) is not None:
         parts: list[str] = []
-        for block in cast("list[object]", content):
+        for block in blocks:
             if isinstance(block, str):
                 parts.append(block)
-            elif isinstance(block, dict):
-                mapping = cast("dict[str, object]", block)
+            elif (mapping := json_object(block)) is not None:
                 text = mapping.get("text")
                 if mapping.get("type") == "text" and isinstance(text, str):
                     parts.append(text)
@@ -178,17 +179,14 @@ def _parse_messages_frame(data: str) -> tuple[str | None, str | None]:
     except json.JSONDecodeError, ValueError:
         _LOGGER.debug("Skipping malformed LangGraph messages frame")
         return None, None
-    if not isinstance(parsed, list):
+    frame = json_list(parsed)
+    if frame is None or len(frame) != 2:
         return None, None
-    frame = cast("list[object]", parsed)
-    if len(frame) != 2:
-        return None, None
-    chunk, metadata = frame[0], frame[1]
-    node = cast("dict[str, object]", metadata).get("langgraph_node") if isinstance(metadata, dict) else None
+    node = (json_object(frame[1]) or {}).get("langgraph_node")
     node = node if isinstance(node, str) else None
-    if not isinstance(chunk, dict):
+    message = json_object(frame[0])
+    if message is None:
         return None, node
-    message = cast("dict[str, object]", chunk)
     if message.get("type") not in _AI_TYPES:
         return None, node
     return _extract_text(message.get("content")) or None, node
@@ -209,11 +207,11 @@ class _Updates:
 
 def _node_messages(update: object, messages_key: str) -> list[dict[str, Any]]:
     """Return the message dicts a node's update wrote to ``messages_key``."""
-    if not isinstance(update, dict):
+    if (mapping := json_object(update)) is None:
         return []
-    value: object = cast("dict[str, object]", update).get(messages_key)
-    messages: list[object] = cast("list[object]", value) if isinstance(value, list) else [value]
-    return [cast("dict[str, Any]", m) for m in messages if isinstance(m, dict)]
+    value: object = mapping.get(messages_key)
+    messages = json_list(value)
+    return [m for item in (messages if messages is not None else [value]) if (m := json_object(item)) is not None]
 
 
 def _parse_updates_frame(data: str, messages_key: str) -> _Updates:
@@ -224,14 +222,15 @@ def _parse_updates_frame(data: str, messages_key: str) -> _Updates:
     except json.JSONDecodeError, ValueError:
         _LOGGER.debug("Skipping malformed LangGraph updates frame")
         return out
-    if not isinstance(parsed, dict):
+    nodes = json_object(parsed)
+    if nodes is None:
         return out
-    for node, update in cast("dict[str, object]", parsed).items():
+    for node, update in nodes.items():
         if node == _INTERRUPT_KEY:
-            interrupts = cast("list[object]", update) if isinstance(update, list) else []
+            interrupts = json_list(update) or []
             first = interrupts[0] if interrupts else None
             out.interrupted = True
-            out.interrupt = cast("dict[str, object]", first).get("value") if isinstance(first, dict) else None
+            out.interrupt = (json_object(first) or {}).get("value")
             continue
         for message in _node_messages(update, messages_key):
             msg_type = message.get("type")
@@ -249,16 +248,13 @@ def _parse_updates_frame(data: str, messages_key: str) -> _Updates:
 
 def _collect_ai_message(message: dict[str, Any], out: _Updates) -> None:
     """Fold a whole AI message's finished tool calls and token usage into ``out``."""
-    for raw in cast("list[object]", message.get("tool_calls") or []):
-        if not isinstance(raw, dict):
+    for raw in json_list(message.get("tool_calls")) or []:
+        if (call := json_object(raw)) is None:
             continue
-        call = cast("dict[str, object]", raw)
         call_id, name, args = call.get("id"), call.get("name"), call.get("args")
         if isinstance(call_id, str) and call_id and isinstance(name, str):
-            out.tool_calls.append((call_id, name, cast("dict[str, Any]", args) if isinstance(args, dict) else {}))
-    usage = message.get("usage_metadata")
-    if isinstance(usage, dict):
-        tokens = cast("dict[str, object]", usage)
+            out.tool_calls.append((call_id, name, json_object(args) or {}))
+    if (tokens := json_object(message.get("usage_metadata"))) is not None:
         input_tokens, output_tokens = tokens.get("input_tokens"), tokens.get("output_tokens")
         if isinstance(input_tokens, int) and isinstance(output_tokens, int):
             out.input_tokens += input_tokens
@@ -270,8 +266,7 @@ def _interrupt_text(value: object) -> str:
     """Return the speakable question of an interrupt value."""
     if isinstance(value, str) and value:
         return value
-    if isinstance(value, dict):
-        mapping = cast("dict[str, object]", value)
+    if (mapping := json_object(value)) is not None:
         for key in ("question", "message"):
             text = mapping.get(key)
             if isinstance(text, str) and text:
@@ -523,7 +518,7 @@ class LangGraphAdapter(BackendAdapter):
             if resp.status >= 400:
                 raise BackendStreamError(f"LangGraph thread lookup returned HTTP {resp.status}")
             thread: object = await resp.json()
-        interrupts = cast("dict[str, object]", thread).get("interrupts") if isinstance(thread, dict) else None
+        interrupts = (json_object(thread) or {}).get("interrupts")
         return bool(interrupts)
 
     async def _save_pending(self, pending: dict[str, bool]) -> None:
@@ -566,7 +561,7 @@ class LangGraphAdapter(BackendAdapter):
                     raise BackendStreamError(f"LangGraph error event: {event.data[:200]}")
                 if event.event == _EVENT_METADATA:
                     metadata = _loads(event.data)
-                    run_id = cast("dict[str, object]", metadata).get("run_id") if isinstance(metadata, dict) else None
+                    run_id = (json_object(metadata) or {}).get("run_id")
                     if isinstance(run_id, str):
                         state.run_id = self.last_run_id = run_id
                     continue

@@ -54,6 +54,7 @@ from .base import (
     TurnContext,
     bearer_headers,
     build_client_timeout,
+    json_object,
     probe_json,
     trace_token_stats,
 )
@@ -115,16 +116,19 @@ async def _iter_ndjson(stream: AsyncIterable[bytes]) -> AsyncGenerator[dict[str,
 
     Lines come from :func:`async_iter_lines` (chunk-boundary agnostic, EOF tail
     flushed, oversize lines skipped). Blank lines are skipped. A line that is not
-    valid JSON raises ``BackendStreamError`` so the entity guard can map it to the
+    a valid JSON object raises ``BackendStreamError`` so the entity guard can map it to the
     fallback (never let a raw ``JSONDecodeError`` escape).
     """
     async for line in async_iter_lines(stream):
         if not line.strip():
             continue
         try:
-            yield cast("dict[str, Any]", json.loads(line))
+            obj = json_object(json.loads(line))
         except json.JSONDecodeError as err:
             raise BackendStreamError(f"Malformed NDJSON line: {line!r}") from err
+        if obj is None:
+            raise BackendStreamError(f"NDJSON line is not an object: {line!r}")
+        yield obj
 
 
 class OllamaAdapter(BackendAdapter):

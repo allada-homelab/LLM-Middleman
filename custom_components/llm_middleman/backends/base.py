@@ -110,6 +110,20 @@ def bearer_headers(token: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def json_object(value: object) -> dict[str, Any] | None:
+    """Narrow a decoded JSON value to an object, or ``None`` when it is anything else.
+
+    The one cast for untyped JSON objects: under strict mode ``isinstance(x, dict)`` alone
+    yields ``dict[Unknown, Unknown]``.
+    """
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else None
+
+
+def json_list(value: object) -> list[Any] | None:
+    """Narrow a decoded JSON value to an array, or ``None`` when it is anything else."""
+    return cast("list[Any]", value) if isinstance(value, list) else None
+
+
 def loads_json_object(raw: str | bytes, *, warn_label: str | None = None) -> dict[str, Any] | None:
     """Parse ``raw`` as a JSON object; ``None`` for malformed JSON or a non-object value.
 
@@ -122,9 +136,7 @@ def loads_json_object(raw: str | bytes, *, warn_label: str | None = None) -> dic
         if warn_label is not None:
             _LOGGER.warning("Failed to parse %s JSON payload: %s", warn_label, raw[:200])
         return None
-    if isinstance(parsed, dict):
-        return cast("dict[str, Any]", parsed)
-    return None
+    return json_object(parsed)
 
 
 # Canonical HA delta-dict stream every adapter yields. Single-arg AsyncGenerator:
@@ -193,9 +205,9 @@ async def probe_json(
                 raise BackendConnectionError(f"{label} probe returned invalid JSON") from err
     except (TimeoutError, aiohttp.ClientError) as err:
         raise BackendConnectionError(f"Cannot reach {label} at {url}: {err}") from err
-    if not isinstance(payload, dict):
+    if (body := json_object(payload)) is None:
         raise BackendConnectionError(f"{label} probe returned a non-object JSON body")
-    return cast("dict[str, Any]", payload)
+    return body
 
 
 @dataclass

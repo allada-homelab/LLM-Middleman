@@ -105,6 +105,8 @@ from .base import (
     DeltaStream,
     bearer_headers,
     build_client_timeout,
+    json_list,
+    json_object,
     loads_json_object,
     probe_json,
     trace_token_stats,
@@ -207,15 +209,13 @@ def _is_stale_conversation(status: int, code: object, message: str) -> bool:
 def _parse_user_input_form(form: object) -> dict[str, dict[str, Any]]:
     """Map ``variable -> control`` from a ``user_input_form`` (``[{"text-input": {...}}, ...]``)."""
     declared: dict[str, dict[str, Any]] = {}
-    if not isinstance(form, list):
-        return declared
-    for item in cast("list[object]", form):
-        if not isinstance(item, dict) or len(cast("dict[str, object]", item)) != 1:
+    for item in json_list(form) or []:
+        entry = json_object(item)
+        if entry is None or len(entry) != 1:
             continue
-        control = next(iter(cast("dict[str, object]", item).values()))
-        if not isinstance(control, dict):
+        control = json_object(next(iter(entry.values())))
+        if control is None:
             continue
-        control = cast("dict[str, Any]", control)
         variable = control.get("variable")
         if isinstance(variable, str) and variable:
             declared[variable] = control
@@ -298,35 +298,34 @@ def _thought_tools(payload: Mapping[str, Any]) -> list[_ToolActivity]:
     for name in names:
         args: dict[str, Any] | None = None
         if isinstance(raw_input, str) and raw_input.strip():
-            keyed = cast("dict[str, Any]", inputs).get(name) if isinstance(inputs, dict) else None
-            if isinstance(keyed, dict):
-                args = cast("dict[str, Any]", keyed)
+            by_name = json_object(inputs)
+            keyed = by_name.get(name) if by_name is not None else None
+            if (keyed_args := json_object(keyed)) is not None:
+                args = keyed_args
             elif keyed is not None:
                 args = {"input": keyed}
-            elif isinstance(inputs, dict) and len(names) == 1:
-                args = cast("dict[str, Any]", inputs)
+            elif by_name is not None and len(names) == 1:
+                args = by_name
             else:
                 args = {"input": raw_input}
         result: Any = None
         if isinstance(raw_observation, str) and raw_observation.strip():
-            by_tool = cast("dict[str, Any]", observation) if isinstance(observation, dict) else {}
-            result = by_tool.get(name, raw_observation)
+            result = (json_object(observation) or {}).get(name, raw_observation)
         activities.append(_ToolActivity(f"{thought_id}:{name}", name, args, result))
     return activities
 
 
 def _node_tool(event: str, payload: Mapping[str, Any]) -> _ToolActivity | None:
     """Tool activity of a Chatflow ``node_started``/``node_finished`` for a ``tool`` node."""
-    data = payload.get("data")
-    if not isinstance(data, dict):
+    data = json_object(payload.get("data"))
+    if data is None:
         return None
-    data = cast("dict[str, Any]", data)
     call_id = data.get("id")
     if data.get("node_type") != "tool" or not isinstance(call_id, str) or not call_id:
         return None
     name = str(data.get("title") or data.get("node_id") or "tool")
     inputs = data.get("inputs")
-    args = cast("dict[str, Any]", inputs) if isinstance(inputs, dict) else {}
+    args = json_object(inputs) or {}
     if event != _EVENT_NODE_FINISHED:
         return _ToolActivity(call_id, name, args)
     if data.get("status") in _NODE_FAILED:
@@ -352,11 +351,9 @@ def _trace_usage(chat_log: conversation.ChatLog, message_end: Mapping[str, Any])
     when Dify reports both; the full usage (price, currency, latency) is traced as
     ``dify_usage``. The spec's Agent example carries only ``total_tokens``/``latency``.
     """
-    metadata = message_end.get("metadata")
-    usage = cast("dict[str, Any]", metadata).get("usage") if isinstance(metadata, dict) else None
-    if not isinstance(usage, dict):
+    usage = json_object((json_object(message_end.get("metadata")) or {}).get("usage"))
+    if usage is None:
         return
-    usage = cast("dict[str, Any]", usage)
     prompt_tokens, completion_tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
     if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
         trace_token_stats(chat_log, input_tokens=prompt_tokens, output_tokens=completion_tokens)
@@ -691,8 +688,7 @@ class DifyAdapter(BackendAdapter):
                         )
                     continue
                 if event == _EVENT_REASONING_CHUNK:
-                    data = payload.get("data")
-                    reasoning = cast("dict[str, Any]", data).get("reasoning") if isinstance(data, dict) else None
+                    reasoning = (json_object(payload.get("data")) or {}).get("reasoning")
                     if isinstance(reasoning, str) and reasoning:
                         for delta in opened({"thinking_content": reasoning}):
                             yield delta

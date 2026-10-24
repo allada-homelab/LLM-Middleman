@@ -231,15 +231,13 @@ def _n8n_schema() -> vol.Schema:
 def _dify_fields(options: Mapping[str, Any]) -> dict[Any, Any]:
     """Dify-only agent options (LLMM-021): inputs mapping, HA context, end-user identity."""
     return {
-        vol.Optional(CONF_DIFY_INPUTS, description={"suggested_value": options.get(CONF_DIFY_INPUTS)}): (
-            ObjectSelector()  # pyright: ignore[reportUnknownVariableType]
-        ),
-        vol.Optional(CONF_DIFY_HA_CONTEXT, default=bool(options.get(CONF_DIFY_HA_CONTEXT, False))): (
-            BooleanSelector()  # pyright: ignore[reportUnknownVariableType]
-        ),
-        vol.Optional(CONF_DIFY_USER_FROM_HA, default=bool(options.get(CONF_DIFY_USER_FROM_HA, False))): (
-            BooleanSelector()  # pyright: ignore[reportUnknownVariableType]
-        ),
+        vol.Optional(
+            CONF_DIFY_INPUTS, description={"suggested_value": options.get(CONF_DIFY_INPUTS)}
+        ): ObjectSelector(),
+        vol.Optional(CONF_DIFY_HA_CONTEXT, default=bool(options.get(CONF_DIFY_HA_CONTEXT, False))): BooleanSelector(),
+        vol.Optional(
+            CONF_DIFY_USER_FROM_HA, default=bool(options.get(CONF_DIFY_USER_FROM_HA, False))
+        ): BooleanSelector(),
     }
 
 
