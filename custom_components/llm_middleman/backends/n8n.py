@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator, Iterator, Mapping
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import aiohttp
@@ -56,6 +56,7 @@ from .base import (
     DeltaStream,
     TurnContext,
     build_client_timeout,
+    loads_json_object,
     rendered_system_prompt,
 )
 
@@ -70,17 +71,6 @@ _STRUCTURED_CHUNK_TYPES = frozenset({"begin", "item", "end", "error"})
 _Mode = Literal["html", "ndjson", "blocking"]
 
 
-def _loads_object(raw: bytes) -> dict[str, Any] | None:
-    """Parse ``raw`` as a JSON object, returning ``None`` on any non-object/parse error."""
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if isinstance(value, dict):
-        return cast("dict[str, Any]", value)
-    return None
-
-
 def _sniff_mode(sample: bytes, content_type: str) -> _Mode:
     """Classify the real response from its first line and content-type.
 
@@ -92,7 +82,7 @@ def _sniff_mode(sample: bytes, content_type: str) -> _Mode:
     stripped = sample.lstrip()
     if "html" in content_type or stripped[:1] == b"<":
         return "html"
-    obj = _loads_object(sample)
+    obj = loads_json_object(sample)
     if obj is not None and obj.get("type") in _STRUCTURED_CHUNK_TYPES:
         return "ndjson"
     if any(hint in content_type for hint in ("ndjson", "json-lines", "jsonl")):
@@ -259,7 +249,7 @@ class N8nAdapter(BackendAdapter):
 
     def _blocking_deltas(self, raw: bytes, ctx: TurnContext) -> Iterator[conversation.AssistantContentDeltaDict]:
         """Parse a single blocking JSON body via the ``output_field`` → ``text`` fallback chain."""
-        obj = _loads_object(raw)
+        obj = loads_json_object(raw)
         if obj is None:
             raise BackendStreamError("n8n blocking reply was not a JSON object")
         output_field = ctx.options.get(CONF_OUTPUT_FIELD, N8N_DEFAULT_OUTPUT_FIELD)
@@ -284,7 +274,7 @@ def _line_contents(line: bytes) -> Iterator[str]:
     """
     if not line.strip():
         return
-    obj = _loads_object(line)
+    obj = loads_json_object(line)
     if obj is None:
         _LOGGER.warning("n8n: skipping malformed NDJSON line")
         return

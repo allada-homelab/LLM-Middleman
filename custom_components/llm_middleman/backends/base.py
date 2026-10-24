@@ -14,10 +14,12 @@ from ``base``.
 
 from __future__ import annotations
 
+import json
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import aiohttp
 from homeassistant.components import conversation
@@ -32,6 +34,8 @@ from custom_components.llm_middleman.const import (
 
 from ._sse import BackendStreamError
 
+_LOGGER = logging.getLogger(__name__)
+
 __all__ = [
     "BackendAdapter",
     "BackendAuthError",
@@ -39,7 +43,9 @@ __all__ = [
     "BackendStreamError",
     "DeltaStream",
     "TurnContext",
+    "bearer_headers",
     "build_client_timeout",
+    "loads_json_object",
     "rendered_system_prompt",
 ]
 
@@ -72,6 +78,28 @@ def rendered_system_prompt(chat_log: conversation.ChatLog) -> str | None:
     first = chat_log.content[0] if chat_log.content else None
     if isinstance(first, conversation.SystemContent) and first.content:
         return first.content
+    return None
+
+
+def bearer_headers(token: str | None) -> dict[str, str]:
+    """Return an ``Authorization: Bearer`` header when ``token`` is set, else empty."""
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def loads_json_object(raw: str | bytes, *, warn_label: str | None = None) -> dict[str, Any] | None:
+    """Parse ``raw`` as a JSON object; ``None`` for malformed JSON or a non-object value.
+
+    With ``warn_label`` set, a parse failure is logged at WARNING (first 200 chars of the
+    payload) so a preset can surface a bad frame without aborting the stream.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        if warn_label is not None:
+            _LOGGER.warning("Failed to parse %s JSON payload: %s", warn_label, raw[:200])
+        return None
+    if isinstance(parsed, dict):
+        return cast("dict[str, Any]", parsed)
     return None
 
 

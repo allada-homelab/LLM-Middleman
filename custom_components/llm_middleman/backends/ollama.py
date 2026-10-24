@@ -55,14 +55,9 @@ from .base import (
     BackendStreamError,
     DeltaStream,
     TurnContext,
+    bearer_headers,
     build_client_timeout,
 )
-
-
-def _auth_headers(data: Mapping[str, Any]) -> dict[str, str]:
-    """Bearer header when an API key is configured; usually absent on a LAN Ollama."""
-    api_key = data.get(CONF_API_KEY)
-    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
 def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None) -> dict[str, Any]:
@@ -185,7 +180,7 @@ class OllamaAdapter(BackendAdapter):
         try:
             async with (
                 asyncio.timeout(DEFAULT_TIMEOUT),
-                session.get(f"{base_url}/api/tags", headers=_auth_headers(data)) as response,
+                session.get(f"{base_url}/api/tags", headers=bearer_headers(data.get(CONF_API_KEY))) as response,
             ):
                 if response.status in (401, 403):
                     raise BackendAuthError(f"Ollama rejected credentials (HTTP {response.status})")
@@ -253,7 +248,7 @@ class OllamaAdapter(BackendAdapter):
         async with self.session.post(
             f"{base_url}/api/chat",
             json=body,
-            headers=_auth_headers(self.connection_data),
+            headers=bearer_headers(self.connection_data.get(CONF_API_KEY)),
             timeout=build_client_timeout(ctx.options),
         ) as response:
             if response.status != 200:

@@ -66,7 +66,9 @@ from .base import (
     BackendAuthError,
     BackendConnectionError,
     DeltaStream,
+    bearer_headers,
     build_client_timeout,
+    loads_json_object,
 )
 
 if TYPE_CHECKING:
@@ -167,18 +169,6 @@ class _ThinkStripper:
         return tail
 
 
-def _parse_data(raw: str) -> dict[str, Any] | None:
-    """Parse an SSE/HTTP JSON payload as an object, tolerating malformed input."""
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        _LOGGER.warning("Failed to parse Dify JSON payload: %s", raw[:200])
-        return None
-    if isinstance(parsed, dict):
-        return cast("dict[str, Any]", parsed)
-    return None
-
-
 class DifyAdapter(BackendAdapter):
     """Dify preset: streaming-only chat API, server-side memory, no HA tools."""
 
@@ -208,10 +198,7 @@ class DifyAdapter(BackendAdapter):
 
     def _headers(self) -> dict[str, str]:
         """Build request headers; the Dify app key is a required bearer token."""
-        headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-        return headers
+        return {"Content-Type": "application/json", **bearer_headers(self._api_key)}
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
@@ -225,7 +212,7 @@ class DifyAdapter(BackendAdapter):
         session = async_get_clientsession(hass)
         base_url = str(data.get(CONF_BASE_URL, "")).rstrip("/")
         api_key = data.get(CONF_API_KEY) or None
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        headers = bearer_headers(api_key)
         timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
         try:
             async with session.get(f"{base_url}/info", headers=headers, timeout=timeout) as resp:
@@ -326,7 +313,7 @@ class DifyAdapter(BackendAdapter):
                 # recreate. Dify has shipped more than one wire shape for this: the documented
                 # ``code: conversation_not_exists`` and the live ``code: not_found`` +
                 # "Conversation Not Exists" message. Match either; anything else is a real 404.
-                detail = _parse_data(await resp.text()) or {}
+                detail = loads_json_object(await resp.text(), warn_label="Dify") or {}
                 code = detail.get("code")
                 message = str(detail.get("message") or "")
                 if code in ("conversation_not_exists", "not_found") or "conversation not exist" in message.lower():
@@ -335,7 +322,7 @@ class DifyAdapter(BackendAdapter):
             if resp.status in (401, 403):
                 raise BackendAuthError(f"Dify rejected the API key (HTTP {resp.status})")
             if resp.status >= 400:
-                detail = _parse_data(await resp.text()) or {}
+                detail = loads_json_object(await resp.text(), warn_label="Dify") or {}
                 _LOGGER.error(
                     "Dify chat-messages HTTP %s: code=%s message=%s",
                     resp.status,
@@ -346,7 +333,7 @@ class DifyAdapter(BackendAdapter):
 
             agent_streamed = False
             async for sse in async_iter_sse(resp.content.iter_any()):
-                payload = _parse_data(sse.data) or {}
+                payload = loads_json_object(sse.data, warn_label="Dify") or {}
                 # Dify puts the event name in the JSON (no ``event:`` line, so the framer's
                 # default "message" is meaningless); the SSE field is only a proxy fallback.
                 json_event = payload.get("event")

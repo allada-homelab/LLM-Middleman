@@ -51,6 +51,7 @@ from .base import (
     BackendConnectionError,
     DeltaStream,
     TurnContext,
+    bearer_headers,
     build_client_timeout,
 )
 
@@ -70,16 +71,6 @@ def _base_url(data: Mapping[str, Any]) -> str:
     ``/v1/chat/completions``; the parent flow normalizes it, but strip defensively.
     """
     return str(data[CONF_BASE_URL]).rstrip("/")
-
-
-def _auth_headers(data: Mapping[str, Any]) -> dict[str, str]:
-    """Return the Bearer auth header when an api_key is configured, else empty.
-
-    ``api_key`` is optional (many compatible servers accept a dummy value); the
-    adapter simply sends the header only when a non-empty key is present.
-    """
-    api_key = data.get(CONF_API_KEY)
-    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
 def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None) -> dict[str, Any]:
@@ -180,7 +171,7 @@ class OpenAICompatAdapter(BackendAdapter):
         try:
             async with (
                 asyncio.timeout(DEFAULT_TIMEOUT),
-                session.get(url, headers=_auth_headers(data)) as response,
+                session.get(url, headers=bearer_headers(data.get(CONF_API_KEY))) as response,
             ):
                 if response.status in (401, 403):
                     raise BackendAuthError(f"Backend rejected credentials (HTTP {response.status})")
@@ -240,7 +231,7 @@ class OpenAICompatAdapter(BackendAdapter):
         the entity's loop re-enters. ``[DONE]`` ends the stream; EOF without it also
         ends it (the entity guard supplies the fallback when nothing streamed).
         """
-        headers = {"Accept": "text/event-stream", **_auth_headers(self.connection_data)}
+        headers = {"Accept": "text/event-stream", **bearer_headers(self.connection_data.get(CONF_API_KEY))}
         url = f"{_base_url(self.connection_data)}/v1/chat/completions"
         role_sent = False
         # index -> partial call; id/name arrive on the first fragment, arguments stream
