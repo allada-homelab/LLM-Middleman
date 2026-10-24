@@ -6,8 +6,8 @@ Chat Trigger and the AI Agent node. So the adapter must branch on the **actual
 response** (content-type / first bytes), never on the ``streaming`` config toggle.
 
 Streaming is NDJSON ``StructuredChunk`` lines
-(``{"type":"begin"|"item"|"end"|"error","content":…}``, n8n 1.103.0) — NOT SSE, so
-this module does not use ``_sse.py``. ``item.content`` is accumulated and streamed
+(``{"type":"begin"|"item"|"end"|"error","content":…}``, n8n 1.103.0) — NOT SSE; lines
+are framed by the shared, line-capped :func:`._sse.async_iter_lines`. ``item.content`` is accumulated and streamed
 delta-by-delta; **EOF (the stream closing) is the true done signal** — a run may emit
 several ``begin``/``end`` cycles, so ``end`` is never treated as terminal.
 
@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator, Iterator, Mapping
-from typing import Any, ClassVar, Literal, cast
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Mapping
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import aiohttp
@@ -49,6 +49,7 @@ from ..const import (  # noqa: TID252 — sibling package const module
     N8N_OUTPUT_FIELD_FALLBACK,
     N8N_TARGET_WEBHOOK,
 )
+from ._sse import MAX_LINE_BYTES, async_iter_lines
 from .base import (
     BackendAdapter,
     BackendConnectionError,
@@ -56,6 +57,7 @@ from .base import (
     DeltaStream,
     TurnContext,
     build_client_timeout,
+    loads_json_object,
     rendered_system_prompt,
 )
 
@@ -66,19 +68,11 @@ _ACTION_SEND_MESSAGE = "sendMessage"
 # StructuredChunk envelope types (n8n 1.103.0). ``begin``/``end`` are segment markers,
 # not stream terminators — a single run may emit several begin/end cycles.
 _STRUCTURED_CHUNK_TYPES = frozenset({"begin", "item", "end", "error"})
+# A blocking (non-streamed) reply is read whole before parsing, so it is capped: 1 MiB is
+# far beyond any spoken reply, and an over-cap body fails the turn instead of growing memory.
+_MAX_BLOCKING_BYTES = 1 << 20
 
 _Mode = Literal["html", "ndjson", "blocking"]
-
-
-def _loads_object(raw: bytes) -> dict[str, Any] | None:
-    """Parse ``raw`` as a JSON object, returning ``None`` on any non-object/parse error."""
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if isinstance(value, dict):
-        return cast("dict[str, Any]", value)
-    return None
 
 
 def _sniff_mode(sample: bytes, content_type: str) -> _Mode:
@@ -92,7 +86,7 @@ def _sniff_mode(sample: bytes, content_type: str) -> _Mode:
     stripped = sample.lstrip()
     if "html" in content_type or stripped[:1] == b"<":
         return "html"
-    obj = _loads_object(sample)
+    obj = loads_json_object(sample)
     if obj is not None and obj.get("type") in _STRUCTURED_CHUNK_TYPES:
         return "ndjson"
     if any(hint in content_type for hint in ("ndjson", "json-lines", "jsonl")):
@@ -106,6 +100,14 @@ async def _next_chunk(stream: AsyncIterator[bytes]) -> bytes | None:
         return await anext(stream)
     except StopAsyncIteration:
         return None
+
+
+async def _prepend(head: bytes, rest: AsyncIterator[bytes]) -> AsyncGenerator[bytes]:
+    """Re-attach the bytes consumed while sniffing to the front of the remaining stream."""
+    if head:
+        yield head
+    async for chunk in rest:
+        yield chunk
 
 
 class N8nAdapter(BackendAdapter):
@@ -147,16 +149,13 @@ class N8nAdapter(BackendAdapter):
         # Log the auth *type* only — never the credential value.
         _LOGGER.debug("n8n POST %s (auth=%s)", url, self._auth_type())
         try:
-            async with self.session.post(
+            async with self._post_checked(
                 url,
+                label="n8n webhook",
                 data=json.dumps(body, default=str),
                 headers=headers,
                 timeout=build_client_timeout(ctx.options, N8N_DEFAULT_TIMEOUT),
             ) as response:
-                if response.status >= 400:
-                    detail = (await response.text())[:500]
-                    _LOGGER.error("n8n webhook returned HTTP %s: %s", response.status, detail)
-                    raise BackendStreamError(f"n8n webhook returned HTTP {response.status}")
                 async for delta in self._iter_deltas(response, ctx):
                     yield delta
         except (TimeoutError, aiohttp.ClientError) as err:
@@ -202,8 +201,9 @@ class N8nAdapter(BackendAdapter):
         buffer = bytearray()
         exhausted = False
 
-        # Phase 1: buffer up to the first line boundary (or EOF) to sniff the real mode.
-        while b"\n" not in buffer:
+        # Phase 1: buffer up to the first line boundary (or EOF, or the line cap) to sniff
+        # the real mode.
+        while b"\n" not in buffer and len(buffer) <= MAX_LINE_BYTES:
             chunk = await _next_chunk(stream)
             if chunk is None:
                 exhausted = True
@@ -221,34 +221,19 @@ class N8nAdapter(BackendAdapter):
             if not exhausted:
                 async for chunk in stream:
                     buffer += chunk
+                    if len(buffer) > _MAX_BLOCKING_BYTES:
+                        break
+            if len(buffer) > _MAX_BLOCKING_BYTES:
+                raise BackendStreamError(f"n8n blocking reply exceeded {_MAX_BLOCKING_BYTES} bytes")
             for delta in self._blocking_deltas(bytes(buffer), ctx):
                 yield delta
             return
 
-        # NDJSON streaming path: emit item content as it arrives; EOF is the true done signal.
+        # NDJSON streaming path: emit item content as it arrives; EOF is the true done
+        # signal, and a final line with no trailing newline still counts.
         started = False
-        while True:
-            idx = buffer.find(b"\n")
-            while idx != -1:
-                line = bytes(buffer[:idx])
-                del buffer[: idx + 1]
-                for content in _line_contents(line):
-                    if not started:
-                        started = True
-                        yield {"role": "assistant"}
-                    yield {"content": content}
-                idx = buffer.find(b"\n")
-            if exhausted:
-                break
-            chunk = await _next_chunk(stream)
-            if chunk is None:
-                exhausted = True
-                continue
-            buffer += chunk
-
-        # A final line with no trailing newline still counts.
-        if buffer.strip():
-            for content in _line_contents(bytes(buffer)):
+        async for line in async_iter_lines(_prepend(bytes(buffer), stream)):
+            for content in _line_contents(line):
                 if not started:
                     started = True
                     yield {"role": "assistant"}
@@ -259,7 +244,7 @@ class N8nAdapter(BackendAdapter):
 
     def _blocking_deltas(self, raw: bytes, ctx: TurnContext) -> Iterator[conversation.AssistantContentDeltaDict]:
         """Parse a single blocking JSON body via the ``output_field`` → ``text`` fallback chain."""
-        obj = _loads_object(raw)
+        obj = loads_json_object(raw)
         if obj is None:
             raise BackendStreamError("n8n blocking reply was not a JSON object")
         output_field = ctx.options.get(CONF_OUTPUT_FIELD, N8N_DEFAULT_OUTPUT_FIELD)
@@ -284,7 +269,7 @@ def _line_contents(line: bytes) -> Iterator[str]:
     """
     if not line.strip():
         return
-    obj = _loads_object(line)
+    obj = loads_json_object(line)
     if obj is None:
         _LOGGER.warning("n8n: skipping malformed NDJSON line")
         return

@@ -39,7 +39,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import aiohttp
 from homeassistant.core import HomeAssistant
@@ -66,7 +66,10 @@ from .base import (
     BackendAuthError,
     BackendConnectionError,
     DeltaStream,
+    bearer_headers,
     build_client_timeout,
+    loads_json_object,
+    probe_json,
 )
 
 if TYPE_CHECKING:
@@ -167,18 +170,6 @@ class _ThinkStripper:
         return tail
 
 
-def _parse_data(raw: str) -> dict[str, Any] | None:
-    """Parse an SSE/HTTP JSON payload as an object, tolerating malformed input."""
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        _LOGGER.warning("Failed to parse Dify JSON payload: %s", raw[:200])
-        return None
-    if isinstance(parsed, dict):
-        return cast("dict[str, Any]", parsed)
-    return None
-
-
 class DifyAdapter(BackendAdapter):
     """Dify preset: streaming-only chat API, server-side memory, no HA tools."""
 
@@ -208,37 +199,23 @@ class DifyAdapter(BackendAdapter):
 
     def _headers(self) -> dict[str, str]:
         """Build request headers; the Dify app key is a required bearer token."""
-        headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-        return headers
+        return {"Content-Type": "application/json", **bearer_headers(self._api_key)}
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
         """Probe ``GET {base}/info``; reject bad keys and non-chat app types.
 
-        401/403 -> :class:`BackendAuthError`; transport failure or any other non-2xx ->
-        :class:`BackendConnectionError`. When the app metadata reports a ``mode`` that is
+        401/403 -> :class:`BackendAuthError`; transport failure, any other error status, or
+        a non-object body -> :class:`BackendConnectionError`. When the app metadata reports a ``mode`` that is
         not a chat-type app (the entry points at a workflow/completion app) ->
         :class:`BackendConnectionError`.
         """
         session = async_get_clientsession(hass)
         base_url = str(data.get(CONF_BASE_URL, "")).rstrip("/")
         api_key = data.get(CONF_API_KEY) or None
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
-        try:
-            async with session.get(f"{base_url}/info", headers=headers, timeout=timeout) as resp:
-                if resp.status in (401, 403):
-                    raise BackendAuthError("Dify rejected the API key")
-                if resp.status >= 400:
-                    raise BackendConnectionError(f"Dify /info returned HTTP {resp.status}")
-                payload: object = await resp.json()
-        except BackendConnectionError:
-            raise
-        except (TimeoutError, aiohttp.ClientError) as err:
-            raise BackendConnectionError(f"Cannot reach Dify at {base_url}") from err
-        mode = cast("dict[str, object]", payload).get("mode") if isinstance(payload, dict) else None
+        headers = bearer_headers(api_key)
+        payload = await probe_json(session, f"{base_url}/info", label="Dify", headers=headers)
+        mode = payload.get("mode")
         if isinstance(mode, str) and mode not in _CHAT_APP_MODES:
             raise BackendConnectionError(f"Dify app mode {mode!r} is not a chat app")
 
@@ -315,18 +292,14 @@ class DifyAdapter(BackendAdapter):
         role_sent = False
         captured = False
         stripper = _ThinkStripper()
-        async with self.session.post(
-            f"{self._base_url}/chat-messages",
-            data=json.dumps(body),
-            headers=self._headers(),
-            timeout=timeout,
-        ) as resp:
+
+        async def _on_error_status(resp: aiohttp.ClientResponse) -> None:
             if resp.status == 404 and conversation_id is not None:
                 # A 404 on an echoed conversation_id means the id is stale (GC'd/deleted) ->
                 # recreate. Dify has shipped more than one wire shape for this: the documented
                 # ``code: conversation_not_exists`` and the live ``code: not_found`` +
                 # "Conversation Not Exists" message. Match either; anything else is a real 404.
-                detail = _parse_data(await resp.text()) or {}
+                detail = loads_json_object(await resp.text(), warn_label="Dify") or {}
                 code = detail.get("code")
                 message = str(detail.get("message") or "")
                 if code in ("conversation_not_exists", "not_found") or "conversation not exist" in message.lower():
@@ -334,19 +307,19 @@ class DifyAdapter(BackendAdapter):
                 raise BackendConnectionError(f"Dify chat-messages 404: {code or 'unknown'}")
             if resp.status in (401, 403):
                 raise BackendAuthError(f"Dify rejected the API key (HTTP {resp.status})")
-            if resp.status >= 400:
-                detail = _parse_data(await resp.text()) or {}
-                _LOGGER.error(
-                    "Dify chat-messages HTTP %s: code=%s message=%s",
-                    resp.status,
-                    detail.get("code"),
-                    detail.get("message"),
-                )
-                raise BackendConnectionError(f"Dify chat-messages returned HTTP {resp.status}")
 
+        async with self._post_checked(
+            f"{self._base_url}/chat-messages",
+            label="Dify chat-messages",
+            data=json.dumps(body),
+            headers=self._headers(),
+            timeout=timeout,
+            error_cls=BackendConnectionError,
+            on_error_status=_on_error_status,
+        ) as resp:
             agent_streamed = False
             async for sse in async_iter_sse(resp.content.iter_any()):
-                payload = _parse_data(sse.data) or {}
+                payload = loads_json_object(sse.data, warn_label="Dify") or {}
                 # Dify puts the event name in the JSON (no ``event:`` line, so the framer's
                 # default "message" is meaningless); the SSE field is only a proxy fallback.
                 json_event = payload.get("event")

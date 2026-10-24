@@ -171,6 +171,17 @@ async def test_error_after_deltas_propagates(hass: HomeAssistant, mock_chat_log:
     assert seen == [{"role": "assistant"}, {"content": "Hi"}]
 
 
+async def test_oversize_ndjson_line_skipped_stream_continues(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    """An over-cap NDJSON line is dropped (bounded memory); later lines still stream."""
+    huge = b'{"message":{"content":"' + b"x" * 70000 + b'"}}\n'
+    blob = huge + b'{"message":{"content":"ok"}}\n{"message":{"content":""},"done":true}\n'
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse(chunk_bytes(blob, 4096))))
+    deltas = await _run(adapter, mock_chat_log)
+    assert deltas == [{"role": "assistant"}, {"content": "ok"}]
+
+
 async def test_non_200_status_raises(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
     response = FakeStreamResponse([], status=500)
     adapter = _adapter(hass, fake_aiohttp_session(response=response))
@@ -390,6 +401,18 @@ async def test_tools_field_sent_when_llm_api_set(hass: HomeAssistant, mock_chat_
     assert tools[0]["function"]["name"] == "get_time"
     assert tools[0]["function"]["description"] == "Return the current time"
     assert isinstance(tools[0]["function"]["parameters"], dict)
+
+
+class _UndescribedTool(_FakeTool):
+    description = None
+
+
+async def test_tool_without_description_omits_field(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    """Ollama's wire shape drops ``description`` when the tool has none (core ollama)."""
+    mock_chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([_UndescribedTool()]))
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), mock_chat_log)
+    assert "description" not in session.post.call_args.kwargs["json"]["tools"][0]["function"]
 
 
 async def _posted_tool_parameters(hass: HomeAssistant, chat_log: conversation.ChatLog, parameters: Any) -> Any:

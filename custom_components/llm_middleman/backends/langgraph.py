@@ -48,7 +48,6 @@ from custom_components.llm_middleman.const import (
     CONF_STATELESS_RUNS,
     DEFAULT_ASSISTANT_ID,
     DEFAULT_INPUT_MESSAGES_KEY,
-    DEFAULT_TIMEOUT,
     DOMAIN,
     STORAGE_VERSION,
 )
@@ -56,10 +55,10 @@ from custom_components.llm_middleman.const import (
 from ._sse import BackendStreamError, async_iter_sse
 from .base import (
     BackendAdapter,
-    BackendAuthError,
-    BackendConnectionError,
+    BackendStatusError,
     DeltaStream,
     build_client_timeout,
+    probe_json,
     rendered_system_prompt,
 )
 
@@ -88,6 +87,12 @@ _EVENT_MESSAGES = "messages"
 
 class _ThreadNotFound(Exception):
     """Internal signal: the mapped ``thread_id`` was rejected (404) — recreate it."""
+
+
+async def _raise_thread_not_found(response: aiohttp.ClientResponse) -> None:
+    """Error-status hook for a threaded run: a 404 means the mapped thread was GC'd."""
+    if response.status == 404:
+        raise _ThreadNotFound
 
 
 def _headers(api_key: str | None) -> dict[str, str]:
@@ -184,25 +189,20 @@ class LangGraphAdapter(BackendAdapter):
         session = async_get_clientsession(hass)
         base_url = str(data.get(_CONF_BASE_URL, "")).rstrip("/")
         headers = _headers(data.get(_CONF_API_KEY) or None)
-        timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
         try:
-            async with session.get(f"{base_url}/ok", headers=headers, timeout=timeout) as resp:
-                if resp.status in (401, 403):
-                    raise BackendAuthError("LangGraph rejected the API key")
-                if resp.status < 400:
-                    return
-            # /ok unavailable on this deployment — try the assistants search endpoint.
-            async with session.post(
-                f"{base_url}/assistants/search", data=json.dumps({}), headers=headers, timeout=timeout
-            ) as resp:
-                if resp.status in (401, 403):
-                    raise BackendAuthError("LangGraph rejected the API key")
-                if resp.status >= 400:
-                    raise BackendConnectionError(f"LangGraph probe failed: HTTP {resp.status}")
-        except BackendConnectionError:
-            raise
-        except (TimeoutError, aiohttp.ClientError) as err:
-            raise BackendConnectionError(f"Cannot reach LangGraph at {base_url}") from err
+            await probe_json(session, f"{base_url}/ok", label="LangGraph", headers=headers, parse=False)
+        except BackendStatusError:
+            # /ok unavailable on this deployment — try the assistants search endpoint
+            # (its body is a JSON list, so only the status is checked).
+            await probe_json(
+                session,
+                f"{base_url}/assistants/search",
+                label="LangGraph",
+                headers=headers,
+                method="POST",
+                data=json.dumps({}),
+                parse=False,
+            )
 
     async def stream_turn(
         self,
@@ -279,11 +279,13 @@ class LangGraphAdapter(BackendAdapter):
 
     async def _create_thread(self, timeout: aiohttp.ClientTimeout) -> str:
         """Create a LangGraph thread and return its id."""
-        async with self.session.post(
-            f"{self._base_url}/threads", data=json.dumps({}), headers=_headers(self._api_key), timeout=timeout
+        async with self._post_checked(
+            f"{self._base_url}/threads",
+            label="LangGraph thread creation",
+            data=json.dumps({}),
+            headers=_headers(self._api_key),
+            timeout=timeout,
         ) as resp:
-            if resp.status >= 400:
-                raise BackendStreamError(f"LangGraph thread creation failed: HTTP {resp.status}")
             payload: object = await resp.json()
         thread_id = cast("dict[str, object]", payload).get("thread_id") if isinstance(payload, dict) else None
         if not isinstance(thread_id, str):
@@ -344,11 +346,14 @@ class LangGraphAdapter(BackendAdapter):
         )
         node_filter = str(options.get(CONF_RESPONSE_NODE_FILTER, "") or "")
 
-        async with self.session.post(url, data=body, headers=_headers(self._api_key), timeout=timeout) as resp:
-            if resp.status == 404 and thread_id is not None:
-                raise _ThreadNotFound
-            if resp.status >= 400:
-                raise BackendStreamError(f"LangGraph run failed: HTTP {resp.status}")
+        async with self._post_checked(
+            url,
+            label="LangGraph run",
+            data=body,
+            headers=_headers(self._api_key),
+            timeout=timeout,
+            on_error_status=_raise_thread_not_found if thread_id is not None else None,
+        ) as resp:
             role_sent = False
             async for event in async_iter_sse(resp.content.iter_any()):
                 # Success terminates by SSE EOF (loop exhaustion), not a terminal event.

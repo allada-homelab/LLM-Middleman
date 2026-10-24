@@ -159,6 +159,14 @@ async def test_html_body_raises(hass: HomeAssistant) -> None:
         await _collect(_adapter(hass, session), _ctx())
 
 
+async def test_oversize_ndjson_line_skipped(hass: HomeAssistant) -> None:
+    huge = b'{"type":"item","content":"' + b"x" * 70000 + b'"}\n'
+    blob = b'{"type":"begin"}\n' + huge + b'{"type":"item","content":"ok"}\n{"type":"end"}\n'
+    response = _response(chunk_bytes(blob, 4096), "application/json-lines")
+    deltas = await _collect(_adapter(hass, fake_aiohttp_session(response=response)), _ctx())
+    assert deltas == [{"role": "assistant"}, {"content": "ok"}]
+
+
 # --- blocking / wrong-mode ---------------------------------------------------
 
 
@@ -169,6 +177,23 @@ async def test_wrong_mode_mismatch_streaming_toggle_but_blocking_body(hass: Home
     session = fake_aiohttp_session(response=response)
     deltas = await _collect(_adapter(hass, session), _ctx(**{CONF_STREAMING: True}))
     assert deltas == [{"role": "assistant"}, {"content": "done"}]
+
+
+async def test_blocking_body_over_line_cap_still_parsed(hass: HomeAssistant) -> None:
+    """A single-line blocking body longer than the sniff/line cap is still read whole."""
+    reply = "y" * 100_000
+    blob = json.dumps({"output": reply}).encode()
+    response = _response(chunk_bytes(blob, 4096), "application/json")
+    deltas = await _collect(_adapter(hass, fake_aiohttp_session(response=response)), _ctx())
+    assert deltas == [{"role": "assistant"}, {"content": reply}]
+
+
+async def test_blocking_body_over_cap_raises(hass: HomeAssistant) -> None:
+    """A blocking body past the 1 MiB cap fails the turn instead of buffering unbounded."""
+    blob = json.dumps({"output": "z" * (1 << 20)}).encode()
+    response = _response(chunk_bytes(blob, 65536), "application/json")
+    with pytest.raises(BackendStreamError, match="exceeded"):
+        await _collect(_adapter(hass, fake_aiohttp_session(response=response)), _ctx())
 
 
 async def test_blocking_output_fallback_to_text(hass: HomeAssistant) -> None:

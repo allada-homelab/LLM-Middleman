@@ -14,10 +14,13 @@ from ``base``.
 
 from __future__ import annotations
 
+import json
+import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, cast
 
 import aiohttp
 from homeassistant.components import conversation
@@ -32,14 +35,20 @@ from custom_components.llm_middleman.const import (
 
 from ._sse import BackendStreamError
 
+_LOGGER = logging.getLogger(__name__)
+
 __all__ = [
     "BackendAdapter",
     "BackendAuthError",
     "BackendConnectionError",
+    "BackendStatusError",
     "BackendStreamError",
     "DeltaStream",
     "TurnContext",
+    "bearer_headers",
     "build_client_timeout",
+    "loads_json_object",
+    "probe_json",
     "rendered_system_prompt",
 ]
 
@@ -75,9 +84,35 @@ def rendered_system_prompt(chat_log: conversation.ChatLog) -> str | None:
     return None
 
 
+def bearer_headers(token: str | None) -> dict[str, str]:
+    """Return an ``Authorization: Bearer`` header when ``token`` is set, else empty."""
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def loads_json_object(raw: str | bytes, *, warn_label: str | None = None) -> dict[str, Any] | None:
+    """Parse ``raw`` as a JSON object; ``None`` for malformed JSON or a non-object value.
+
+    With ``warn_label`` set, a parse failure is logged at WARNING (first 200 chars of the
+    payload) so a preset can surface a bad frame without aborting the stream.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        if warn_label is not None:
+            _LOGGER.warning("Failed to parse %s JSON payload: %s", warn_label, raw[:200])
+        return None
+    if isinstance(parsed, dict):
+        return cast("dict[str, Any]", parsed)
+    return None
+
+
 # Canonical HA delta-dict stream every adapter yields. Single-arg AsyncGenerator:
 # the entity only iterates (never sends values in), so the send type defaults to None.
 type DeltaStream = AsyncGenerator[conversation.AssistantContentDeltaDict]
+
+# Pre-check hook for an error status: may raise a preset-specific error, or return to
+# fall through to the generic log-and-raise (see ``BackendAdapter._post_checked``).
+type ErrorStatusHook = Callable[[aiohttp.ClientResponse], Awaitable[None]]
 
 
 class BackendConnectionError(HomeAssistantError):
@@ -86,6 +121,53 @@ class BackendConnectionError(HomeAssistantError):
 
 class BackendAuthError(BackendConnectionError):
     """A backend rejected credentials (config flow maps to ``invalid_auth``)."""
+
+
+class BackendStatusError(BackendConnectionError):
+    """A probe got a non-auth HTTP error status (distinct from a transport failure)."""
+
+
+async def probe_json(
+    session: aiohttp.ClientSession,
+    url: str,
+    *,
+    label: str,
+    headers: Mapping[str, str],
+    method: Literal["GET", "POST"] = "GET",
+    data: str | None = None,
+    parse: bool = True,
+) -> dict[str, Any]:
+    """Run a config-flow probe request and return its JSON-object body.
+
+    401/403 -> :class:`BackendAuthError`; any other status >= 400 ->
+    :class:`BackendStatusError`; a transport failure/timeout, an unparsable body, or a
+    non-object JSON body -> :class:`BackendConnectionError`. With ``parse=False`` only the
+    status is checked and ``{}`` is returned (for endpoints whose body is not an object).
+    ``session`` is passed in so each adapter keeps its own ``async_get_clientsession``.
+    """
+    timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
+    try:
+        request = (
+            session.post(url, data=data, headers=headers, timeout=timeout)
+            if method == "POST"
+            else session.get(url, headers=headers, timeout=timeout)
+        )
+        async with request as response:
+            if response.status in (401, 403):
+                raise BackendAuthError(f"{label} rejected credentials (HTTP {response.status})")
+            if response.status >= 400:
+                raise BackendStatusError(f"{label} probe returned HTTP {response.status}")
+            if not parse:
+                return {}
+            try:
+                payload: object = await response.json()
+            except ValueError as err:
+                raise BackendConnectionError(f"{label} probe returned invalid JSON") from err
+    except (TimeoutError, aiohttp.ClientError) as err:
+        raise BackendConnectionError(f"Cannot reach {label} at {url}: {err}") from err
+    if not isinstance(payload, dict):
+        raise BackendConnectionError(f"{label} probe returned a non-object JSON body")
+    return cast("dict[str, Any]", payload)
 
 
 @dataclass
@@ -145,6 +227,36 @@ class BackendAdapter(ABC):
         self.hass = hass
         self.session = session
         self.connection_data = connection_data
+
+    @asynccontextmanager
+    async def _post_checked(
+        self,
+        url: str,
+        *,
+        label: str,
+        headers: Mapping[str, str],
+        timeout: aiohttp.ClientTimeout,
+        json: Any = None,
+        data: str | None = None,
+        error_cls: type[Exception] = BackendStreamError,
+        on_error_status: ErrorStatusHook | None = None,
+    ) -> AsyncGenerator[aiohttp.ClientResponse]:
+        """POST a turn request and yield the response once its status is a success.
+
+        On status >= 400, ``on_error_status`` (if given) runs first so a preset can map a
+        specific status to its own signal (a stale thread/conversation 404, an auth
+        error); if it returns, the body (first 500 chars) is logged at ERROR as
+        ``"<label> returned HTTP <status>: <body>"`` and ``error_cls`` is raised, so an
+        error status always reaches the entity guard named, never as a silent empty stream.
+        """
+        async with self.session.post(url, json=json, data=data, headers=headers, timeout=timeout) as response:
+            if response.status >= 400:
+                if on_error_status is not None:
+                    await on_error_status(response)
+                detail = (await response.text())[:500]
+                _LOGGER.error("%s returned HTTP %s: %s", label, response.status, detail)
+                raise error_cls(f"{label} returned HTTP {response.status}")
+            yield response
 
     @classmethod
     @abstractmethod

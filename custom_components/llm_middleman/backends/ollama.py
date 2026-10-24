@@ -2,8 +2,8 @@
 
 Ollama's ``/api/chat`` streams **newline-delimited JSON** (``application/x-ndjson``),
 one JSON object per line, terminated by an object with ``done: true`` -- not SSE. So
-this adapter frames the stream itself (``_iter_ndjson`` below) instead of using
-``_sse.py``. It is a **stateless-replay** adapter: every turn it rebuilds the provider
+this adapter frames it with the shared, line-capped :func:`._sse.async_iter_lines`
+(``_iter_ndjson`` below adds the JSON decode). It is a **stateless-replay** adapter: every turn it rebuilds the provider
 ``messages[]`` from ``chat_log.content`` and trims old rounds via the shared
 ``_history.trim_history`` helper (core-ollama's ``_trim_history`` rule).
 
@@ -22,12 +22,10 @@ stays stateless.
 
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, Mapping
 from typing import Any, ClassVar, cast
 
-import aiohttp
 from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
@@ -42,44 +40,22 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_NUM_CTX,
     CONF_THINK,
-    DEFAULT_TIMEOUT,
     KEEP_ALIVE_FOREVER,
 )
 
-from ._compat import schema_to_openapi, tool_result_data
 from ._history import trim_history
+from ._sse import async_iter_lines
+from ._tools import format_function_tool, tool_result_json
 from .base import (
     BackendAdapter,
-    BackendAuthError,
     BackendConnectionError,
     BackendStreamError,
     DeltaStream,
     TurnContext,
+    bearer_headers,
     build_client_timeout,
+    probe_json,
 )
-
-
-def _auth_headers(data: Mapping[str, Any]) -> dict[str, str]:
-    """Bearer header when an API key is configured; usually absent on a LAN Ollama."""
-    api_key = data.get(CONF_API_KEY)
-    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
-
-
-def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None) -> dict[str, Any]:
-    """Format one HA tool as an Ollama ``/api/chat`` function-tool spec.
-
-    Ollama's wire shape nests ``name``/``parameters``/``description`` under ``function``
-    and, unlike OpenAI's, omits ``description`` when the tool has none (core
-    ``ollama/entity.py:_format_tool``). ``schema_to_openapi`` renders the
-    probatio/voluptuous schema to JSON Schema; ``custom_serializer`` handles HA selector types.
-    """
-    function: dict[str, Any] = {
-        "name": tool.name,
-        "parameters": schema_to_openapi(tool.parameters, custom_serializer),
-    }
-    if tool.description:
-        function["description"] = tool.description
-    return {"type": "function", "function": function}
 
 
 def _fix_invalid_arguments(value: Any) -> Any:
@@ -130,38 +106,24 @@ def _convert_content(content: conversation.Content) -> dict[str, Any]:
             ]
         return message
     # Only ToolResultContent remains (Content is a closed union).
-    return {"role": "tool", "content": json.dumps(tool_result_data(content), default=str)}
+    return {"role": "tool", "content": tool_result_json(content)}
 
 
 async def _iter_ndjson(stream: AsyncIterable[bytes]) -> AsyncGenerator[dict[str, Any]]:
-    """Frame a raw NDJSON byte stream into JSON objects, one per line.
+    """Decode a raw NDJSON byte stream into JSON objects, one per line.
 
-    Maintains a byte buffer, splits on ``\\n``, and ``json.loads`` each complete
-    line; the trailing partial fragment is carried to the next chunk, and a final
-    object with no trailing newline is flushed at EOF. Boundaries need not align
-    with lines. Blank lines are skipped. A line that is not valid JSON raises
-    ``BackendStreamError`` so the entity guard can map it to the fallback (never let
-    a raw ``JSONDecodeError`` escape).
+    Lines come from :func:`async_iter_lines` (chunk-boundary agnostic, EOF tail
+    flushed, oversize lines skipped). Blank lines are skipped. A line that is not
+    valid JSON raises ``BackendStreamError`` so the entity guard can map it to the
+    fallback (never let a raw ``JSONDecodeError`` escape).
     """
-    buffer = bytearray()
-
-    def _load(raw: bytes) -> dict[str, Any]:
+    async for line in async_iter_lines(stream):
+        if not line.strip():
+            continue
         try:
-            return cast("dict[str, Any]", json.loads(raw))
+            yield cast("dict[str, Any]", json.loads(line))
         except json.JSONDecodeError as err:
-            raise BackendStreamError(f"Malformed NDJSON line: {raw!r}") from err
-
-    async for chunk in stream:
-        buffer.extend(chunk)
-        while (newline := buffer.find(b"\n")) != -1:
-            line = bytes(buffer[:newline])
-            del buffer[: newline + 1]
-            if line.strip():
-                yield _load(line)
-
-    tail = bytes(buffer).strip()
-    if tail:
-        yield _load(tail)
+            raise BackendStreamError(f"Malformed NDJSON line: {line!r}") from err
 
 
 class OllamaAdapter(BackendAdapter):
@@ -178,22 +140,14 @@ class OllamaAdapter(BackendAdapter):
         """Probe ``GET /api/tags`` and return the installed-model objects.
 
         Raises :class:`BackendAuthError` on 401/403 and :class:`BackendConnectionError`
-        on any other failure (bad status, timeout, transport error).
+        on any other failure (bad status, timeout, transport error, non-object body).
         """
-        session = async_get_clientsession(hass)
-        base_url = data[CONF_BASE_URL].rstrip("/")
-        try:
-            async with (
-                asyncio.timeout(DEFAULT_TIMEOUT),
-                session.get(f"{base_url}/api/tags", headers=_auth_headers(data)) as response,
-            ):
-                if response.status in (401, 403):
-                    raise BackendAuthError(f"Ollama rejected credentials (HTTP {response.status})")
-                if response.status != 200:
-                    raise BackendConnectionError(f"Ollama /api/tags returned HTTP {response.status}")
-                payload = await response.json()
-        except (TimeoutError, aiohttp.ClientError) as err:
-            raise BackendConnectionError(f"Could not reach Ollama at {base_url}: {err}") from err
+        payload = await probe_json(
+            async_get_clientsession(hass),
+            f"{data[CONF_BASE_URL].rstrip('/')}/api/tags",
+            label="Ollama",
+            headers=bearer_headers(data.get(CONF_API_KEY)),
+        )
         return cast("list[dict[str, Any]]", payload.get("models", []))
 
     @classmethod
@@ -229,7 +183,10 @@ class OllamaAdapter(BackendAdapter):
             body["think"] = options[CONF_THINK]
         # HA tool schemas, only when an LLM API is configured for this agent.
         if chat_log.llm_api is not None and chat_log.llm_api.tools:
-            body["tools"] = [_format_tool(tool, chat_log.llm_api.custom_serializer) for tool in chat_log.llm_api.tools]
+            body["tools"] = [
+                format_function_tool(tool, chat_log.llm_api.custom_serializer, omit_empty_description=True)
+                for tool in chat_log.llm_api.tools
+            ]
         return body
 
     async def stream_turn(
@@ -250,15 +207,14 @@ class OllamaAdapter(BackendAdapter):
         base_url = self.connection_data[CONF_BASE_URL].rstrip("/")
         body = self._build_request(chat_log, ctx.options)
 
-        async with self.session.post(
+        async with self._post_checked(
             f"{base_url}/api/chat",
+            label="Ollama /api/chat",
             json=body,
-            headers=_auth_headers(self.connection_data),
+            headers=bearer_headers(self.connection_data.get(CONF_API_KEY)),
             timeout=build_client_timeout(ctx.options),
+            error_cls=BackendConnectionError,
         ) as response:
-            if response.status != 200:
-                raise BackendConnectionError(f"Ollama /api/chat returned HTTP {response.status}")
-
             role_emitted = False
             async for obj in _iter_ndjson(response.content.iter_any()):
                 message: dict[str, Any] = obj.get("message") or {}

@@ -23,10 +23,9 @@ documented follow-up-listening field v0 dropped — by setting
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any
 
 import aiohttp
 from homeassistant.components import conversation
@@ -48,7 +47,9 @@ from .base import (
     BackendConnectionError,
     DeltaStream,
     TurnContext,
+    bearer_headers,
     build_client_timeout,
+    loads_json_object,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,13 +75,10 @@ class ConverseAdapter(BackendAdapter):
         map to :class:`BackendConnectionError` (the config flow's ``cannot_connect``).
         """
         session = async_get_clientsession(hass)
-        headers: dict[str, str] = {}
-        if token := data.get(CONF_TOKEN):
-            headers["Authorization"] = f"Bearer {token}"
         try:
             async with session.get(
                 data[CONF_BASE_URL],
-                headers=headers,
+                headers=bearer_headers(data.get(CONF_TOKEN)),
                 timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
             ):
                 return
@@ -113,27 +111,21 @@ class ConverseAdapter(BackendAdapter):
         if user_input.device_id:
             body["device_id"] = user_input.device_id
 
-        headers = {"Accept": "text/event-stream"}
-        if token := self.connection_data.get(CONF_TOKEN):
-            headers["Authorization"] = f"Bearer {token}"
+        headers = {"Accept": "text/event-stream", **bearer_headers(self.connection_data.get(CONF_TOKEN))}
 
         url = self.connection_data[CONF_BASE_URL].rstrip("/") + CONVERSE_PATH
 
         started = False
-        async with self.session.post(
+        async with self._post_checked(
             url,
+            label="Converse backend",
             json=body,
             headers=headers,
             timeout=build_client_timeout(ctx.options),
         ) as response:
-            if response.status != 200:
-                detail = (await response.text())[:500]
-                _LOGGER.error("Converse backend returned HTTP %s: %s", response.status, detail)
-                raise BackendStreamError(f"Converse backend returned HTTP {response.status}")
-
             async for sse in async_iter_sse(response.content.iter_any()):
                 if sse.event == "text_delta":
-                    payload = _parse_data(sse.data)
+                    payload = loads_json_object(sse.data, warn_label="converse SSE")
                     if payload is None:
                         continue
                     if delta := payload.get("delta"):
@@ -142,7 +134,7 @@ class ConverseAdapter(BackendAdapter):
                             started = True
                         yield {"content": delta}
                 elif sse.event == "error":
-                    payload = _parse_data(sse.data) or {}
+                    payload = loads_json_object(sse.data, warn_label="converse SSE") or {}
                     _LOGGER.error(
                         "Converse backend error event: %s — %s",
                         payload.get("code"),
@@ -150,7 +142,7 @@ class ConverseAdapter(BackendAdapter):
                     )
                     raise BackendStreamError(f"Converse backend error event: {payload.get('code')}")
                 elif sse.event == "done":
-                    payload = _parse_data(sse.data) or {}
+                    payload = loads_json_object(sse.data, warn_label="converse SSE") or {}
                     if payload.get("continue_conversation"):
                         ctx.continue_conversation = True
                     # Deltas are authoritative; done.text is only used to voice a
@@ -159,15 +151,3 @@ class ConverseAdapter(BackendAdapter):
                         yield {"role": "assistant"}
                         yield {"content": payload.get("text") or ERROR_MESSAGE}
                     return
-
-
-def _parse_data(data: str) -> dict[str, Any] | None:
-    """Parse an SSE ``data:`` payload as a JSON object, tolerating malformed lines."""
-    try:
-        parsed = json.loads(data)
-    except json.JSONDecodeError:
-        _LOGGER.warning("Failed to parse converse SSE data payload: %s", data)
-        return None
-    if isinstance(parsed, dict):
-        return cast("dict[str, Any]", parsed)
-    return None

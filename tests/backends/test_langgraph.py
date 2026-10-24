@@ -45,11 +45,14 @@ _CONN: dict[str, Any] = {"base_url": _BASE_URL, "api_key": None, "assistant_id":
 
 
 class _StreamResp:
-    """Streaming response CM: ``status`` + ``content.iter_any()`` over ``chunks``."""
+    """Streaming response CM: ``status`` + ``content.iter_any()`` over ``chunks`` + ``text()``."""
 
     def __init__(self, chunks: list[bytes], *, status: int = 200) -> None:
         self.status = status
         self.content = _FakeStreamContent(chunks)
+
+    async def text(self) -> str:
+        return ""
 
     async def __aenter__(self) -> _StreamResp:
         return self
