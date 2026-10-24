@@ -160,7 +160,7 @@ async def test_runtime_subentry_add_creates_entity_without_reload(hass: HomeAssi
         # Add an agent at runtime exactly as the subentry-creation flow does. The
         # framework fires the entry's update listeners, which auto-reload the entry.
         subentry = ConfigSubentry(
-            data=MappingProxyType({CONF_NAME: "Runtime Agent", CONF_SYSTEM_PROMPT: ""}),
+            data=MappingProxyType({CONF_NAME: "Runtime Agent", CONF_PROMPT: ""}),
             subentry_type=SUBENTRY_TYPE_CONVERSATION,
             title="Runtime Agent",
             unique_id=None,

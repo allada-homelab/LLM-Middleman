@@ -47,9 +47,9 @@ TO_REDACT = {
     CONF_URL,
     CONF_BASE_URL,
     CONF_WEBHOOK_URL,
-    # Prompts may carry personal context. Both keys are live: config-flow/entity
-    # read ``CONF_PROMPT`` ("prompt"); langgraph/n8n adapters read
-    # ``CONF_SYSTEM_PROMPT`` ("system_prompt").
+    # Prompts may carry personal context. Agents store ``CONF_PROMPT`` ("prompt");
+    # ``CONF_SYSTEM_PROMPT`` ("system_prompt") is the v0 flat-entry key a
+    # not-yet-migrated entry may still carry.
     CONF_PROMPT,
     CONF_SYSTEM_PROMPT,
 }

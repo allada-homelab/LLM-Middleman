@@ -61,6 +61,19 @@ Per-agent options that appear only when the chosen backend supports them:
   live stream is not killed). On a timeout or backend error the agent speaks a graceful
   fallback rather than hanging the pipeline.
 
+### How the agent prompt reaches each backend
+
+The agent's system prompt is a Home Assistant template. It is rendered each turn (with
+HA's date/time and any `extra_system_prompt`) and then forwarded:
+
+- **OpenAI-compatible / Ollama** — as the leading `system` message of the replayed history.
+- **n8n** — as a `systemPrompt` field in the webhook body; wire it into your AI Agent node.
+- **LangGraph** — on persistent threads, as the run's `context.system_prompt` (read it in
+  the graph via `runtime.context.system_prompt`, as the official `react-agent` template's
+  `Context` does); it is never appended to thread state. With *stateless runs* it is the
+  leading `system` message of the run input instead.
+- **Custom `/v1/converse` / Dify** — not forwarded; the backend owns its prompt.
+
 ## Follow-up listening
 
 Home Assistant keeps the microphone open for a wake-word-free follow-up when the assistant
