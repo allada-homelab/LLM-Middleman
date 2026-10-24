@@ -7,6 +7,7 @@ succeeds or raises the typed connection errors the flow maps.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import Any
 from unittest.mock import patch
@@ -185,6 +186,17 @@ async def test_probe_auth_failure_shows_invalid_auth(hass: HomeAssistant) -> Non
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_auth"}
+
+
+async def test_unexpected_probe_error_shows_unknown(hass: HomeAssistant) -> None:
+    """An unexpected probe exception re-shows the form with ``unknown`` instead of crashing the flow."""
+    registry = {BACKEND_OPENAI_COMPAT: _fake_adapter(RuntimeError("bug"))}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_OPENAI_COMPAT)
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://backend.local:8000"})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "unknown"}
 
 
 async def _create_openai_entry(hass: HomeAssistant, user_input: dict[str, Any]) -> dict[str, Any]:
@@ -478,6 +490,25 @@ async def test_model_dropdown_openai(hass: HomeAssistant) -> None:
     registry = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, models_raise=True)}
     with patch(_REGISTRY_PATH, registry):
         form = await _init_subentry(hass, entry)
+    assert isinstance(_selector_for(form["data_schema"], CONF_MODEL), TextSelector)
+
+
+async def test_hanging_model_probe_falls_back_to_free_text(hass: HomeAssistant) -> None:
+    """A backend that never answers the catalog probe can't freeze the form: it times out to text."""
+    entry = _parent_entry(hass, BACKEND_OPENAI_COMPAT)
+
+    class _HangingCatalog(_sub_adapter(backend_type=BACKEND_OPENAI_COMPAT)):  # type: ignore[misc]
+        @classmethod
+        async def async_list_models(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> list[str] | None:
+            await asyncio.Event().wait()
+            return None
+
+    with (
+        patch(_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: _HangingCatalog}),
+        patch("custom_components.llm_middleman.config_flow.PROBE_TIMEOUT", 0.01),
+    ):
+        form = await _init_subentry(hass, entry)
+
     assert isinstance(_selector_for(form["data_schema"], CONF_MODEL), TextSelector)
 
 

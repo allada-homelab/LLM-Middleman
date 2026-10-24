@@ -98,7 +98,8 @@
         },
         "error": {
             "cannot_connect": "Failed to connect. Check the URL and that the backend is reachable.",
-            "invalid_auth": "Authentication failed. Check your credentials."
+            "invalid_auth": "Authentication failed. Check your credentials.",
+            "unknown": "[%key:common::config_flow::error::unknown%]"
         },
         "abort": {
             "already_configured": "[%key:common::config_flow::abort::already_configured_service%]",

@@ -10,6 +10,7 @@ nothing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
@@ -77,6 +78,7 @@ from .const import (
     N8N_AUTH_NONE,
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
+    PROBE_TIMEOUT,
     SUBENTRY_TYPE_CONVERSATION,
 )
 
@@ -319,6 +321,9 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_auth"
             except BackendConnectionError:
                 errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected error validating the %s connection", self._backend_type)
+                errors["base"] = "unknown"
             else:
                 entry_data = {CONF_BACKEND_TYPE: self._backend_type, **data}
                 if self.source != SOURCE_RECONFIGURE:
@@ -482,8 +487,10 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         field). Probe failure → a plain text field, so the form still renders.
         """
         try:
-            models = await adapter_cls.async_list_models(self.hass, entry.data)
-        except Exception:  # any probe failure must still render the form (free-text)
+            # Bounded well under the probe's own 60 s so a dead backend can't freeze the form.
+            async with asyncio.timeout(PROBE_TIMEOUT):
+                models = await adapter_cls.async_list_models(self.hass, entry.data)
+        except Exception:  # any probe failure (timeout included) must still render the form (free-text)
             _LOGGER.debug("Model probe failed for %s; falling back to free text", adapter_cls.backend_type)
             return TextSelector()  # pyright: ignore[reportUnknownVariableType]
         if models is None:
