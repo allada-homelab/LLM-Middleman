@@ -18,10 +18,6 @@ sync:
 test:
     uv run pytest
 
-# Run integration tests (requires a Docker daemon).
-test-int:
-    uv run pytest tests/integration -m integration
-
 # Run tests with coverage and the configured fail-under gate.
 coverage:
     uv run coverage run -m pytest
@@ -54,27 +50,3 @@ typecheck:
 # Run all pre-commit hooks.
 pre-commit:
     uv run pre-commit run --all-files
-
-# Build sdist + wheel.
-build:
-    uv build
-
-# Build the docs site the way CI does (strict: warnings are errors).
-docs:
-    uv run --group docs mkdocs build --strict
-
-# Serve the docs with live reload.
-docs-serve:
-    uv run --group docs mkdocs serve
-
-# Validate the compose configuration.
-compose-config:
-    docker compose config
-
-# Build and start the service stack (detached).
-up:
-    docker compose up -d --build
-
-# Stop the service stack and remove volumes.
-down:
-    docker compose down -v

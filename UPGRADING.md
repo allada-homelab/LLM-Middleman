@@ -20,8 +20,7 @@ copier update --trust
 ```
 
 - `--trust` is required because the template runs post-generation tasks (`uv sync`,
-  `ruff format`, and on first copy the `.env` and
-  `secrets/app_secret.txt` bootstrap). Without it copier aborts rather than
+  `ruff format`, and on first copy the `.env` bootstrap). Without it copier aborts rather than
   skipping them.
 - If `pyproject.toml` changed, re-lock before running the gate: `uv sync --all-groups
   --all-extras` (the update merges the manifest but `uv.lock` is `_skip_if_exists`, so it

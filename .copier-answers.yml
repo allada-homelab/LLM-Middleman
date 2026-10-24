@@ -7,26 +7,21 @@ author_name: David Allada
 ci_runner_default: homelab-runners
 description: Passthrough middleman service bridging Home Assistant Assist/Voice to
     an external LLM agent
-docker_publish_trigger: both
-host_port: 27375
-include_contract_tests: true
+include_contract_tests: false
 include_devcontainer: true
 include_discussions: true
-include_docker_publish: true
-include_docs_site: true
-include_extras_example: true
-include_hadolint: true
-include_integration_tests: true
-include_mcp_server: false
-include_pages_deploy: false
-include_pr_labeler: true
-include_pr_title_check: true
-include_renovate: true
-include_test_helpers: true
+include_docs_site: false
+include_extras_example: false
+include_integration_tests: false
+include_pr_labeler: false
+include_pr_title_check: false
+include_pypi_publish: false
+include_renovate: false
+include_test_helpers: false
 license: MIT
 pkg_dist_name: llm-middleman
 project_name: LLM Middleman
-project_type: service
+project_type: library
 python_default: '3.14'
 python_min: '3.13'
 repo_name: LLM-Middleman

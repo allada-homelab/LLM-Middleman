@@ -90,24 +90,12 @@ Write tests test-first when fixing a bug (a failing test that reproduces it, the
 the fix). Keep new code fully type-annotated — `basedpyright` runs in strict mode
 and untyped defs will fail the gate.
 
-Integration tests live under `tests/integration/`, are marked
-`@pytest.mark.integration`, and are **deselected from the default run**. They need
-a Docker daemon — run them explicitly:
-
-```bash
-just test-int        # pytest tests/integration -m integration
-```
-
-Optional dependencies are exposed as extras (see `[project.optional-dependencies]`
-in `pyproject.toml`). Install all of them for development with
-`uv sync --all-extras --all-groups`.
-
 ## Pull requests
 
 - Branch off the default branch (`feat/…`, `fix/…`, `chore/…`); never push to it
   directly.
 - PR titles follow [Conventional Commits](https://www.conventionalcommits.org/)
-  (`type(scope): summary`) — a CI check enforces this.
+  (`type(scope): summary`).
 - The full gate (lint, format, typecheck, test) must pass before merge.
 
 ## Release process
