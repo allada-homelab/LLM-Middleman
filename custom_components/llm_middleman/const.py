@@ -120,3 +120,11 @@ N8N_OUTPUT_FIELD_FALLBACK = "text"
 N8N_DEFAULT_SESSION_FIELD = "sessionId"
 # n8n workflows can be slow; lower than the global default so voice UX fails soft sooner.
 N8N_DEFAULT_TIMEOUT = 30
+
+# --- Dify agent-subentry options (LLMM-021) ---
+# Static ``inputs`` mapping (variable -> value) for apps with required user_input_form fields.
+CONF_DIFY_INPUTS = "dify_inputs"
+# Fill the app's declared ``ha_*`` input variables from the HA turn context.
+CONF_DIFY_HA_CONTEXT = "dify_ha_context"
+# Send the HA user id as the Dify end-user (falls back to the shared default).
+CONF_DIFY_USER_FROM_HA = "dify_user_from_ha"
