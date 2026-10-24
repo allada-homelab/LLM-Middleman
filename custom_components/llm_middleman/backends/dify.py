@@ -437,6 +437,11 @@ class DifyAdapter(BackendAdapter):
     supports_ha_tools: ClassVar[bool] = False  # tools live in the Dify app
     supports_memory_scope: ClassVar[bool] = True  # stateful -> key maps to a conversation_id
 
+    @classmethod
+    def store_keys(cls, entry_key: str) -> tuple[str, ...]:
+        """The device/agent-scope conversation map."""
+        return (f"{DOMAIN}.dify.{slugify(entry_key)}",)
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -450,7 +455,7 @@ class DifyAdapter(BackendAdapter):
         # Per-entry discriminator for the Store filename (entry_id preferred; base_url
         # slug is a collision-safe fallback for a construction path without an entry_id).
         discriminator = connection_data.get(_CONF_ENTRY_ID) or self._base_url or "default"
-        store_key = f"{DOMAIN}.dify.{slugify(discriminator)}"
+        (store_key,) = self.store_keys(str(discriminator))
         self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, store_key)
         # conversation-scope map (in-memory) and lazily loaded device/agent-scope map.
         self._mem: dict[str, str] = {}

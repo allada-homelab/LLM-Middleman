@@ -324,6 +324,13 @@ class LangGraphAdapter(BackendAdapter):
     backend_type: ClassVar[str] = BACKEND_LANGGRAPH
     supports_ha_tools: ClassVar[bool] = False  # tools live server-side in the graph
     supports_memory_scope: ClassVar[bool] = True  # stateful -> key maps to a thread_id
+
+    @classmethod
+    def store_keys(cls, entry_key: str) -> tuple[str, ...]:
+        """The legacy thread map and the interrupt->resume pending set."""
+        store_key = f"{DOMAIN}.langgraph.{slugify(entry_key)}"
+        return (store_key, f"{store_key}.pending_resume")
+
     # The rendered prompt (with HA's date/time) rides in the run context, and a resume
     # value must be the user's literal answer to the graph's question.
     wants_time_prefix: ClassVar[bool] = False
@@ -344,12 +351,12 @@ class LangGraphAdapter(BackendAdapter):
         # Per-entry discriminator for thread ids and Store filenames (entry_id is always
         # passed by async_setup_entry; the base_url slug keeps bare test construction working).
         self._entry_key = str(connection_data.get(_CONF_ENTRY_ID) or self._base_url or "default")
-        store_key = f"{DOMAIN}.langgraph.{slugify(self._entry_key)}"
+        store_key, pending_key = self.store_keys(self._entry_key)
         # Read-only: the LLMM-011 session_key -> thread_id map for device/agent scopes.
         self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, store_key)
         self._legacy: dict[str, str] | None = None
         # thread_id -> whether it belongs to a persisted (device/agent) scope.
-        self._pending_store: Store[list[str]] = Store(hass, STORAGE_VERSION, f"{store_key}.pending_resume")
+        self._pending_store: Store[list[str]] = Store(hass, STORAGE_VERSION, pending_key)
         self._pending: dict[str, bool] | None = None
         # Diagnostics only (never read by turn logic, so concurrent turns can't race on it).
         self.last_run_id: str | None = None

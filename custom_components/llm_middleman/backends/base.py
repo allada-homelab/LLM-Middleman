@@ -261,6 +261,15 @@ class BackendAdapter(ABC):
         self.session = session
         self.connection_data = connection_data
 
+    @classmethod
+    def store_keys(cls, entry_key: str) -> tuple[str, ...]:
+        """Return every ``helpers.storage.Store`` key this adapter persists for ``entry_key``.
+
+        Stateful adapters build their Stores from these keys, and ``async_remove_entry``
+        deletes exactly these, so a new Store can't be orphaned on entry removal.
+        """
+        return ()
+
     @asynccontextmanager
     async def _post_checked(
         self,
