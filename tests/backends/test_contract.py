@@ -31,7 +31,10 @@ from homeassistant.core import Context, HomeAssistant
 
 from custom_components.llm_middleman.backends.base import TurnContext
 from custom_components.llm_middleman.const import ERROR_MESSAGE, IDLE_TIMEOUT
-from tests.conftest import MockChatLog
+from tests.conftest import (
+    MockChatLog,
+    collect,
+)
 from tests.live_backend import ScriptedBackend, run_pipeline_turn, setup_agent, speech
 
 PIECES = ["Hello ", "contract ", "world."]
@@ -66,7 +69,7 @@ async def test_adapter_first_delta_carries_role(
     )
     ctx = TurnContext(options=next(iter(entry.subentries.values())).data, memory_key="session-1")
 
-    deltas = [delta async for delta in entry.runtime_data.stream_turn(mock_chat_log, user_input, ctx)]
+    deltas = await collect(entry.runtime_data.stream_turn(mock_chat_log, user_input, ctx))
 
     assert deltas[0] == {"role": "assistant"}
 

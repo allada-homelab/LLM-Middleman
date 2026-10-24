@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -28,7 +27,6 @@ from custom_components.llm_middleman.backends.base import (
     BackendAuthError,
     BackendConnectionError,
     BackendStreamError,
-    DeltaStream,
     TurnContext,
 )
 from custom_components.llm_middleman.backends.langgraph import (
@@ -39,7 +37,18 @@ from custom_components.llm_middleman.backends.langgraph import (
     _parse_updates_frame,
 )
 from custom_components.llm_middleman.const import ERROR_MESSAGE
-from tests.conftest import MockChatLog, _FakeStreamContent, build_entity, chunk_bytes, sse_bytes
+from tests.conftest import (
+    FakeJsonResponse,
+    HangingStreamContent,
+    MockChatLog,
+    _FakeStreamContent,
+    build_entity,
+    chunk_bytes,
+    collect,
+    make_input,
+    sse_bytes,
+    text_of,
+)
 
 _BASE_URL = "http://lg.local:2024"
 _CONN: dict[str, Any] = {"base_url": _BASE_URL, "api_key": None, "assistant_id": "agent", "entry_id": "e1"}
@@ -84,42 +93,10 @@ class _StreamResp:
         return False
 
 
-class _JsonResp:
-    """JSON response CM: ``status`` + ``json()``."""
-
-    def __init__(self, payload: object, *, status: int = 200) -> None:
-        self.status = status
-        self._payload = payload
-
-    async def json(self) -> object:
-        if isinstance(self._payload, Exception):
-            raise self._payload
-        return self._payload
-
-    async def __aenter__(self) -> _JsonResp:
-        return self
-
-    async def __aexit__(self, *args: object) -> bool:
-        return False
-
-
-class _HangingContent:
-    """Stream content that yields ``first`` then blocks until cancelled (a run in flight)."""
-
-    def __init__(self, first: bytes) -> None:
-        self._first = first
-        self.started = asyncio.Event()
-
-    async def iter_any(self) -> AsyncIterator[bytes]:
-        yield self._first
-        self.started.set()
-        await asyncio.Event().wait()
-
-
 class _FakeServer:
     """Session stand-in that routes adapter requests like a LangGraph Agent Server."""
 
-    def __init__(self, *runs: bytes | _HangingContent, thread: object = None, chunk: int = 7) -> None:
+    def __init__(self, *runs: bytes | HangingStreamContent, thread: object = None, chunk: int = 7) -> None:
         self._runs = list(runs)
         self._chunk = chunk
         self.thread = thread  # GET /threads/{id} body; None -> 404
@@ -134,15 +111,15 @@ class _FakeServer:
         if url.endswith("/cancel"):
             if self.cancel_exc is not None:
                 raise self.cancel_exc
-            return _JsonResp(None, status=202)
+            return FakeJsonResponse(None, status=202)
         run = self._runs.pop(0)
-        if isinstance(run, _HangingContent):
+        if isinstance(run, HangingStreamContent):
             return _StreamResp(run)
         return _StreamResp(_FakeStreamContent(chunk_bytes(run, self._chunk)))
 
-    def _get(self, url: str, **kwargs: Any) -> _JsonResp:
+    def _get(self, url: str, **kwargs: Any) -> FakeJsonResponse:
         self.calls.append(("GET", url, kwargs))
-        return _JsonResp(self.thread, status=404 if self.thread is None else 200)
+        return FakeJsonResponse(self.thread, status=404 if self.thread is None else 200)
 
     @property
     def run_calls(self) -> list[tuple[str, dict[str, Any]]]:
@@ -163,20 +140,6 @@ class _FakeServer:
 # --- turn helpers --------------------------------------------------------------
 
 
-def _input(text: str = "hi", **kwargs: Any) -> conversation.ConversationInput:
-    values: dict[str, Any] = {
-        "text": text,
-        "context": Context(),
-        "conversation_id": "conv-1",
-        "device_id": None,
-        "satellite_id": None,
-        "language": "en",
-        "agent_id": "agent-1",
-        **kwargs,
-    }
-    return conversation.ConversationInput(**values)
-
-
 def _chat_log(system_prompt: str = "") -> MagicMock:
     # The adapter reads the rendered prompt (content[0]), conversation_id, and async_trace.
     chat_log = MagicMock()
@@ -194,22 +157,15 @@ async def _turn(
     *,
     options: dict[str, Any] | None = None,
     key: str = "conv-1",
+    legacy_key: str | None = None,
     text: str = "hi",
     chat_log: MagicMock | None = None,
     **input_kwargs: Any,
 ) -> tuple[list[conversation.AssistantContentDeltaDict], TurnContext]:
-    ctx = TurnContext(options=options or {}, memory_key=key)
+    ctx = TurnContext(options=options or {}, memory_key=key, legacy_memory_key=legacy_key)
     log = cast("conversation.ChatLog", chat_log if chat_log is not None else _chat_log())
-    deltas = [delta async for delta in adapter.stream_turn(log, _input(text, **input_kwargs), ctx)]
+    deltas = await collect(adapter.stream_turn(log, make_input(text, **input_kwargs), ctx))
     return deltas, ctx
-
-
-async def _collect(gen: DeltaStream) -> list[conversation.AssistantContentDeltaDict]:
-    return [delta async for delta in gen]
-
-
-def _text_of(deltas: list[conversation.AssistantContentDeltaDict]) -> str:
-    return "".join(delta.get("content") or "" for delta in deltas)
 
 
 def _tool_calls(deltas: list[conversation.AssistantContentDeltaDict]) -> list[Any]:
@@ -279,7 +235,7 @@ def test_parse_updates_frame_reads_custom_messages_key() -> None:
 async def test_react_capture_speaks_only_the_answer(hass: HomeAssistant) -> None:
     """Tool-call chunks and the ``tool`` message (its output) are never spoken."""
     deltas, _ = await _turn(_adapter(hass, _FakeServer(_capture("react_tool_call"))))
-    assert _text_of(deltas) == _ANSWER
+    assert text_of(deltas) == _ANSWER
 
 
 async def test_react_capture_surfaces_tool_call_as_external(hass: HomeAssistant) -> None:
@@ -320,7 +276,7 @@ async def test_whole_ai_message_from_non_streaming_node_is_spoken(hass: HomeAssi
 
 async def test_heartbeat_comments_during_slow_step_are_ignored(hass: HomeAssistant) -> None:
     deltas, _ = await _turn(_adapter(hass, _FakeServer(_capture("slow_heartbeats"))))
-    assert _text_of(deltas) == "Done after a slow step."
+    assert text_of(deltas) == "Done after a slow step."
 
 
 async def test_error_event_raises_backend_stream_error(hass: HomeAssistant) -> None:
@@ -331,7 +287,7 @@ async def test_error_event_raises_backend_stream_error(hass: HomeAssistant) -> N
 @pytest.mark.parametrize("chunk", [1, 3, 4096])
 async def test_capture_survives_any_chunking(hass: HomeAssistant, chunk: int) -> None:
     deltas, _ = await _turn(_adapter(hass, _FakeServer(_capture("react_tool_call"), chunk=chunk)))
-    assert _text_of(deltas) == _ANSWER
+    assert text_of(deltas) == _ANSWER
 
 
 async def test_tools_without_reply_text_raise(hass: HomeAssistant) -> None:
@@ -374,7 +330,7 @@ async def test_interrupt_speaks_question_and_requests_follow_up(hass: HomeAssist
 async def test_interrupt_value_shapes(hass: HomeAssistant, value: object, spoken: str | None) -> None:
     blob = sse_bytes(("updates", json.dumps({"__interrupt__": [{"value": value, "id": "i1"}]})))
     deltas, _ = await _turn(_adapter(hass, _FakeServer(blob)))
-    assert _text_of(deltas) == (spoken or "The assistant needs more information to continue.")
+    assert text_of(deltas) == (spoken or "The assistant needs more information to continue.")
 
 
 async def test_turn_after_interrupt_resumes_with_the_reply(hass: HomeAssistant) -> None:
@@ -386,7 +342,7 @@ async def test_turn_after_interrupt_resumes_with_the_reply(hass: HomeAssistant) 
 
     assert server.body()["command"] == {"resume": "kitchen"}
     assert "input" not in server.body()
-    assert _text_of(deltas) == "Turning on the lights in the kitchen."
+    assert text_of(deltas) == "Turning on the lights in the kitchen."
 
 
 async def test_resume_is_confirmed_against_the_thread(hass: HomeAssistant) -> None:
@@ -432,7 +388,7 @@ async def test_thread_lookup_error_fails_the_turn(hass: HomeAssistant) -> None:
     server = _FakeServer(_capture("interrupt"))
     adapter = _adapter(hass, server)
     await _turn(adapter)
-    server.session.get = MagicMock(return_value=_JsonResp({}, status=500))
+    server.session.get = MagicMock(return_value=FakeJsonResponse({}, status=500))
     with pytest.raises(BackendStreamError, match="HTTP 500"):
         await _turn(adapter)
 
@@ -524,7 +480,7 @@ async def test_configured_prompt_reaches_context_rendered(hass: HomeAssistant, m
     server = _FakeServer(_capture("echo_whole_ai_message"))
     entity = build_entity(hass, _adapter(hass, server), {CONF_PROMPT: "Hi {{ 'x' | upper }}"})
 
-    await entity._async_handle_message(_input(), mock_chat_log)
+    await entity._async_handle_message(make_input(), mock_chat_log)
 
     system_prompt = server.body()["context"]["system_prompt"]
     assert system_prompt.startswith("Hi X\n")
@@ -593,15 +549,33 @@ async def test_legacy_persisted_thread_is_still_used(hass: HomeAssistant, hass_s
     ]
 
 
+async def test_legacy_device_thread_adopted_once_by_first_agent(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    # Device keys became per agent; the first agent on the device keeps the old shared
+    # thread, a sibling agent gets its own instead of sharing it.
+    hass_storage["llm_middleman.langgraph.e1"] = {"version": 1, "data": {"dev-A": "t-legacy"}}
+    server = _FakeServer(_capture("echo_whole_ai_message"), _capture("echo_whole_ai_message"))
+    adapter = _adapter(hass, server)
+    await _turn(adapter, options={"memory_scope": "device"}, key="sub-1:dev-A", legacy_key="dev-A")
+    await _turn(adapter, options={"memory_scope": "device"}, key="sub-2:dev-A", legacy_key="dev-A")
+
+    assert server.run_urls == [
+        f"{_BASE_URL}/threads/t-legacy/runs/stream",
+        f"{_BASE_URL}/threads/{_expected_thread('e1', 'sub-2:dev-A')}/runs/stream",
+    ]
+    assert hass_storage["llm_middleman.langgraph.e1"]["data"] == {"sub-1:dev-A": "t-legacy"}
+
+
 # --- cancellation ------------------------------------------------------------------------
 
 
 _METADATA = b'event: metadata\r\ndata: {"run_id":"run-1","attempt":1}\r\n\r\n'
 
 
-async def _cancel_mid_run(hass: HomeAssistant, server: _FakeServer, content: _HangingContent, **turn: Any) -> None:
+async def _cancel_mid_run(hass: HomeAssistant, server: _FakeServer, content: HangingStreamContent, **turn: Any) -> None:
     task = asyncio.create_task(_turn(_adapter(hass, server), **turn))
-    await asyncio.wait_for(content.started.wait(), timeout=2)
+    await asyncio.wait_for(content.reached.wait(), timeout=2)
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -610,7 +584,7 @@ async def _cancel_mid_run(hass: HomeAssistant, server: _FakeServer, content: _Ha
 
 
 async def test_cancelled_turn_cancels_the_server_run(hass: HomeAssistant) -> None:
-    content = _HangingContent(_METADATA)
+    content = HangingStreamContent(_METADATA)
     server = _FakeServer(content)
     await _cancel_mid_run(hass, server, content)
     thread_id = _expected_thread("e1", "conv-1")
@@ -618,7 +592,7 @@ async def test_cancelled_turn_cancels_the_server_run(hass: HomeAssistant) -> Non
 
 
 async def test_cancel_request_failure_is_swallowed(hass: HomeAssistant) -> None:
-    content = _HangingContent(_METADATA)
+    content = HangingStreamContent(_METADATA)
     server = _FakeServer(content)
     server.cancel_exc = aiohttp.ClientConnectionError("gone")
     await _cancel_mid_run(hass, server, content)
@@ -626,7 +600,7 @@ async def test_cancel_request_failure_is_swallowed(hass: HomeAssistant) -> None:
 
 
 async def test_stateless_cancel_relies_on_disconnect(hass: HomeAssistant) -> None:
-    content = _HangingContent(_METADATA)
+    content = HangingStreamContent(_METADATA)
     server = _FakeServer(content)
     await _cancel_mid_run(hass, server, content, options={"stateless_runs": True})
     assert server.cancel_urls == []
@@ -657,7 +631,7 @@ async def test_turn_with_tool_activity_posts_exactly_once(hass: HomeAssistant, m
     server = _FakeServer(_capture("react_tool_call"), _capture("react_tool_call"))
     entity = build_entity(hass, _adapter(hass, server), {})
 
-    result = await entity._async_handle_message(_input(), mock_chat_log)
+    result = await entity._async_handle_message(make_input(), mock_chat_log)
 
     assert len(server.run_calls) == 1
     assert result.response.speech["plain"]["speech"] == _ANSWER
@@ -666,7 +640,7 @@ async def test_turn_with_tool_activity_posts_exactly_once(hass: HomeAssistant, m
 async def test_tool_activity_is_recorded_in_chat_log(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
     entity = build_entity(hass, _adapter(hass, _FakeServer(_capture("react_tool_call"))), {})
 
-    await entity._async_handle_message(_input(), mock_chat_log)
+    await entity._async_handle_message(make_input(), mock_chat_log)
 
     call, result, reply = mock_chat_log.content[-3:]
     assert isinstance(call, conversation.AssistantContent)
@@ -685,7 +659,7 @@ async def test_tools_without_reply_post_once_and_speak_fallback(
     server = _FakeServer(blob, blob)
     entity = build_entity(hass, _adapter(hass, server), {})
 
-    result = await entity._async_handle_message(_input(), mock_chat_log)
+    result = await entity._async_handle_message(make_input(), mock_chat_log)
 
     assert len(server.run_calls) == 1
     assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
@@ -694,7 +668,7 @@ async def test_tools_without_reply_post_once_and_speak_fallback(
 async def test_interrupt_through_entity_keeps_listening(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
     entity = build_entity(hass, _adapter(hass, _FakeServer(_capture("interrupt"))), {})
 
-    result = await entity._async_handle_message(_input(), mock_chat_log)
+    result = await entity._async_handle_message(make_input(), mock_chat_log)
 
     assert result.continue_conversation is True
     assert result.response.speech["plain"]["speech"] == _QUESTION
@@ -717,7 +691,7 @@ async def _validate(hass: HomeAssistant, session: MagicMock, **data: Any) -> Non
 
 
 async def test_validate_graph_id_searches_assistants(hass: HomeAssistant) -> None:
-    session = _probe_session(post=_JsonResp([{"assistant_id": "a1", "graph_id": "agent"}]))
+    session = _probe_session(post=FakeJsonResponse([{"assistant_id": "a1", "graph_id": "agent"}]))
     await _validate(hass, session, assistant_id="agent", api_key="sk-1")
     assert session.post.call_args.args[0] == f"{_BASE_URL}/assistants/search"
     assert json.loads(session.post.call_args.kwargs["data"]) == {"graph_id": "agent", "limit": 1}
@@ -726,7 +700,7 @@ async def test_validate_graph_id_searches_assistants(hass: HomeAssistant) -> Non
 
 async def test_validate_uuid_gets_assistant(hass: HomeAssistant) -> None:
     assistant = "fe096781-5601-53d2-b2f6-0d3403f7e9ca"
-    session = _probe_session(get=_JsonResp({"assistant_id": assistant}))
+    session = _probe_session(get=FakeJsonResponse({"assistant_id": assistant}))
     await _validate(hass, session, assistant_id=assistant, api_key="sk-1", auth_scheme="bearer")
     assert session.get.call_args.args[0] == f"{_BASE_URL}/assistants/{assistant}"
     assert session.get.call_args.kwargs["headers"]["Authorization"] == "Bearer sk-1"
@@ -734,10 +708,10 @@ async def test_validate_uuid_gets_assistant(hass: HomeAssistant) -> None:
 
 @pytest.mark.parametrize(
     "post",
-    [_JsonResp({"detail": "Graph 'nope' not found"}, status=404), _JsonResp([])],
+    [FakeJsonResponse({"detail": "Graph 'nope' not found"}, status=404), FakeJsonResponse([])],
     ids=["404", "empty-search"],
 )
-async def test_validate_unknown_graph_is_assistant_not_found(hass: HomeAssistant, post: _JsonResp) -> None:
+async def test_validate_unknown_graph_is_assistant_not_found(hass: HomeAssistant, post: FakeJsonResponse) -> None:
     with pytest.raises(AssistantNotFoundError):
         await _validate(hass, _probe_session(post=post), assistant_id="nope")
 
@@ -745,10 +719,10 @@ async def test_validate_unknown_graph_is_assistant_not_found(hass: HomeAssistant
 @pytest.mark.parametrize(
     ("post", "error"),
     [
-        (_JsonResp({}, status=401), BackendAuthError),
-        (_JsonResp({}, status=500), BackendConnectionError),
+        (FakeJsonResponse({}, status=401), BackendAuthError),
+        (FakeJsonResponse({}, status=500), BackendConnectionError),
         (aiohttp.ClientConnectionError("no route"), BackendConnectionError),
-        (_JsonResp(ValueError("not json")), BackendConnectionError),
+        (FakeJsonResponse(ValueError("not json")), BackendConnectionError),
     ],
     ids=["auth", "status", "transport", "bad-json"],
 )

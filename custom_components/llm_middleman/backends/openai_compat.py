@@ -49,13 +49,15 @@ from custom_components.llm_middleman.const import (
 
 from ._history import trim_history
 from ._sse import async_iter_sse
-from ._tools import format_function_tool, tool_result_json
+from ._tools import format_function_tool, replayable_content, tool_result_json
 from .base import (
     BackendAdapter,
+    BackendStreamError,
     DeltaStream,
     TurnContext,
     bearer_headers,
     build_client_timeout,
+    json_object,
     loads_json_object,
     probe_json,
     trace_token_stats,
@@ -66,8 +68,13 @@ _LOGGER = logging.getLogger(__name__)
 # The provider terminates the SSE stream with this literal payload, not JSON.
 _DONE_SENTINEL = "[DONE]"
 
-# Request-body option keys read from the subentry options, sent only when set.
-_OPTION_KEYS = (CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS)
+# Request-body option keys read from the subentry options, sent only when set; the
+# converter undoes HA's NumberSelector float storage where the API wants an integer.
+_OPTION_KEYS: tuple[tuple[str, type[float] | type[int]], ...] = (
+    (CONF_TEMPERATURE, float),
+    (CONF_TOP_P, float),
+    (CONF_MAX_TOKENS, int),
+)
 
 # Asks OpenAI-style servers for a terminal ``usage`` chunk on streamed responses.
 _STREAM_OPTIONS = {"include_usage": True}
@@ -92,19 +99,21 @@ def _base_url(data: Mapping[str, Any]) -> str:
     return str(data[CONF_BASE_URL]).rstrip("/")
 
 
-def _accumulate_tool_call(tool_calls: dict[int, dict[str, str]], fragment: Any) -> None:
+def _accumulate_tool_call(tool_calls: dict[int, dict[str, str]], fragment: object) -> None:
     """Fold one streamed ``delta.tool_calls`` fragment into the by-index accumulator.
 
     ``id``/``function.name`` appear on the first fragment for an index;
     ``function.arguments`` streams as a string concatenated across fragments. Missing
     fields are treated as empty (``get(...) or ""``) so a fragment carrying only more
     argument text folds in cleanly. Absent ``index`` defaults to 0 (single-call servers).
+    A non-object fragment raises (the entity guard maps it to the fallback).
     """
-    index: Any = fragment.get("index", 0) if hasattr(fragment, "get") else 0
-    slot = tool_calls.setdefault(int(index), {"id": "", "name": "", "args": ""})
-    slot["id"] += fragment.get("id") or ""
-    function: Any = fragment.get("function") if hasattr(fragment, "get") else None
-    if hasattr(function, "get"):
+    call = json_object(fragment)
+    if call is None:
+        raise BackendStreamError(f"Malformed tool_calls fragment: {str(fragment)[:200]}")
+    slot = tool_calls.setdefault(int(call.get("index", 0)), {"id": "", "name": "", "args": ""})
+    slot["id"] += call.get("id") or ""
+    if (function := json_object(call.get("function"))) is not None:
         slot["name"] += function.get("name") or ""
         slot["args"] += function.get("arguments") or ""
 
@@ -198,14 +207,14 @@ class OpenAICompatAdapter(BackendAdapter):
         entries: Any = payload.get("data", [])
         models: list[str] = []
         for entry in entries:
-            entry_id: Any = entry.get("id") if hasattr(entry, "get") else None
+            entry_id = (json_object(entry) or {}).get("id")
             if isinstance(entry_id, str):
                 models.append(entry_id)
         return models
 
     def _build_messages(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> list[dict[str, Any]]:
         """Replay ``chat_log.content`` to trimmed OpenAI ``messages[]``."""
-        messages = [_convert_content(item) for item in chat_log.content]
+        messages = [_convert_content(item) for item in replayable_content(chat_log.content)]
         max_history = int(ctx.options.get(CONF_MAX_HISTORY, 0))
         return trim_history(messages, max_history)
 
@@ -217,9 +226,9 @@ class OpenAICompatAdapter(BackendAdapter):
         }
         if (model := ctx.options.get(CONF_MODEL)) is not None:
             body["model"] = model
-        for key in _OPTION_KEYS:
+        for key, convert in _OPTION_KEYS:
             if (value := ctx.options.get(key)) is not None:
-                body[key] = value
+                body[key] = convert(value)
         # HA tool schemas, only when an LLM API is configured for this agent.
         if chat_log.llm_api is not None and chat_log.llm_api.tools:
             body["tools"] = [
@@ -275,42 +284,37 @@ class OpenAICompatAdapter(BackendAdapter):
         # index -> partial call; id/name arrive on the first fragment, arguments stream
         # as a string concatenated across fragments (chat/completions delta.tool_calls).
         tool_calls: dict[int, dict[str, str]] = {}
-        usage: Any = None
+        usage: dict[str, Any] | None = None
         async with self._open_stream(
             url, self._build_body(chat_log, ctx), headers, build_client_timeout(ctx.options)
         ) as response:
             async for event in async_iter_sse(response.content.iter_any()):
                 if event.data == _DONE_SENTINEL:
                     break
-                # json.loads is Any; access via Any (isinstance-narrowing a dict
-                # yields dict[Unknown, Unknown] under strict mode). A non-conforming
-                # shape raises here and the entity's _guarded wrapper maps it to the
-                # fallback. hasattr guards the ``.get`` against non-object chunks.
-                chunk: Any = json.loads(event.data)
+                # A non-object chunk/delta reads as empty; a non-conforming ``choices``
+                # raises here and the entity's _guarded wrapper maps it to the fallback.
+                chunk = json_object(json.loads(event.data)) or {}
                 # include_usage puts usage on a terminal choices-less chunk; some servers
                 # repeat it on every chunk, so keep the last one seen.
-                chunk_usage: Any = chunk.get("usage") if hasattr(chunk, "get") else None
-                if hasattr(chunk_usage, "get"):
+                if (chunk_usage := json_object(chunk.get("usage"))) is not None:
                     usage = chunk_usage
-                choices: Any = chunk.get("choices") if hasattr(chunk, "get") else None
+                choices: Any = chunk.get("choices")
                 if not choices:
                     continue
-                delta: Any = choices[0].get("delta")
-                fragments: Any = delta.get("tool_calls") if hasattr(delta, "get") else None
+                delta = json_object(choices[0].get("delta")) or {}
+                fragments: Any = delta.get("tool_calls")
                 if fragments:
                     for fragment in fragments:
                         _accumulate_tool_call(tool_calls, fragment)
                 # DeepSeek/vLLM/llama.cpp say reasoning_content, OpenRouter reasoning;
                 # servers mid-rename send both with the same text, so take one.
-                reasoning: Any = (
-                    (delta.get("reasoning_content") or delta.get("reasoning")) if hasattr(delta, "get") else None
-                )
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                 if reasoning and isinstance(reasoning, str):
                     if not role_sent:
                         yield {"role": "assistant"}
                         role_sent = True
                     yield {"thinking_content": reasoning}
-                content: Any = delta.get("content") if hasattr(delta, "get") else None
+                content = delta.get("content")
                 if content is None:
                     continue
                 if not role_sent:
@@ -318,11 +322,11 @@ class OpenAICompatAdapter(BackendAdapter):
                     role_sent = True
                 yield {"content": content}
         if usage is not None:
-            details: Any = usage.get("prompt_tokens_details")
+            details = json_object(usage.get("prompt_tokens_details")) or {}
             trace_token_stats(
                 chat_log,
                 input_tokens=int(usage.get("prompt_tokens") or 0),
-                cached_input_tokens=int((details.get("cached_tokens") if hasattr(details, "get") else None) or 0),
+                cached_input_tokens=int(details.get("cached_tokens") or 0),
                 output_tokens=int(usage.get("completion_tokens") or 0),
             )
         # Flush accumulated tool calls once, after [DONE]/EOF (some servers omit the id

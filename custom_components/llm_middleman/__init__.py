@@ -25,14 +25,11 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.storage import Store
-from homeassistant.util import slugify
 
 from .backends import BackendAdapter, get_backend_cls
 from .backends.base import BackendAuthError, BackendConnectionError
 from .const import (
     BACKEND_CONVERSE,
-    BACKEND_DIFY,
-    BACKEND_LANGGRAPH,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
     CONF_NAME,
@@ -128,17 +125,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> None:
-    """Delete the entry's repair issue and any session-map Store its stateful preset persisted.
-
-    The key mirrors the dify/langgraph adapters' per-entry Store key
-    (``<domain>.<backend>.<slugified entry_id>``); tests pin it to the adapters' own.
-    """
+    """Delete the entry's repair issue and every Store its preset declares (``store_keys``)."""
     async_delete_unreachable_issue(hass, entry.entry_id)
-    backend_type = entry.data.get(CONF_BACKEND_TYPE)
-    if backend_type in (BACKEND_DIFY, BACKEND_LANGGRAPH):
-        store: Store[dict[str, str]] = Store(
-            hass, STORAGE_VERSION, f"{DOMAIN}.{backend_type}.{slugify(entry.entry_id)}"
-        )
+    for key in get_backend_cls(entry.data[CONF_BACKEND_TYPE]).store_keys(entry.entry_id):
+        store: Store[Any] = Store(hass, STORAGE_VERSION, key)
         await store.async_remove()
 
 

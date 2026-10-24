@@ -45,7 +45,7 @@ from custom_components.llm_middleman.const import (
 
 from ._history import trim_history
 from ._sse import async_iter_lines
-from ._tools import format_function_tool, tool_result_json
+from ._tools import format_function_tool, replayable_content, tool_result_json
 from .base import (
     BackendAdapter,
     BackendConnectionError,
@@ -54,6 +54,7 @@ from .base import (
     TurnContext,
     bearer_headers,
     build_client_timeout,
+    json_object,
     probe_json,
     trace_token_stats,
 )
@@ -115,16 +116,19 @@ async def _iter_ndjson(stream: AsyncIterable[bytes]) -> AsyncGenerator[dict[str,
 
     Lines come from :func:`async_iter_lines` (chunk-boundary agnostic, EOF tail
     flushed, oversize lines skipped). Blank lines are skipped. A line that is not
-    valid JSON raises ``BackendStreamError`` so the entity guard can map it to the
+    a valid JSON object raises ``BackendStreamError`` so the entity guard can map it to the
     fallback (never let a raw ``JSONDecodeError`` escape).
     """
     async for line in async_iter_lines(stream):
         if not line.strip():
             continue
         try:
-            yield cast("dict[str, Any]", json.loads(line))
+            obj = json_object(json.loads(line))
         except json.JSONDecodeError as err:
             raise BackendStreamError(f"Malformed NDJSON line: {line!r}") from err
+        if obj is None:
+            raise BackendStreamError(f"NDJSON line is not an object: {line!r}")
+        yield obj
 
 
 class OllamaAdapter(BackendAdapter):
@@ -171,14 +175,15 @@ class OllamaAdapter(BackendAdapter):
         (not ``/v1``); the caller strips the trailing slash before appending paths.
         """
         messages = trim_history(
-            [_convert_content(content) for content in chat_log.content],
+            [_convert_content(content) for content in replayable_content(chat_log.content)],
             int(options.get(CONF_MAX_HISTORY, 0)),
         )
         body: dict[str, Any] = {"messages": messages, "stream": True}
         if CONF_MODEL in options:
             body["model"] = options[CONF_MODEL]
         if CONF_NUM_CTX in options:
-            body["options"] = {"num_ctx": options[CONF_NUM_CTX]}
+            # int(): HA's NumberSelector stores floats (core ollama sends int(num_ctx) too).
+            body["options"] = {"num_ctx": int(options[CONF_NUM_CTX])}
         if CONF_KEEP_ALIVE in options:
             keep_alive = int(options[CONF_KEEP_ALIVE])
             body["keep_alive"] = keep_alive if keep_alive == KEEP_ALIVE_FOREVER else f"{keep_alive}s"

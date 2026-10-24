@@ -22,7 +22,8 @@ Wire behaviour (confirmed against a live ``langgraph-api`` 0.16.6 server, see
   and every run sends ``if_not_exists: "create"``, so the server creates the thread on
   first use and re-creates one it has deleted — no client-side map, lock, or 404 retry.
   A ``session_key -> thread_id`` map persisted by the LLMM-011 adapter is still honoured
-  (read-only) so existing device/agent-scope threads keep their history.
+  so existing device/agent-scope threads keep their history (a device entry is adopted by
+  the first agent that uses it, since device keys are now per agent).
 * ``on_disconnect: "cancel"`` stops a run HA abandoned (cancelled turn, idle timeout);
   a best-effort ``POST /threads/{id}/runs/{run_id}/cancel`` backs it up for proxies
   that keep the upstream connection open. ``multitask_strategy`` (default ``rollback``)
@@ -47,7 +48,7 @@ import logging
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import aiohttp
 from homeassistant.core import HomeAssistant
@@ -89,6 +90,8 @@ from .base import (
     DeltaStream,
     bearer_headers,
     build_client_timeout,
+    json_list,
+    json_object,
     rendered_system_prompt,
     trace_token_stats,
 )
@@ -150,13 +153,12 @@ def _extract_text(content: object) -> str:
     """
     if isinstance(content, str):
         return content
-    if isinstance(content, list):
+    if (blocks := json_list(content)) is not None:
         parts: list[str] = []
-        for block in cast("list[object]", content):
+        for block in blocks:
             if isinstance(block, str):
                 parts.append(block)
-            elif isinstance(block, dict):
-                mapping = cast("dict[str, object]", block)
+            elif (mapping := json_object(block)) is not None:
                 text = mapping.get("text")
                 if mapping.get("type") == "text" and isinstance(text, str):
                     parts.append(text)
@@ -177,17 +179,14 @@ def _parse_messages_frame(data: str) -> tuple[str | None, str | None]:
     except json.JSONDecodeError, ValueError:
         _LOGGER.debug("Skipping malformed LangGraph messages frame")
         return None, None
-    if not isinstance(parsed, list):
+    frame = json_list(parsed)
+    if frame is None or len(frame) != 2:
         return None, None
-    frame = cast("list[object]", parsed)
-    if len(frame) != 2:
-        return None, None
-    chunk, metadata = frame[0], frame[1]
-    node = cast("dict[str, object]", metadata).get("langgraph_node") if isinstance(metadata, dict) else None
+    node = (json_object(frame[1]) or {}).get("langgraph_node")
     node = node if isinstance(node, str) else None
-    if not isinstance(chunk, dict):
+    message = json_object(frame[0])
+    if message is None:
         return None, node
-    message = cast("dict[str, object]", chunk)
     if message.get("type") not in _AI_TYPES:
         return None, node
     return _extract_text(message.get("content")) or None, node
@@ -208,11 +207,11 @@ class _Updates:
 
 def _node_messages(update: object, messages_key: str) -> list[dict[str, Any]]:
     """Return the message dicts a node's update wrote to ``messages_key``."""
-    if not isinstance(update, dict):
+    if (mapping := json_object(update)) is None:
         return []
-    value: object = cast("dict[str, object]", update).get(messages_key)
-    messages: list[object] = cast("list[object]", value) if isinstance(value, list) else [value]
-    return [cast("dict[str, Any]", m) for m in messages if isinstance(m, dict)]
+    value: object = mapping.get(messages_key)
+    messages = json_list(value)
+    return [m for item in (messages if messages is not None else [value]) if (m := json_object(item)) is not None]
 
 
 def _parse_updates_frame(data: str, messages_key: str) -> _Updates:
@@ -223,14 +222,15 @@ def _parse_updates_frame(data: str, messages_key: str) -> _Updates:
     except json.JSONDecodeError, ValueError:
         _LOGGER.debug("Skipping malformed LangGraph updates frame")
         return out
-    if not isinstance(parsed, dict):
+    nodes = json_object(parsed)
+    if nodes is None:
         return out
-    for node, update in cast("dict[str, object]", parsed).items():
+    for node, update in nodes.items():
         if node == _INTERRUPT_KEY:
-            interrupts = cast("list[object]", update) if isinstance(update, list) else []
+            interrupts = json_list(update) or []
             first = interrupts[0] if interrupts else None
             out.interrupted = True
-            out.interrupt = cast("dict[str, object]", first).get("value") if isinstance(first, dict) else None
+            out.interrupt = (json_object(first) or {}).get("value")
             continue
         for message in _node_messages(update, messages_key):
             msg_type = message.get("type")
@@ -248,16 +248,13 @@ def _parse_updates_frame(data: str, messages_key: str) -> _Updates:
 
 def _collect_ai_message(message: dict[str, Any], out: _Updates) -> None:
     """Fold a whole AI message's finished tool calls and token usage into ``out``."""
-    for raw in cast("list[object]", message.get("tool_calls") or []):
-        if not isinstance(raw, dict):
+    for raw in json_list(message.get("tool_calls")) or []:
+        if (call := json_object(raw)) is None:
             continue
-        call = cast("dict[str, object]", raw)
         call_id, name, args = call.get("id"), call.get("name"), call.get("args")
         if isinstance(call_id, str) and call_id and isinstance(name, str):
-            out.tool_calls.append((call_id, name, cast("dict[str, Any]", args) if isinstance(args, dict) else {}))
-    usage = message.get("usage_metadata")
-    if isinstance(usage, dict):
-        tokens = cast("dict[str, object]", usage)
+            out.tool_calls.append((call_id, name, json_object(args) or {}))
+    if (tokens := json_object(message.get("usage_metadata"))) is not None:
         input_tokens, output_tokens = tokens.get("input_tokens"), tokens.get("output_tokens")
         if isinstance(input_tokens, int) and isinstance(output_tokens, int):
             out.input_tokens += input_tokens
@@ -269,8 +266,7 @@ def _interrupt_text(value: object) -> str:
     """Return the speakable question of an interrupt value."""
     if isinstance(value, str) and value:
         return value
-    if isinstance(value, dict):
-        mapping = cast("dict[str, object]", value)
+    if (mapping := json_object(value)) is not None:
         for key in ("question", "message"):
             text = mapping.get(key)
             if isinstance(text, str) and text:
@@ -324,6 +320,13 @@ class LangGraphAdapter(BackendAdapter):
     backend_type: ClassVar[str] = BACKEND_LANGGRAPH
     supports_ha_tools: ClassVar[bool] = False  # tools live server-side in the graph
     supports_memory_scope: ClassVar[bool] = True  # stateful -> key maps to a thread_id
+
+    @classmethod
+    def store_keys(cls, entry_key: str) -> tuple[str, ...]:
+        """The legacy thread map and the interrupt->resume pending set."""
+        store_key = f"{DOMAIN}.langgraph.{slugify(entry_key)}"
+        return (store_key, f"{store_key}.pending_resume")
+
     # The rendered prompt (with HA's date/time) rides in the run context, and a resume
     # value must be the user's literal answer to the graph's question.
     wants_time_prefix: ClassVar[bool] = False
@@ -344,12 +347,14 @@ class LangGraphAdapter(BackendAdapter):
         # Per-entry discriminator for thread ids and Store filenames (entry_id is always
         # passed by async_setup_entry; the base_url slug keeps bare test construction working).
         self._entry_key = str(connection_data.get(_CONF_ENTRY_ID) or self._base_url or "default")
-        store_key = f"{DOMAIN}.langgraph.{slugify(self._entry_key)}"
-        # Read-only: the LLMM-011 session_key -> thread_id map for device/agent scopes.
+        store_key, pending_key = self.store_keys(self._entry_key)
+        # The LLMM-011 session_key -> thread_id map for device/agent scopes; never grows,
+        # only re-keys a device entry when an agent adopts it (see _thread_id).
         self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, store_key)
         self._legacy: dict[str, str] | None = None
+        self._legacy_lock = asyncio.Lock()
         # thread_id -> whether it belongs to a persisted (device/agent) scope.
-        self._pending_store: Store[list[str]] = Store(hass, STORAGE_VERSION, f"{store_key}.pending_resume")
+        self._pending_store: Store[list[str]] = Store(hass, STORAGE_VERSION, pending_key)
         self._pending: dict[str, bool] | None = None
         # Diagnostics only (never read by turn logic, so concurrent turns can't race on it).
         self.last_run_id: str | None = None
@@ -412,7 +417,7 @@ class LangGraphAdapter(BackendAdapter):
         else:
             scope = str(options.get(CONF_MEMORY_SCOPE, MEMORY_SCOPE_CONVERSATION))
             persist = scope in (MEMORY_SCOPE_DEVICE, MEMORY_SCOPE_AGENT)
-            thread_id = await self._thread_id(ctx.memory_key)
+            thread_id = await self._thread_id(ctx.memory_key, ctx.legacy_memory_key)
             resume = await self._take_pending_resume(thread_id, timeout)
             url = f"{self._base_url}/threads/{thread_id}/runs/stream"
             strategy = str(options.get(CONF_MULTITASK_STRATEGY) or DEFAULT_MULTITASK_STRATEGY)
@@ -462,11 +467,19 @@ class LangGraphAdapter(BackendAdapter):
 
     # --- threads -----------------------------------------------------------------
 
-    async def _thread_id(self, session_key: str) -> str:
-        """Return the legacy mapped thread for ``session_key``, else its deterministic uuid5."""
-        if self._legacy is None:
-            self._legacy = await self._store.async_load() or {}
-        legacy = self._legacy.get(session_key)
+    async def _thread_id(self, session_key: str, legacy_key: str | None = None) -> str:
+        """Return the legacy mapped thread for ``session_key``, else its deterministic uuid5.
+
+        A legacy entry under ``legacy_key`` (the pre-per-agent device key) moves to
+        ``session_key`` on first use, so one agent keeps that thread and siblings get their own.
+        """
+        async with self._legacy_lock:
+            if self._legacy is None:
+                self._legacy = await self._store.async_load() or {}
+            if session_key not in self._legacy and legacy_key is not None and legacy_key in self._legacy:
+                self._legacy[session_key] = self._legacy.pop(legacy_key)
+                await self._store.async_save(self._legacy)
+            legacy = self._legacy.get(session_key)
         if legacy is not None:
             return legacy
         return str(uuid.uuid5(_THREAD_NAMESPACE, f"{self._entry_key}:{session_key}"))
@@ -505,7 +518,7 @@ class LangGraphAdapter(BackendAdapter):
             if resp.status >= 400:
                 raise BackendStreamError(f"LangGraph thread lookup returned HTTP {resp.status}")
             thread: object = await resp.json()
-        interrupts = cast("dict[str, object]", thread).get("interrupts") if isinstance(thread, dict) else None
+        interrupts = (json_object(thread) or {}).get("interrupts")
         return bool(interrupts)
 
     async def _save_pending(self, pending: dict[str, bool]) -> None:
@@ -548,7 +561,7 @@ class LangGraphAdapter(BackendAdapter):
                     raise BackendStreamError(f"LangGraph error event: {event.data[:200]}")
                 if event.event == _EVENT_METADATA:
                     metadata = _loads(event.data)
-                    run_id = cast("dict[str, object]", metadata).get("run_id") if isinstance(metadata, dict) else None
+                    run_id = (json_object(metadata) or {}).get("run_id")
                     if isinstance(run_id, str):
                         state.run_id = self.last_run_id = run_id
                     continue

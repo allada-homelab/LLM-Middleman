@@ -18,6 +18,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady,
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.llm_middleman import (
@@ -26,6 +27,7 @@ from custom_components.llm_middleman import (
     async_unload_entry,
 )
 from custom_components.llm_middleman import conversation as conversation_platform
+from custom_components.llm_middleman.backends import BACKEND_TO_CLS
 from custom_components.llm_middleman.backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
 from custom_components.llm_middleman.backends.converse import ConverseAdapter
 from custom_components.llm_middleman.backends.dify import DifyAdapter
@@ -216,25 +218,37 @@ def test_manifest_loads_after_assist_pipeline_and_intent() -> None:
     assert manifest["after_dependencies"] == ["assist_pipeline", "intent"]
 
 
+@pytest.mark.parametrize("adapter_cls", list(BACKEND_TO_CLS.values()))
+def test_adapter_declares_every_store_it_creates(hass: HomeAssistant, adapter_cls: type[BackendAdapter]) -> None:
+    """``store_keys`` names exactly the Stores an adapter builds, so entry removal can't miss one."""
+    adapter = adapter_cls(hass, MagicMock(), {CONF_BASE_URL: "http://b", "entry_id": "entry-1"})
+    created = {value.key for value in vars(adapter).values() if isinstance(value, Store)}
+
+    assert created == set(adapter_cls.store_keys("entry-1"))
+
+
 @pytest.mark.parametrize("adapter_cls", [DifyAdapter, LangGraphAdapter])
 async def test_removing_entry_deletes_its_session_map_store(
     hass: HomeAssistant, hass_storage: dict[str, Any], adapter_cls: type[BackendAdapter]
 ) -> None:
-    """Deleting a stateful entry removes its persisted session map, leaving other entries' alone."""
+    """Deleting a stateful entry removes every Store it persisted, leaving other entries' alone."""
     entry = MockConfigEntry(domain=DOMAIN, version=2, data={CONF_BACKEND_TYPE: adapter_cls.backend_type})
     entry.add_to_hass(hass)
-    # The key the adapter itself persists under, so a drift in its derivation fails here.
-    adapter: Any = adapter_cls(hass, MagicMock(), {CONF_BASE_URL: "http://b", "entry_id": entry.entry_id})
-    own_key: str = adapter._store.key
+    own_keys = adapter_cls.store_keys(entry.entry_id)
     other_key = f"{DOMAIN}.{adapter_cls.backend_type}.other_entry"
-    hass_storage[own_key] = {"version": 1, "data": {"dev-1": "thread-1"}}
+    hass_storage.update({key: {"version": 1, "data": {"dev-1": "thread-1"}} for key in own_keys})
     hass_storage[other_key] = {"version": 1, "data": {"dev-2": "thread-2"}}
 
     await hass.config_entries.async_remove(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert own_key not in hass_storage
+    assert not set(own_keys) & set(hass_storage)
     assert other_key in hass_storage
+
+
+def test_langgraph_declares_its_pending_resume_store() -> None:
+    """The interrupt->resume Store is declared alongside the thread map (regression)."""
+    assert LangGraphAdapter.store_keys("e1") == (f"{DOMAIN}.langgraph.e1", f"{DOMAIN}.langgraph.e1.pending_resume")
 
 
 async def test_setup_and_unload_end_to_end(hass: HomeAssistant) -> None:

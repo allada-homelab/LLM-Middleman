@@ -32,11 +32,22 @@ shipped:
 - **Per-agent memory scopes** for the stateful presets, **v0→v1 config-entry migration**
   (`async_migrate_entry`, entry version 2), and **redacted diagnostics** (`diagnostics.py`).
 
-Every ticket (LLMM-001…017) is merged; LLMM-018 (live E2E matrix) and LLMM-019 (release)
-are effectively done — the five-preset + HACS-packaging dress rehearsal passed against real
-backends (`docs/implementation/e2e-results/`, MATRIX.md first) and the release is cut. The
-only work left is **owner-run** (live-HA HACS install, tool-call rows against a capable
-model, voice-hardware checks) — see `docs/implementation/HANDOFF.md`.
+Unreleased on `main` (see `CHANGELOG.md` `[Unreleased]`): reauth + a backend-unreachable
+repair issue, a setup-time backend probe, token stats and reasoning passthrough, backend
+tool activity in the Assist chat, and the **tier-1 reworks of Dify (LLMM-021) and LangGraph
+(LLMM-022)** — both `in-review`, merged and unit-gated, waiting only on owner-run live rows.
+
+Tickets LLMM-001…017 are done; LLMM-018 (live E2E matrix), LLMM-019 (release), LLMM-021 and
+LLMM-022 are `in-review` pending owner rows; LLMM-023 (AI Task `generate_data`) is the next
+planned feature. The remaining work is **owner-run** (Dify/LangGraph live rows, reauth on a
+real HA, HACS install of the next release, tool-call rows against a capable model,
+voice-hardware checks) — see `docs/implementation/HANDOFF.md`.
+
+**Quality-scale snapshot** (no `quality_scale.yaml` is declared): Bronze rules are met
+(config flow with a connection test, `already_configured` for duplicate connections,
+setup-time probe → `ConfigEntryNotReady`, `runtime_data`, `has_entity_name` + subentry
+unique ids, branding, README removal section). Silver-relevant: reauth flow, `PARALLEL_UPDATES = 0`, repair issue for an
+unreachable backend, coverage gate ≥ 94 %.
 
 > **START HERE for background:** `docs/implementation/plan.md` — the architecture of record
 > that v1 was built to — and `docs/implementation/README.md`, whose ticket index (with a
@@ -88,8 +99,8 @@ This is a **HACS custom integration, not a pip package** — there is intentiona
 ## Workflow (post-v1 maintenance)
 
 v1 is released, so most work now is bug fixes, dependency bumps, and the **fast-follow**
-features listed at the bottom of `docs/implementation/README.md` (AI Task subentry, token
-stats, external tool-activity surfacing, more presets).
+features listed at the bottom of `docs/implementation/README.md` (AI Task subentry =
+LLMM-023; token stats, tool-activity surfacing and reasoning passthrough already shipped).
 
 1. **Small fixes** (bug, dep bump, doc fix): branch (`fix/…` or a short slug) → PR → merge
    only on a green gate. No ticket required, but keep the change surgical.

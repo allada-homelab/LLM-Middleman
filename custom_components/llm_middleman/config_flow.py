@@ -66,17 +66,26 @@ from .const import (
     CONF_DIFY_USER_FROM_HA,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
+    CONF_INPUT_FIELD,
     CONF_INPUT_MESSAGES_KEY,
+    CONF_KEEP_ALIVE,
     CONF_MAX_HISTORY,
+    CONF_MAX_TOKENS,
     CONF_MEMORY_SCOPE,
     CONF_MODEL,
     CONF_MULTITASK_STRATEGY,
+    CONF_NUM_CTX,
+    CONF_OUTPUT_FIELD,
     CONF_PASSWORD,
     CONF_RESPONSE_NODE_FILTER,
+    CONF_SESSION_FIELD,
     CONF_STATELESS_RUNS,
     CONF_TARGET_TYPE,
+    CONF_TEMPERATURE,
+    CONF_THINK,
     CONF_TIMEOUT,
     CONF_TOKEN,
+    CONF_TOP_P,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
     DEFAULT_INPUT_MESSAGES_KEY,
@@ -84,15 +93,20 @@ from .const import (
     DEFAULT_MULTITASK_STRATEGY,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    KEEP_ALIVE_FOREVER,
     LANGGRAPH_AUTH_BEARER,
     LANGGRAPH_AUTH_X_API_KEY,
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
+    MIN_NUM_CTX,
     MULTITASK_STRATEGIES,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_AUTH_NONE,
+    N8N_DEFAULT_INPUT_FIELD,
+    N8N_DEFAULT_OUTPUT_FIELD,
+    N8N_DEFAULT_SESSION_FIELD,
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
     PROBE_TIMEOUT,
@@ -217,15 +231,13 @@ def _n8n_schema() -> vol.Schema:
 def _dify_fields(options: Mapping[str, Any]) -> dict[Any, Any]:
     """Dify-only agent options (LLMM-021): inputs mapping, HA context, end-user identity."""
     return {
-        vol.Optional(CONF_DIFY_INPUTS, description={"suggested_value": options.get(CONF_DIFY_INPUTS)}): (
-            ObjectSelector()  # pyright: ignore[reportUnknownVariableType]
-        ),
-        vol.Optional(CONF_DIFY_HA_CONTEXT, default=bool(options.get(CONF_DIFY_HA_CONTEXT, False))): (
-            BooleanSelector()  # pyright: ignore[reportUnknownVariableType]
-        ),
-        vol.Optional(CONF_DIFY_USER_FROM_HA, default=bool(options.get(CONF_DIFY_USER_FROM_HA, False))): (
-            BooleanSelector()  # pyright: ignore[reportUnknownVariableType]
-        ),
+        vol.Optional(
+            CONF_DIFY_INPUTS, description={"suggested_value": options.get(CONF_DIFY_INPUTS)}
+        ): ObjectSelector(),
+        vol.Optional(CONF_DIFY_HA_CONTEXT, default=bool(options.get(CONF_DIFY_HA_CONTEXT, False))): BooleanSelector(),
+        vol.Optional(
+            CONF_DIFY_USER_FROM_HA, default=bool(options.get(CONF_DIFY_USER_FROM_HA, False))
+        ): BooleanSelector(),
     }
 
 
@@ -617,6 +629,12 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
             schema.update(_dify_fields(options))
         if adapter_cls.backend_type == BACKEND_LANGGRAPH:
             _add_langgraph_fields(schema, options)
+        if adapter_cls.backend_type == BACKEND_OPENAI_COMPAT:
+            _add_openai_compat_fields(schema, options)
+        if adapter_cls.backend_type == BACKEND_OLLAMA:
+            _add_ollama_fields(schema, options)
+        if adapter_cls.backend_type == BACKEND_N8N:
+            _add_n8n_fields(schema, options)
 
         return vol.Schema(schema)
 
@@ -677,3 +695,37 @@ def _add_langgraph_fields(schema: dict[Any, Any], options: Mapping[str, Any]) ->
     schema[
         vol.Optional(CONF_STATELESS_RUNS, description={"suggested_value": options.get(CONF_STATELESS_RUNS, False)})
     ] = BooleanSelector()
+
+
+def _add_openai_compat_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
+    """Add the OpenAI-compatible sampling options; left empty, the server's default applies."""
+    schema[vol.Optional(CONF_TEMPERATURE, description={"suggested_value": options.get(CONF_TEMPERATURE)})] = (
+        NumberSelector(NumberSelectorConfig(min=0, max=2, step=0.05, mode=NumberSelectorMode.BOX))
+    )
+    schema[vol.Optional(CONF_TOP_P, description={"suggested_value": options.get(CONF_TOP_P)})] = NumberSelector(
+        NumberSelectorConfig(min=0, max=1, step=0.05, mode=NumberSelectorMode.BOX)
+    )
+    schema[vol.Optional(CONF_MAX_TOKENS, description={"suggested_value": options.get(CONF_MAX_TOKENS)})] = (
+        NumberSelector(NumberSelectorConfig(min=1, step=1, mode=NumberSelectorMode.BOX))
+    )
+
+
+def _add_ollama_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
+    """Add the Ollama runtime options (core-ollama's set); left empty, the model's default applies."""
+    schema[vol.Optional(CONF_NUM_CTX, description={"suggested_value": options.get(CONF_NUM_CTX)})] = NumberSelector(
+        NumberSelectorConfig(min=MIN_NUM_CTX, step=1, mode=NumberSelectorMode.BOX)
+    )
+    schema[vol.Optional(CONF_KEEP_ALIVE, description={"suggested_value": options.get(CONF_KEEP_ALIVE)})] = (
+        NumberSelector(NumberSelectorConfig(min=KEEP_ALIVE_FOREVER, step=1, mode=NumberSelectorMode.BOX))
+    )
+    schema[vol.Optional(CONF_THINK, description={"suggested_value": options.get(CONF_THINK)})] = BooleanSelector()
+
+
+def _add_n8n_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
+    """Add the n8n request/response field names (must match the workflow's nodes)."""
+    for key, default in (
+        (CONF_INPUT_FIELD, N8N_DEFAULT_INPUT_FIELD),
+        (CONF_OUTPUT_FIELD, N8N_DEFAULT_OUTPUT_FIELD),
+        (CONF_SESSION_FIELD, N8N_DEFAULT_SESSION_FIELD),
+    ):
+        schema[vol.Optional(key, description={"suggested_value": options.get(key, default)})] = TextSelector()

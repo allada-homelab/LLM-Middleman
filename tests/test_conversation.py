@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-import voluptuous as vol
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
@@ -57,7 +56,7 @@ from custom_components.llm_middleman.const import (
 )
 from custom_components.llm_middleman.conversation import LLMMiddlemanConversationEntity
 
-from .conftest import FakeStreamResponse, MockChatLog, tool_call_result
+from .conftest import FakeLLMApi, FakeStreamResponse, MockChatLog, collect
 from .live_backend import ScriptedBackend, run_pipeline_turn, setup_agent, speech
 
 
@@ -141,10 +140,6 @@ def _user_input(
         agent_id="conversation.test",
         extra_system_prompt=extra_system_prompt,
     )
-
-
-async def _collect(stream: DeltaStream) -> list[dict[str, Any]]:
-    return [dict(delta) async for delta in stream]
 
 
 # --- static attributes -------------------------------------------------------
@@ -297,7 +292,7 @@ async def test_guard_injects_role_first(hass: HomeAssistant, mock_chat_log: Mock
     entity = _make_entity(hass, adapter)
     ctx = TurnContext(options={}, memory_key="k")
 
-    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
+    collected = await collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
 
     assert collected[0] == {"role": "assistant"}
     assert collected[1] == {"content": "x"}
@@ -309,7 +304,7 @@ async def test_empty_delta_passes_untrimmed(hass: HomeAssistant, mock_chat_log: 
     entity = _make_entity(hass, adapter)
     ctx = TurnContext(options={}, memory_key="k")
 
-    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
+    collected = await collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
 
     assert {"content": ""} in collected
     assert {"content": "a"} in collected
@@ -372,7 +367,7 @@ async def test_continue_conversation_default_false(hass: HomeAssistant, mock_cha
     [
         (MEMORY_SCOPE_CONVERSATION, "dev-9", "mock-conversation-id"),
         (None, None, "mock-conversation-id"),  # absent option defaults to conversation
-        (MEMORY_SCOPE_DEVICE, "dev-9", "dev-9"),
+        (MEMORY_SCOPE_DEVICE, "dev-9", "sub-1:dev-9"),  # per agent: siblings don't share
         (MEMORY_SCOPE_DEVICE, None, "mock-conversation-id"),  # no device → fall back
         (MEMORY_SCOPE_AGENT, "dev-9", "sub-1"),
     ],
@@ -393,6 +388,32 @@ async def test_memory_key_scopes(
 
     assert adapter.received_ctx is not None
     assert adapter.received_ctx.memory_key == expected
+
+
+@pytest.mark.parametrize(
+    ("scope", "device_id", "expected"),
+    [
+        (MEMORY_SCOPE_DEVICE, "dev-9", "dev-9"),
+        (MEMORY_SCOPE_DEVICE, None, None),
+        (MEMORY_SCOPE_CONVERSATION, "dev-9", None),
+        (MEMORY_SCOPE_AGENT, "dev-9", None),
+    ],
+)
+async def test_legacy_memory_key_is_the_pre_subentry_device_key(
+    hass: HomeAssistant,
+    mock_chat_log: MockChatLog,
+    scope: str,
+    device_id: str | None,
+    expected: str | None,
+) -> None:
+    """Device scope also hands adapters the old shared key so stored sessions can be adopted."""
+    adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}])
+    entity = _make_entity(hass, adapter, subentry_data={CONF_MEMORY_SCOPE: scope})
+
+    await entity._async_run_turn(_user_input(device_id=device_id), mock_chat_log)
+
+    assert adapter.received_ctx is not None
+    assert adapter.received_ctx.legacy_memory_key == expected
 
 
 # --- provide_llm_data wiring -------------------------------------------------
@@ -488,26 +509,6 @@ def test_control_feature_present_with_llm_api(hass: HomeAssistant) -> None:
 # --- tool loop (LLMM-014) ----------------------------------------------------
 
 
-class _FakeTool:
-    """Minimal duck-typed ``llm.Tool`` for the round-trip through the real adapter."""
-
-    name = "get_time"
-    description = "Return the current time"
-    parameters = vol.Schema({})
-
-
-class _FakeLLMApi:
-    """Duck-typed ``llm.APIInstance`` exposing only what the adapter/chat_log read."""
-
-    def __init__(self, result: Any) -> None:
-        self.tools: list[Any] = [_FakeTool()]
-        self.custom_serializer = None
-        self._result = result
-
-    async def async_call_tool(self, tool_input: llm.ToolInput) -> Any:
-        return tool_call_result(self._result)
-
-
 class _AlwaysToolAdapter(BackendAdapter):
     """Adapter that emits a fresh tool call every turn — the runaway-backend case."""
 
@@ -562,7 +563,7 @@ async def test_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: MockChat
     (a non-JSON-native ``datetime``) via ``default=str`` without raising.
     """
     now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
-    fake_api = _FakeLLMApi(result={"now": now})
+    fake_api = FakeLLMApi(result={"now": now})
 
     turn1 = FakeStreamResponse(
         [
@@ -619,7 +620,7 @@ async def test_text_only_turn_runs_one_iteration(hass: HomeAssistant, mock_chat_
 
 async def test_tool_loop_iteration_cap(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
     """A backend that always calls a tool stops after MAX_TOOL_ITERATIONS with a result."""
-    fake_api = _FakeLLMApi(result={"ok": True})
+    fake_api = FakeLLMApi(result={"ok": True})
     adapter = _AlwaysToolAdapter(hass, MagicMock(), {})
     entity = _entity_with_adapter(hass, adapter, subentry_data={CONF_LLM_HASS_API: ["assist"]})
 
@@ -648,7 +649,7 @@ async def test_ollama_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: M
     ``default=str`` into a ``role: "tool"`` message without raising.
     """
     now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
-    fake_api = _FakeLLMApi(result={"now": now})
+    fake_api = FakeLLMApi(result={"now": now})
 
     turn1 = FakeStreamResponse(
         [

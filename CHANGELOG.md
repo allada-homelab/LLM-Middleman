@@ -6,6 +6,90 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Reauthentication.** Rejected credentials at setup, or a 401/403 during a turn, now
+  start Home Assistant's reauth flow, which asks only for the preset's credential
+  field(s). You no longer have to delete and re-add the connection. (#100)
+- **"Backend unreachable" repair issue.** Three turns in a row that cannot reach the
+  backend raise a warning repair issue; it clears when the backend answers again.
+  (#100)
+- **Token usage in the conversation trace** for `openai_compat` and `ollama` (#98),
+  LangGraph (#99) and Dify (#101). `openai_compat` asks for `stream_options.include_usage`
+  and retries once without it on servers that reject the field.
+- **Reasoning for `openai_compat`.** `reasoning_content` / `reasoning` deltas (DeepSeek,
+  vLLM, llama.cpp, OpenRouter) appear as thinking in the Assist chat; they are never
+  spoken. (#98)
+- **Backend tool activity in the Assist chat** for LangGraph (#99) and Dify Agent apps
+  and Chatflows (#101): tools the backend ran show up as tool calls and results.
+- **LangGraph (LLMM-022):** a graph's `interrupt()` question is spoken, the satellite
+  keeps listening, and the answer resumes the graph; new agent options *Double-texting*
+  (default: roll back the superseded run), *Spoken node*, *Input messages key* and
+  *Stateless runs*; a Bearer API-key header option on the connection; abandoned runs are
+  cancelled; HA turn metadata is sent in the run context; a wrong assistant id fails at
+  setup. (#99)
+- **Dify (LLMM-021):** new-style Agent apps are accepted; new agent options *Dify app
+  inputs*, *Send Home Assistant context* and *Use the Home Assistant user*; setup names
+  the problem for a workflow-app key or an unpublished Agent; moderation replacements,
+  reasoning and paused Chatflows are handled. (#101)
+- **More agent options in the form:** temperature, top P and maximum tokens
+  (`openai_compat`); context window, keep alive and think (`ollama`); message, reply and
+  session field names (`n8n`). The adapters already honoured these, but the form never
+  offered them. Left empty, the backend's default applies. (#102)
+
+### Changed
+
+- **Device memory scope is now per agent.** Two agents on one connection used to share a
+  device's session. For Dify and LangGraph, an existing device session is kept by the
+  first agent that talks on that device after the upgrade; others start fresh. n8n and
+  custom `/v1/converse` device sessions start fresh once (the session key the backend
+  sees changes). (#102)
+- **Setup probes the backend.** A backend that is down now makes HA retry setup instead
+  of loading and answering every turn with the fallback; adding an identical connection
+  aborts as already configured. (#97)
+- **Fallback replies are marked as errors** (intent error `unknown`, translated text set
+  apart from any partial reply), so automations can tell an unreachable backend from a
+  real answer. (#97)
+- **The turn-time prefix is only added for presets that forward bare text** (custom
+  `/v1/converse`, Dify). `openai_compat`, `ollama`, `n8n` and LangGraph get the time from
+  HA's system prompt. (#97, #99)
+- **Tool results carry an error flag** (`{"data", "error"}`, as HA's own integrations
+  send them); undescribed tools no longer send `"description": null`. (#97)
+- **LangGraph thread ids are deterministic** and created on first use; threads from
+  v1.1.x keep their history. (#99)
+- **Dify app inputs are redacted in diagnostics.** (#101)
+- **SSE parsing is several times faster** for long or chunky streams. (#97)
+- **Development:** HACS validation, a coverage gate and tag-driven GitHub releases in CI
+  (#90); cross-preset adapter-contract and streaming end-to-end gates (#91); copier
+  answers and the pyproject version now match the HACS layout and manifest (#92); shared
+  adapter helpers (#96).
+
+### Fixed
+
+- **n8n HTTP errors fall back cleanly.** A 401/500 used to be parsed as a reply (an error
+  body with an `output` field would have been spoken); it is now logged with its status.
+  Dify's turn-path 401 also names its status. (#91)
+- **Malformed backend responses no longer crash config forms.** A non-object probe body
+  is a connection error instead of a crash (#96); an unexpected probe exception shows as
+  an error on the form, and the model-list probe can no longer freeze the agent form for
+  60 s (#97).
+- **Unbounded memory use on misbehaving streams.** Ollama and n8n NDJSON lines are
+  capped and n8n blocking replies are limited to 1 MiB. (#96)
+- **One malformed tool call no longer fails an `openai_compat` turn**; the bad call is
+  dropped and the rest of the reply kept. (#97)
+- **Reconfiguring an entry whose setup failed now reloads it** (#100), and reconfigure
+  no longer reloads twice (#97).
+- **Dify:** a Chatflow cancelled before its first answer, or a timed-out turn, now stops
+  the Dify task; an ended conversation is recreated instead of wedging the agent; a
+  dropped stream is no longer passed off as a complete reply. (#101)
+- **LangGraph no longer speaks tool output.** (#99)
+- **Switching agents mid-conversation no longer confuses `openai_compat` / `ollama`.**
+  Tool calls a LangGraph or Dify backend ran itself were replayed to the next model as
+  if it had made them. (#102)
+- **Removing a connection deletes all of its stored data**, including LangGraph's
+  pending-interrupt state (previously only the session map). (#97, #102)
+- **The README now explains how to remove the integration.** (#102)
+
 ## [1.1.4] - 2026-10-24
 
 ### Changed

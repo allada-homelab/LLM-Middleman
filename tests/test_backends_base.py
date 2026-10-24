@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import aiohttp
 import pytest
 from homeassistant.components import conversation
-from homeassistant.core import Context, HomeAssistant
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -33,6 +33,11 @@ from custom_components.llm_middleman.backends.base import (
     probe_json,
 )
 from custom_components.llm_middleman.const import CONF_TIMEOUT, DEFAULT_TIMEOUT, IDLE_TIMEOUT
+from tests.conftest import (
+    FakeJsonResponse,
+    collect,
+    make_input,
+)
 
 
 class _DummyAdapter(BackendAdapter):
@@ -62,18 +67,6 @@ class _MissingStreamAdapter(BackendAdapter):
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
         return None
-
-
-def _make_input() -> conversation.ConversationInput:
-    return conversation.ConversationInput(
-        text="hi",
-        context=Context(),
-        conversation_id="conv-1",
-        device_id=None,
-        satellite_id=None,
-        language="en",
-        agent_id="agent-1",
-    )
 
 
 async def test_concrete_adapter_instantiates(hass: HomeAssistant) -> None:
@@ -133,7 +126,7 @@ def test_exception_surface() -> None:
 async def test_stream_turn_yields_delta_dicts(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
     adapter = _DummyAdapter(hass, async_get_clientsession(hass), {})
     ctx = TurnContext(options={}, memory_key="k")
-    deltas = [delta async for delta in adapter.stream_turn(mock_chat_log, _make_input(), ctx)]
+    deltas = await collect(adapter.stream_turn(mock_chat_log, make_input(), ctx))
     assert deltas == [{"role": "assistant"}, {"content": "x"}]
 
 
@@ -159,27 +152,7 @@ def test_build_client_timeout_default() -> None:
     assert timeout.sock_connect == DEFAULT_TIMEOUT
 
 
-class _ProbeResp:
-    """Probe response CM: ``status`` + async ``json()`` (or a decode failure)."""
-
-    def __init__(self, status: int, payload: object = None, *, bad_json: bool = False) -> None:
-        self.status = status
-        self._payload = payload
-        self._bad_json = bad_json
-
-    async def json(self) -> object:
-        if self._bad_json:
-            raise json.JSONDecodeError("Expecting value", "<html>", 0)
-        return self._payload
-
-    async def __aenter__(self) -> _ProbeResp:
-        return self
-
-    async def __aexit__(self, *args: object) -> bool:
-        return False
-
-
-def _probe_session(response: _ProbeResp) -> MagicMock:
+def _probe_session(response: FakeJsonResponse) -> MagicMock:
     session = MagicMock()
     session.get = MagicMock(return_value=response)
     session.post = MagicMock(return_value=response)
@@ -187,7 +160,7 @@ def _probe_session(response: _ProbeResp) -> MagicMock:
 
 
 async def test_probe_json_returns_object_body() -> None:
-    session = _probe_session(_ProbeResp(200, {"models": []}))
+    session = _probe_session(FakeJsonResponse({"models": []}))
     assert await probe_json(session, "http://x/api", label="X", headers={}) == {"models": []}
     assert session.get.call_args.kwargs["timeout"].total == DEFAULT_TIMEOUT
 
@@ -195,14 +168,14 @@ async def test_probe_json_returns_object_body() -> None:
 @pytest.mark.parametrize("payload", [[{"model": "m"}], "ok", 3, None])
 async def test_probe_json_non_object_body_is_connection_error(payload: object) -> None:
     """A non-object JSON body (e.g. a bare list) is a connection error, never a crash."""
-    session = _probe_session(_ProbeResp(200, payload))
+    session = _probe_session(FakeJsonResponse(payload))
     with pytest.raises(BackendConnectionError, match="non-object") as excinfo:
         await probe_json(session, "http://x/api", label="X", headers={})
     assert not isinstance(excinfo.value, BackendAuthError)
 
 
 async def test_probe_json_invalid_json_is_connection_error() -> None:
-    session = _probe_session(_ProbeResp(200, bad_json=True))
+    session = _probe_session(FakeJsonResponse(json.JSONDecodeError("Expecting value", "<html>", 0)))
     with pytest.raises(BackendConnectionError, match="invalid JSON"):
         await probe_json(session, "http://x/api", label="X", headers={})
 
@@ -211,7 +184,7 @@ async def test_probe_json_invalid_json_is_connection_error() -> None:
     ("status", "exc"), [(401, BackendAuthError), (403, BackendAuthError), (500, BackendStatusError)]
 )
 async def test_probe_json_maps_error_status(status: int, exc: type[Exception]) -> None:
-    session = _probe_session(_ProbeResp(status))
+    session = _probe_session(FakeJsonResponse(status=status))
     with pytest.raises(exc, match=f"HTTP {status}"):
         await probe_json(session, "http://x/api", label="X", headers={})
 
@@ -226,7 +199,7 @@ async def test_probe_json_transport_error_is_connection_error() -> None:
 
 async def test_probe_json_unparsed_post_checks_status_only() -> None:
     """``parse=False`` (a list-bodied endpoint) checks the status and returns ``{}``."""
-    session = _probe_session(_ProbeResp(200, ["assistant"]))
+    session = _probe_session(FakeJsonResponse(["assistant"]))
     result = await probe_json(session, "http://x/search", label="X", headers={}, method="POST", data="{}", parse=False)
     assert result == {}
     assert session.post.call_args.kwargs["data"] == "{}"
