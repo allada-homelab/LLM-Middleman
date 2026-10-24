@@ -184,6 +184,7 @@ class TurnContext:
     options: Mapping[str, Any]  # the agent subentry's options for this turn
     memory_key: str  # session key derived by the entity from the memory scope
     continue_conversation: bool = False  # adapter may set; entity ORs into result
+    fallback: bool = False  # entity-owned: the last round-trip ended in the fallback message
 
 
 class BackendAdapter(ABC):

@@ -23,7 +23,7 @@ from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import Context, HomeAssistant
-from homeassistant.helpers import llm
+from homeassistant.helpers import intent, llm
 
 from custom_components.llm_middleman.backends import BACKEND_TO_CLS
 from custom_components.llm_middleman.backends.base import (
@@ -224,10 +224,44 @@ async def test_guard_exception_after_content(hass: HomeAssistant, mock_chat_log:
 
     last = mock_chat_log.content[-1]
     assert isinstance(last, conversation.AssistantContent)
-    assert last.content is not None
-    assert "partial" in last.content
-    assert ERROR_MESSAGE in last.content
+    assert last.content == f"partial\n{ERROR_MESSAGE}"
     logger.exception.assert_called_once()
+
+
+async def test_fallback_result_is_an_error_response(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A turn answered by the fallback reports an error, not a successful action."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[], exc=RuntimeError("down"), raise_after=0))
+
+    result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert result.response.response_type is intent.IntentResponseType.ERROR
+    assert result.response.error_code is intent.IntentResponseErrorCode.UNKNOWN
+    assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+
+
+async def test_successful_turn_is_not_an_error_response(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A normally streamed reply keeps HA's default (non-error) response type."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}]))
+
+    result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert result.response.response_type is intent.IntentResponseType.ACTION_DONE
+
+
+async def test_fallback_message_uses_the_turn_language(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """The fallback text comes from the integration's translated exception string."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[]))
+    translated = {f"component.{DOMAIN}.exceptions.backend_unavailable.message": "Backend nicht erreichbar."}
+
+    with patch(
+        "custom_components.llm_middleman.conversation.translation.async_get_translations",
+        AsyncMock(return_value=translated),
+    ) as lookup:
+        result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert result.response.speech["plain"]["speech"] == "Backend nicht erreichbar."
+    assert lookup.await_args is not None
+    assert lookup.await_args.args[1:] == ("en", "exceptions", {DOMAIN})
 
 
 @pytest.mark.parametrize("status", [401, 500])
@@ -258,7 +292,7 @@ async def test_guard_injects_role_first(hass: HomeAssistant, mock_chat_log: Mock
     entity = _make_entity(hass, adapter)
     ctx = TurnContext(options={}, memory_key="k")
 
-    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx)))
+    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
 
     assert collected[0] == {"role": "assistant"}
     assert collected[1] == {"content": "x"}
@@ -270,7 +304,7 @@ async def test_empty_delta_passes_untrimmed(hass: HomeAssistant, mock_chat_log: 
     entity = _make_entity(hass, adapter)
     ctx = TurnContext(options={}, memory_key="k")
 
-    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx)))
+    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
 
     assert {"content": ""} in collected
     assert {"content": "a"} in collected
@@ -597,6 +631,7 @@ async def test_tool_loop_iteration_cap(hass: HomeAssistant, mock_chat_log: MockC
     assert adapter.calls == MAX_TOOL_ITERATIONS  # bounded, no hang
     assert isinstance(result, conversation.ConversationResult)
     assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+    assert result.response.response_type is intent.IntentResponseType.ERROR
     logger.warning.assert_called_once()
 
 

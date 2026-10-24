@@ -24,6 +24,7 @@ from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import intent, translation
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
@@ -160,11 +161,20 @@ class LLMMiddlemanConversationEntity(
                 "Tool loop hit MAX_TOOL_ITERATIONS (%d) without a final answer; returning fallback",
                 MAX_TOOL_ITERATIONS,
             )
+            ctx.fallback = True
             chat_log.async_add_assistant_content_without_tools(
-                conversation.AssistantContent(agent_id=self.entity_id, content=ERROR_MESSAGE)
+                conversation.AssistantContent(
+                    agent_id=self.entity_id, content=await self._async_fallback_message(user_input.language)
+                )
             )
 
         result = conversation.async_get_result_from_chat_log(user_input, chat_log)
+        if ctx.fallback:
+            # Mark the turn failed (keeping the spoken text, partial reply included) so
+            # pipelines/automations can tell a fallback from a real answer.
+            result.response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN, result.response.speech["plain"]["speech"]
+            )
         # Follow-up listening: HA already ORs in "reply ends with '?'"; the adapter
         # may explicitly request it via the per-turn TurnContext.
         result.continue_conversation = result.continue_conversation or ctx.continue_conversation
@@ -188,14 +198,15 @@ class LLMMiddlemanConversationEntity(
                 options=self.subentry.data,
                 memory_key=self._derive_memory_key(user_input, chat_log),
             )
+        ctx.fallback = False
         async for _content in chat_log.async_add_delta_content_stream(
             self.entity_id,
-            self._guarded(self.adapter.stream_turn(chat_log, user_input, ctx)),
+            self._guarded(self.adapter.stream_turn(chat_log, user_input, ctx), ctx, user_input.language),
         ):
             pass
         return ctx
 
-    async def _guarded(self, stream: DeltaStream) -> DeltaStream:
+    async def _guarded(self, stream: DeltaStream, ctx: TurnContext, language: str) -> DeltaStream:
         """Never-hangs wrapper around an adapter stream.
 
         Guarantees at least one ``AssistantContent`` on every exit path so
@@ -208,26 +219,42 @@ class LLMMiddlemanConversationEntity(
         * ``except Exception`` broadly (the v0 holes were ``ValueError`` from aiohttp's
           64 KB readline limit and ``UnicodeDecodeError``, plus ``TimeoutError``);
           logs with ``_LOGGER.exception`` and appends the fallback message, opening a
-          role first only if nothing was emitted yet.
+          role first only if nothing was emitted yet, and separating it from any
+          partial reply with a newline.
         * A silent end (stream yields nothing) emits role + fallback.
+
+        Either fallback path sets ``ctx.fallback`` so the result is marked an error.
         """
         started = False
+        has_text = False  # the current assistant block already carries reply text
         try:
             async for delta in stream:
                 if not started and "role" not in delta:
                     yield {"role": "assistant"}
                 started = True
+                if "role" in delta:
+                    has_text = False
+                if delta.get("content"):
+                    has_text = True
                 yield delta
         except Exception:
             _LOGGER.exception("Backend stream failed; returning fallback message")
+            ctx.fallback = True
             if not started:
                 yield {"role": "assistant"}
-            yield {"content": ERROR_MESSAGE}
+            message = await self._async_fallback_message(language)
+            yield {"content": f"\n{message}" if has_text else message}
             return
 
         if not started:
+            ctx.fallback = True
             yield {"role": "assistant"}
-            yield {"content": ERROR_MESSAGE}
+            yield {"content": await self._async_fallback_message(language)}
+
+    async def _async_fallback_message(self, language: str) -> str:
+        """Return the translated fallback text (English constant when untranslated)."""
+        translations = await translation.async_get_translations(self.hass, language, "exceptions", {DOMAIN})
+        return translations.get(f"component.{DOMAIN}.exceptions.backend_unavailable.message", ERROR_MESSAGE)
 
     def _derive_memory_key(
         self,

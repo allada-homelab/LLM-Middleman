@@ -139,6 +139,11 @@
             }
         }
     },
+    "exceptions": {
+        "backend_unavailable": {
+            "message": "Sorry, I could not reach the assistant right now. Please try again."
+        }
+    },
     "selector": {
         "memory_scope": {
             "options": {
