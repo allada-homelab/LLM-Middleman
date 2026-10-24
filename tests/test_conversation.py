@@ -251,17 +251,19 @@ async def test_empty_delta_passes_untrimmed(hass: HomeAssistant, mock_chat_log: 
 
 
 def test_build_client_timeout_defaults() -> None:
-    """No option → total=DEFAULT_TIMEOUT, sock_read=IDLE_TIMEOUT."""
+    """No option → no total, sock_connect=DEFAULT_TIMEOUT, sock_read=IDLE_TIMEOUT."""
     timeout = build_client_timeout({})
     assert isinstance(timeout, aiohttp.ClientTimeout)
-    assert timeout.total == DEFAULT_TIMEOUT
+    assert timeout.total is None
+    assert timeout.sock_connect == DEFAULT_TIMEOUT
     assert timeout.sock_read == IDLE_TIMEOUT
 
 
 def test_build_client_timeout_per_agent() -> None:
-    """The per-agent CONF_TIMEOUT overrides the total; sock_read stays idle."""
+    """The per-agent CONF_TIMEOUT overrides the connect bound; no total, sock_read stays idle."""
     timeout = build_client_timeout({CONF_TIMEOUT: 120})
-    assert timeout.total == 120
+    assert timeout.total is None
+    assert timeout.sock_connect == 120
     assert timeout.sock_read == IDLE_TIMEOUT
 
 
