@@ -24,6 +24,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INTEGRATION = REPO_ROOT / "custom_components" / "llm_middleman"
 MANIFEST = INTEGRATION / "manifest.json"
+# hassfest fails a custom manifest that lists a package from HA core's requirements.txt
+# ("is a dependency of Home Assistant itself"); keep this to exactly what it rejects.
+HASSFEST_FORBIDDEN_CORE_REQUIREMENTS = frozenset({"aiohttp"})
 
 
 def _stdlib_module_names() -> set[str]:
@@ -70,9 +73,10 @@ def test_third_party_imports_are_declared_in_manifest() -> None:
     dropped ``voluptuous-openapi`` from its own deps (2026.9.x), which is exactly
     why an exemption-keyed check would have missed this regression. A distribution
     that is already provided by HA is harmless if redeclared here — HA just sees an
-    already-satisfied requirement.
+    already-satisfied requirement — except for packages in HA core's own
+    ``requirements.txt``, which hassfest rejects outright in a custom manifest.
     """
-    declared = _manifest_requirements()
+    declared = _manifest_requirements() | HASSFEST_FORBIDDEN_CORE_REQUIREMENTS
     dist_map = packages_distributions()
     missing: list[str] = []
 
