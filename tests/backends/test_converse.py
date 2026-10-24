@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from homeassistant.components import conversation
-from homeassistant.core import Context, HomeAssistant
+from homeassistant.core import HomeAssistant
 
 from custom_components.llm_middleman.backends._sse import BackendStreamError
 from custom_components.llm_middleman.backends.base import TurnContext
@@ -31,22 +31,11 @@ from tests.conftest import (
     FakeStreamResponse,
     chunk_bytes,
     fake_aiohttp_session,
+    make_input,
     sse_bytes,
 )
 
 Delta = conversation.AssistantContentDeltaDict
-
-
-def _make_input(*, device_id: str | None = None) -> conversation.ConversationInput:
-    return conversation.ConversationInput(
-        text="hello",
-        context=Context(),
-        conversation_id="conv-1",
-        device_id=device_id,
-        satellite_id=None,
-        language="en",
-        agent_id="agent-1",
-    )
 
 
 def _adapter(
@@ -67,7 +56,7 @@ async def _collect(adapter: ConverseAdapter, ctx: TurnContext, **kw: object) -> 
     assert device_id is None or isinstance(device_id, str)
     return [
         delta
-        async for delta in adapter.stream_turn(object(), _make_input(device_id=device_id), ctx)  # type: ignore[arg-type]
+        async for delta in adapter.stream_turn(object(), make_input("hello", device_id=device_id), ctx)  # type: ignore[arg-type]
     ]
 
 
@@ -194,7 +183,7 @@ async def test_error_after_deltas_raises_after_yielding(hass: HomeAssistant) -> 
 
     seen: list[Delta] = []
     with pytest.raises(BackendStreamError):
-        async for delta in adapter.stream_turn(object(), _make_input(), ctx):  # type: ignore[arg-type]
+        async for delta in adapter.stream_turn(object(), make_input("hello"), ctx):  # type: ignore[arg-type]
             seen.append(delta)
 
     assert seen == [{"role": "assistant"}, {"content": "Hi"}]

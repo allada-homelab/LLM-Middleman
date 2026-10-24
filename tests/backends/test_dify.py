@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -30,7 +29,7 @@ import aiohttp
 import pytest
 from homeassistant.components import conversation
 from homeassistant.components.conversation import trace
-from homeassistant.core import Context, HomeAssistant
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import llm
@@ -41,12 +40,22 @@ from custom_components.llm_middleman.backends.base import (
     BackendConnectionError,
     BackendStatusError,
     BackendStreamError,
-    DeltaStream,
     TurnContext,
 )
 from custom_components.llm_middleman.backends.dify import PAUSED_NOTICE, DifyAdapter, DifyAppError
 from custom_components.llm_middleman.const import ERROR_MESSAGE
-from tests.conftest import FakeStreamResponse, MockChatLog, build_entity, chunk_bytes, sse_bytes
+from tests.conftest import (
+    FakeJsonResponse,
+    FakeStreamResponse,
+    HangingStreamContent,
+    MockChatLog,
+    build_entity,
+    chunk_bytes,
+    collect,
+    make_input,
+    sse_bytes,
+    text_of,
+)
 
 _BASE_URL = "https://api.dify.ai/v1"
 _CONN: dict[str, Any] = {"base_url": _BASE_URL, "api_key": "app-key", "entry_id": "e1"}
@@ -77,54 +86,6 @@ _USAGE: dict[str, Any] = {
 
 
 # --- fakes ------------------------------------------------------------------
-
-
-class _JsonResp:
-    """JSON response CM for the ``GET /info`` and ``GET /parameters`` probes."""
-
-    def __init__(self, status: int, payload: dict[str, Any] | None = None, *, raw: str | None = None) -> None:
-        self.status = status
-        self._payload = payload if payload is not None else {}
-        self._raw = raw
-
-    async def json(self) -> dict[str, Any]:
-        return self._payload
-
-    async def text(self) -> str:
-        return self._raw if self._raw is not None else json.dumps(self._payload)
-
-    async def __aenter__(self) -> _JsonResp:
-        return self
-
-    async def __aexit__(self, *args: object) -> bool:
-        return False
-
-
-class _HangingContent:
-    """Stream content that delivers ``first`` and then stalls until cancelled."""
-
-    def __init__(self, first: bytes) -> None:
-        self._first = first
-        self.reached = asyncio.Event()
-
-    async def iter_any(self) -> AsyncIterator[bytes]:
-        yield self._first
-        self.reached.set()
-        await asyncio.Event().wait()
-
-
-def _input(
-    text: str = "hi", *, user_id: str | None = None, device_id: str | None = None
-) -> conversation.ConversationInput:
-    return conversation.ConversationInput(
-        text=text,
-        context=Context(user_id=user_id),
-        conversation_id="conv-1",
-        device_id=device_id,
-        satellite_id=None,
-        language="en",
-        agent_id="agent-1",
-    )
 
 
 def _chat_log(hass: HomeAssistant, extra_system_prompt: str | None = None) -> conversation.ChatLog:
@@ -237,14 +198,6 @@ def _reply(blob: bytes, **kwargs: Any) -> FakeStreamResponse:
     return FakeStreamResponse(chunk_bytes(blob, 8), **kwargs)
 
 
-async def _collect(gen: DeltaStream) -> list[conversation.AssistantContentDeltaDict]:
-    return [delta async for delta in gen]
-
-
-def _text_of(deltas: list[conversation.AssistantContentDeltaDict]) -> str:
-    return "".join(delta.get("content") or "" for delta in deltas)
-
-
 async def _run(
     hass: HomeAssistant,
     blob: bytes,
@@ -256,7 +209,7 @@ async def _run(
 ) -> list[conversation.AssistantContentDeltaDict]:
     adapter = _adapter(hass, _session(blob, chunk=chunk, status=status, text=text))
     ctx = TurnContext(options=options or {}, memory_key="k")
-    return await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
+    return await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
 
 
 async def _run_traced(hass: HomeAssistant, blob: bytes) -> tuple[list[Any], list[dict[str, Any]]]:
@@ -274,11 +227,11 @@ def _patch_session(mp: pytest.MonkeyPatch, session: MagicMock) -> None:
     mp.setattr("custom_components.llm_middleman.backends.dify.async_get_clientsession", _get)
 
 
-def _probe_session(info: _JsonResp, parameters: _JsonResp | None = None) -> MagicMock:
+def _probe_session(info: FakeJsonResponse, parameters: FakeJsonResponse | None = None) -> MagicMock:
     """Session answering ``GET /info`` and ``GET /parameters`` by URL."""
-    params = parameters if parameters is not None else _JsonResp(200, {"user_input_form": []})
+    params = parameters if parameters is not None else FakeJsonResponse({"user_input_form": []})
 
-    def _get(url: str, **_kwargs: Any) -> _JsonResp:
+    def _get(url: str, **_kwargs: Any) -> FakeJsonResponse:
         return params if url == _PARAMS_URL else info
 
     session = MagicMock()
@@ -305,13 +258,13 @@ async def test_happy_path_streams_both_event_types(hass: HomeAssistant, event: s
     blob = _dify_sse(_msg("Hello ", event=event), _msg("world", event=event), _end(), newline=newline)
     deltas = await _run(hass, blob, chunk=5)
     assert deltas[0] == {"role": "assistant"}
-    assert _text_of(deltas) == "Hello world"
+    assert text_of(deltas) == "Hello world"
 
 
 async def test_message_end_terminates_stream(hass: HomeAssistant) -> None:
     # Content after message_end is never emitted (message_end is terminal).
     blob = _dify_sse(_msg("Hi", event="message"), _end(), _msg("after-end", event="message"))
-    assert _text_of(await _run(hass, blob, chunk=6)) == "Hi"
+    assert text_of(await _run(hass, blob, chunk=6)) == "Hi"
 
 
 async def test_legacy_agent_file_and_tts_events_produce_no_content(hass: HomeAssistant) -> None:
@@ -329,13 +282,13 @@ async def test_agent_closing_full_message_not_spoken_twice(hass: HomeAssistant) 
         _msg("Hi there", event="message"),
         _end(usage={"total_tokens": 50, "latency": 2.5}),
     )
-    assert _text_of(await _run(hass, blob, chunk=9)) == "Hi there"
+    assert text_of(await _run(hass, blob, chunk=9)) == "Hi there"
 
 
 async def test_message_end_flushes_held_think_fragment(hass: HomeAssistant) -> None:
     # A trailing "<" held back by the think-stripper is flushed by message_end, not by EOF.
     blob = _dify_sse(_msg("a <", event="message"), _end(), _msg("think>x</think>", event="message"))
-    assert _text_of(await _run(hass, blob, chunk=6)) == "a <"
+    assert text_of(await _run(hass, blob, chunk=6)) == "a <"
 
 
 async def test_sse_event_line_fallback_when_json_has_no_event(hass: HomeAssistant) -> None:
@@ -348,7 +301,7 @@ async def test_sse_event_line_fallback_when_json_has_no_event(hass: HomeAssistan
         ("message_end", json.dumps({"conversation_id": _CONV})),
         ("agent_message", bare("after-end")),
     )
-    assert _text_of(await _run(hass, blob, chunk=6)) == "Hi"
+    assert text_of(await _run(hass, blob, chunk=6)) == "Hi"
 
 
 # --- chatflow outcomes ------------------------------------------------------
@@ -383,7 +336,7 @@ async def test_chatflow_failure_raises_and_stops_task(hass: HomeAssistant) -> No
     adapter = _adapter(hass, rec.session())
 
     with pytest.raises(BackendStreamError):
-        await _collect(adapter.stream_turn(_chat_log(hass), _input(), TurnContext(options={}, memory_key="k")))
+        await collect(adapter.stream_turn(_chat_log(hass), make_input(), TurnContext(options={}, memory_key="k")))
     await hass.async_block_till_done()
 
     assert f"{_CHAT_URL}/{_TASK}/stop" in rec.urls
@@ -397,7 +350,9 @@ async def test_chatflow_pause_speaks_notice_and_traces_without_stopping(hass: Ho
     adapter = _adapter(hass, rec.session())
 
     with trace.async_conversation_trace() as conv_trace:
-        deltas = await _collect(adapter.stream_turn(_chat_log(hass), _input(), TurnContext(options={}, memory_key="k")))
+        deltas = await collect(
+            adapter.stream_turn(_chat_log(hass), make_input(), TurnContext(options={}, memory_key="k"))
+        )
     await hass.async_block_till_done()
 
     assert deltas == [{"role": "assistant"}, {"content": PAUSED_NOTICE}]
@@ -409,7 +364,7 @@ async def test_chatflow_pause_speaks_notice_and_traces_without_stopping(hass: Ho
 async def test_chatflow_pause_after_text_appends_notice(hass: HomeAssistant) -> None:
     paused = _wf("workflow_paused", workflow_run_id=_RUN, paused_nodes=["approval_node"], status="paused")
     blob = _dify_sse(_WF_STARTED, _msg("Drafted.", event="message"), paused)
-    assert _text_of(await _run(hass, blob, chunk=9)) == f"Drafted. {PAUSED_NOTICE}"
+    assert text_of(await _run(hass, blob, chunk=9)) == f"Drafted. {PAUSED_NOTICE}"
 
 
 # --- truncated streams ------------------------------------------------------
@@ -435,7 +390,7 @@ async def test_mid_stream_error_after_partial_text_raises_and_logs(
     # Real wire: the error is a bare data frame. It must not be swallowed as "message".
     blob = _dify_sse(_msg("partial ", event="message"), _error(code="boom", message="bad"))
     adapter = _adapter(hass, _session(blob, chunk=7))
-    gen = adapter.stream_turn(_chat_log(hass), _input(), TurnContext(options={}, memory_key="k"))
+    gen = adapter.stream_turn(_chat_log(hass), make_input(), TurnContext(options={}, memory_key="k"))
     assert await anext(gen) == {"role": "assistant"}
     assert await anext(gen) == {"content": "partial "}
     with pytest.raises(BackendStreamError):
@@ -467,7 +422,7 @@ async def test_message_replace_after_text_is_traced_not_spoken(
         _end(),
     )
     deltas, details = await _run_traced(hass, blob)
-    assert _text_of(deltas) == "bad words"
+    assert text_of(deltas) == "bad words"
     assert {"dify_message_replace": {"answer": "[redacted]", "reason": "moderation"}} in details
     assert "already spoken" in caplog.text
 
@@ -504,7 +459,7 @@ async def test_think_blocks_stripped_from_answer(hass: HomeAssistant) -> None:
         _end(),
     )
     deltas = await _run(hass, blob, chunk=3)
-    assert _text_of(deltas) == "It's twelve thirty-four PM, sir."
+    assert text_of(deltas) == "It's twelve thirty-four PM, sir."
     # role-first invariant: emitted exactly once, and only once real content exists.
     assert deltas[0] == {"role": "assistant"}
     assert sum(1 for d in deltas if d.get("role")) == 1
@@ -512,18 +467,18 @@ async def test_think_blocks_stripped_from_answer(hass: HomeAssistant) -> None:
 
 async def test_think_tags_split_across_deltas_are_stripped(hass: HomeAssistant) -> None:
     blob = _dify_sse(_msg("<th"), _msg("ink>reasoning"), _msg(" here</th"), _msg("ink>real answer"), _end())
-    assert _text_of(await _run(hass, blob, chunk=4)) == "real answer"
+    assert text_of(await _run(hass, blob, chunk=4)) == "real answer"
 
 
 async def test_unclosed_think_emits_no_content(hass: HomeAssistant) -> None:
     # An open <think> with no close must never speak the partial reasoning.
     blob = _dify_sse(_msg("<think>\nthinking but cut off"), _end())
-    assert _text_of(await _run(hass, blob, chunk=4)) == ""
+    assert text_of(await _run(hass, blob, chunk=4)) == ""
 
 
 async def test_literal_angle_bracket_text_preserved(hass: HomeAssistant) -> None:
     blob = _dify_sse(_msg("price is < 5 dollars"), _end())
-    assert _text_of(await _run(hass, blob, chunk=3)) == "price is < 5 dollars"
+    assert text_of(await _run(hass, blob, chunk=3)) == "price is < 5 dollars"
 
 
 # --- request shape ----------------------------------------------------------
@@ -533,7 +488,7 @@ async def test_request_shape_first_turn_omits_conversation_id(hass: HomeAssistan
     rec = _Recorder(_reply(_dify_sse(_msg("ok"), _end())))
     session = rec.session()
     adapter = _adapter(hass, session)
-    await _collect(adapter.stream_turn(_chat_log(hass), _input("hello"), TurnContext(options={}, memory_key="k")))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input("hello"), TurnContext(options={}, memory_key="k")))
 
     assert rec.urls == [_CHAT_URL]
     assert rec.bodies[0] == {
@@ -553,7 +508,7 @@ async def test_user_option_sends_ha_user_id(hass: HomeAssistant) -> None:
     rec = _Recorder(_reply(_dify_sse(_msg("ok"), _end())))
     adapter = _adapter(hass, rec.session())
     ctx = TurnContext(options={"dify_user_from_ha": True}, memory_key="k")
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(user_id="ha-user-1"), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(user_id="ha-user-1"), ctx))
     assert rec.bodies[0]["user"] == "ha-user-1"
 
 
@@ -562,16 +517,16 @@ async def test_user_option_falls_back_without_ha_user(hass: HomeAssistant) -> No
     rec = _Recorder(_reply(_dify_sse(_msg("ok"), _end())))
     adapter = _adapter(hass, rec.session())
     ctx = TurnContext(options={"dify_user_from_ha": True}, memory_key="k")
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
     assert rec.bodies[0]["user"] == "home-assistant"
 
 
 # --- inputs -----------------------------------------------------------------
 
 
-def _form(*controls: tuple[str, dict[str, Any]]) -> _JsonResp:
+def _form(*controls: tuple[str, dict[str, Any]]) -> FakeJsonResponse:
     """A ``GET /parameters`` body whose user_input_form declares ``controls``."""
-    return _JsonResp(200, {"opening_statement": "", "user_input_form": [{kind: c} for kind, c in controls]})
+    return FakeJsonResponse({"opening_statement": "", "user_input_form": [{kind: c} for kind, c in controls]})
 
 
 def _field(variable: str, *, required: bool = False, **extra: Any) -> dict[str, Any]:
@@ -582,7 +537,7 @@ async def _turn_with_inputs(
     hass: HomeAssistant,
     options: dict[str, Any],
     *,
-    parameters: _JsonResp | None = None,
+    parameters: FakeJsonResponse | None = None,
     chat_log: conversation.ChatLog | None = None,
     user_input: conversation.ConversationInput | None = None,
 ) -> tuple[dict[str, Any], MagicMock]:
@@ -592,7 +547,7 @@ async def _turn_with_inputs(
     session.get = MagicMock(return_value=parameters or _form())
     adapter = _adapter(hass, session)
     ctx = TurnContext(options=options, memory_key="k")
-    await _collect(adapter.stream_turn(chat_log or _chat_log(hass), user_input or _input(), ctx))
+    await collect(adapter.stream_turn(chat_log or _chat_log(hass), user_input or make_input(), ctx))
     return rec.bodies[0]["inputs"], session
 
 
@@ -630,7 +585,7 @@ async def test_ha_context_resolves_satellite_area(hass: HomeAssistant) -> None:
 
     parameters = _form(("text-input", _field("ha_area")), ("text-input", _field("ha_device_id")))
     inputs, _ = await _turn_with_inputs(
-        hass, {"dify_ha_context": True}, parameters=parameters, user_input=_input(device_id=device.id)
+        hass, {"dify_ha_context": True}, parameters=parameters, user_input=make_input(device_id=device.id)
     )
     assert inputs == {"ha_area": "Kitchen", "ha_device_id": device.id}
 
@@ -649,8 +604,8 @@ async def test_declared_inputs_cached_across_turns(hass: HomeAssistant) -> None:
     adapter = _adapter(hass, session)
     ctx = TurnContext(options={"dify_ha_context": True}, memory_key="k")
 
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
 
     assert session.get.call_count == 1
     assert session.get.call_args.args[0] == _PARAMS_URL
@@ -664,8 +619,8 @@ async def test_declared_inputs_refetched_after_ttl(hass: HomeAssistant, monkeypa
     adapter = _adapter(hass, session)
     ctx = TurnContext(options={"dify_ha_context": True}, memory_key="k")
 
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
 
     assert session.get.call_count == 2
 
@@ -673,7 +628,7 @@ async def test_declared_inputs_refetched_after_ttl(hass: HomeAssistant, monkeypa
 async def test_parameters_fetch_failure_does_not_fail_turn(
     hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
-    inputs, _ = await _turn_with_inputs(hass, {"dify_ha_context": True}, parameters=_JsonResp(500))
+    inputs, _ = await _turn_with_inputs(hass, {"dify_ha_context": True}, parameters=FakeJsonResponse(status=500))
     assert inputs == {}
     assert "sending no HA context inputs" in caplog.text
 
@@ -693,8 +648,8 @@ async def test_second_turn_echoes_captured_conversation_id(hass: HomeAssistant) 
     rec = _Recorder(_reply(blob), _reply(blob))
     adapter = _adapter(hass, rec.session())
     ctx = TurnContext(options={}, memory_key="k")
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
 
     assert "conversation_id" not in rec.bodies[0]  # first turn: no id
     assert rec.bodies[1]["conversation_id"] == "conv-xyz"  # second turn: echoes captured id
@@ -706,8 +661,8 @@ async def test_conversation_id_captured_from_workflow_started(hass: HomeAssistan
     adapter = _adapter(hass, rec.session())
     ctx = TurnContext(options={}, memory_key="k")
     with pytest.raises(BackendStreamError):
-        await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
+        await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
 
     assert rec.bodies[-1]["conversation_id"] == _CONV
 
@@ -722,13 +677,13 @@ async def test_device_map_persists_across_restart(hass: HomeAssistant, hass_stor
     device_ctx = TurnContext(options={"memory_scope": "device"}, memory_key="dev-A")
 
     adapter1 = _adapter(hass, _session(blob, chunk=8))
-    await _collect(adapter1.stream_turn(_chat_log(hass), _input(), device_ctx))
+    await collect(adapter1.stream_turn(_chat_log(hass), make_input(), device_ctx))
     assert hass_storage["llm_middleman.dify.e1"]["data"] == {"dev-A": "conv-dev"}
 
     # "Restart": a fresh adapter (same entry) reloads the map and echoes the stored id.
     rec = _Recorder(_reply(blob))
     adapter2 = _adapter(hass, rec.session())
-    await _collect(adapter2.stream_turn(_chat_log(hass), _input(), device_ctx))
+    await collect(adapter2.stream_turn(_chat_log(hass), make_input(), device_ctx))
     assert rec.bodies[0]["conversation_id"] == "conv-dev"
 
 
@@ -743,8 +698,8 @@ async def test_legacy_device_conversation_adopted_once_by_first_agent(
     adapter = _adapter(hass, rec.session())
     first = TurnContext(options={"memory_scope": "device"}, memory_key="sub-1:dev-A", legacy_memory_key="dev-A")
     second = TurnContext(options={"memory_scope": "device"}, memory_key="sub-2:dev-A", legacy_memory_key="dev-A")
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), first))
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), second))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), first))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), second))
 
     assert rec.bodies[0]["conversation_id"] == "conv-old"
     assert "conversation_id" not in rec.bodies[1]
@@ -776,12 +731,12 @@ async def test_gone_conversation_dropped_and_retried_once(hass: HomeAssistant, s
     adapter = _adapter(hass, rec.session())
     ctx = TurnContext(options={}, memory_key="k")
 
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))  # turn 1 -> captures old-id
-    deltas = await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))  # turn 2 -> gone -> retry
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))  # turn 1 -> captures old-id
+    deltas = await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))  # turn 2 -> gone -> retry
 
     assert rec.bodies[1]["conversation_id"] == "old-id"  # stale id echoed
     assert "conversation_id" not in rec.bodies[2]  # retried once without id
-    assert _text_of(deltas) == "recovered"
+    assert text_of(deltas) == "recovered"
 
 
 # --- pre-stream errors ------------------------------------------------------
@@ -820,7 +775,7 @@ async def test_stop_fired_on_cancel_midstream_with_turn_user(hass: HomeAssistant
     rec = _Recorder(_reply(_dify_sse(_msg("Hi", task_id="task-9"))))
     adapter = _adapter(hass, rec.session())
     ctx = TurnContext(options={"dify_user_from_ha": True}, memory_key="k")
-    gen = adapter.stream_turn(_chat_log(hass), _input(user_id="ha-user-1"), ctx)
+    gen = adapter.stream_turn(_chat_log(hass), make_input(user_id="ha-user-1"), ctx)
 
     assert await anext(gen) == {"role": "assistant"}
     assert await anext(gen) == {"content": "Hi"}
@@ -834,12 +789,12 @@ async def test_stop_fired_on_cancel_midstream_with_turn_user(hass: HomeAssistant
 async def test_stop_fired_on_cancel_during_chatflow_pre_answer_phase(hass: HomeAssistant) -> None:
     # Only workflow_started has arrived (no answer yet) when HA cancels the turn.
     response = FakeStreamResponse([])
-    content = _HangingContent(_dify_sse(_PING, _WF_STARTED, _NODE_STARTED))
+    content = HangingStreamContent(_dify_sse(_PING, _WF_STARTED, _NODE_STARTED))
     response.content = content  # type: ignore[assignment]
     rec = _Recorder(response)
     adapter = _adapter(hass, rec.session())
     task = asyncio.create_task(
-        _collect(adapter.stream_turn(_chat_log(hass), _input(), TurnContext(options={}, memory_key="k")))
+        collect(adapter.stream_turn(_chat_log(hass), make_input(), TurnContext(options={}, memory_key="k")))
     )
     await content.reached.wait()
 
@@ -858,7 +813,7 @@ async def test_stop_fired_on_idle_timeout(hass: HomeAssistant) -> None:
     adapter = _adapter(hass, rec.session())
 
     with pytest.raises(TimeoutError):
-        await _collect(adapter.stream_turn(_chat_log(hass), _input(), TurnContext(options={}, memory_key="k")))
+        await collect(adapter.stream_turn(_chat_log(hass), make_input(), TurnContext(options={}, memory_key="k")))
     await hass.async_block_till_done()
 
     assert rec.stop_bodies() == [{"user": "home-assistant"}]
@@ -873,7 +828,7 @@ async def test_stop_failure_is_swallowed(hass: HomeAssistant) -> None:
     session = MagicMock()
     session.post = MagicMock(side_effect=handler)
     adapter = _adapter(hass, session)
-    gen = adapter.stream_turn(_chat_log(hass), _input(), TurnContext(options={}, memory_key="k"))
+    gen = adapter.stream_turn(_chat_log(hass), make_input(), TurnContext(options={}, memory_key="k"))
     await anext(gen)
     await anext(gen)
     await gen.aclose()
@@ -885,7 +840,7 @@ async def test_no_stop_on_cancel_before_task_id_seen(hass: HomeAssistant) -> Non
     # the content yield with no task_id ever captured.
     rec = _Recorder(_reply(_dify_sse({"event": "agent_message", "answer": "Hi", "message_id": _MSG})))
     adapter = _adapter(hass, rec.session())
-    gen = adapter.stream_turn(_chat_log(hass), _input(), TurnContext(options={}, memory_key="k"))
+    gen = adapter.stream_turn(_chat_log(hass), make_input(), TurnContext(options={}, memory_key="k"))
 
     assert await anext(gen) == {"role": "assistant"}
     assert await anext(gen) == {"content": "Hi"}
@@ -900,7 +855,7 @@ async def test_no_stop_on_cancel_before_task_id_seen(hass: HomeAssistant) -> Non
 
 @pytest.mark.parametrize("mode", ["chat", "agent-chat", "advanced-chat", "agent"])
 async def test_validate_accepts_chat_modes(hass: HomeAssistant, mode: str) -> None:
-    session = _probe_session(_JsonResp(200, {"mode": mode, "name": "app"}))
+    session = _probe_session(FakeJsonResponse({"mode": mode, "name": "app"}))
     with pytest.MonkeyPatch.context() as mp:
         _patch_session(mp, session)
         await DifyAdapter.async_validate_connection(hass, {"base_url": _BASE_URL, "api_key": "app-key"})
@@ -911,7 +866,7 @@ async def test_validate_accepts_chat_modes(hass: HomeAssistant, mode: str) -> No
 
 @pytest.mark.parametrize("mode", ["workflow", "completion"])
 async def test_validate_rejects_non_chat_mode(hass: HomeAssistant, mode: str) -> None:
-    session = _probe_session(_JsonResp(200, {"mode": mode}))
+    session = _probe_session(FakeJsonResponse({"mode": mode}))
     with pytest.MonkeyPatch.context() as mp:
         _patch_session(mp, session)
         with pytest.raises(DifyAppError) as err:
@@ -920,8 +875,10 @@ async def test_validate_rejects_non_chat_mode(hass: HomeAssistant, mode: str) ->
 
 
 async def test_validate_rejects_unpublished_agent(hass: HomeAssistant) -> None:
-    unpublished = _JsonResp(400, {"code": "agent_not_published", "message": "Agent has not been published."})
-    session = _probe_session(_JsonResp(200, {"mode": "agent"}), unpublished)
+    unpublished = FakeJsonResponse(
+        {"code": "agent_not_published", "message": "Agent has not been published."}, status=400
+    )
+    session = _probe_session(FakeJsonResponse({"mode": "agent"}), unpublished)
     with pytest.MonkeyPatch.context() as mp:
         _patch_session(mp, session)
         with pytest.raises(DifyAppError) as err:
@@ -930,7 +887,9 @@ async def test_validate_rejects_unpublished_agent(hass: HomeAssistant) -> None:
 
 
 async def test_validate_parameters_error_status(hass: HomeAssistant) -> None:
-    session = _probe_session(_JsonResp(200, {"mode": "chat"}), _JsonResp(400, {"code": "app_unavailable"}))
+    session = _probe_session(
+        FakeJsonResponse({"mode": "chat"}), FakeJsonResponse({"code": "app_unavailable"}, status=400)
+    )
     with pytest.MonkeyPatch.context() as mp:
         _patch_session(mp, session)
         with pytest.raises(BackendStatusError):
@@ -938,7 +897,7 @@ async def test_validate_parameters_error_status(hass: HomeAssistant) -> None:
 
 
 async def test_validate_auth_error(hass: HomeAssistant) -> None:
-    session = _probe_session(_JsonResp(401))
+    session = _probe_session(FakeJsonResponse(status=401))
     with pytest.MonkeyPatch.context() as mp:
         _patch_session(mp, session)
         with pytest.raises(BackendAuthError):
@@ -957,7 +916,7 @@ async def test_validate_transport_error_is_connection_error(hass: HomeAssistant)
 async def test_fetch_input_form_parses_declared_variables(hass: HomeAssistant) -> None:
     city = _field("city", required=True)
     mood = {"variable": "mood", "label": "Mood", "required": False, "default": "calm", "options": ["calm"]}
-    session = _probe_session(_JsonResp(200), _form(("text-input", city), ("select", mood)))
+    session = _probe_session(FakeJsonResponse(), _form(("text-input", city), ("select", mood)))
     with pytest.MonkeyPatch.context() as mp:
         _patch_session(mp, session)
         declared = await DifyAdapter.async_fetch_input_form(hass, {"base_url": _BASE_URL, "api_key": "k"})
@@ -965,7 +924,7 @@ async def test_fetch_input_form_parses_declared_variables(hass: HomeAssistant) -
 
 
 async def test_fetch_input_form_rejects_non_object_body(hass: HomeAssistant) -> None:
-    session = _probe_session(_JsonResp(200), _JsonResp(200, raw="<html>proxy error</html>"))
+    session = _probe_session(FakeJsonResponse(), FakeJsonResponse(raw="<html>proxy error</html>"))
     with pytest.MonkeyPatch.context() as mp:
         _patch_session(mp, session)
         with pytest.raises(BackendConnectionError):
@@ -977,7 +936,7 @@ async def test_fetch_input_form_skips_malformed_entries(hass: HomeAssistant) -> 
     body: dict[str, Any] = {
         "user_input_form": [{"text-input": city}, "junk", {"a": {}, "b": {}}, {"paragraph": "x"}, {"select": {}}]
     }
-    session = _probe_session(_JsonResp(200), _JsonResp(200, body))
+    session = _probe_session(FakeJsonResponse(), FakeJsonResponse(body))
     with pytest.MonkeyPatch.context() as mp:
         _patch_session(mp, session)
         declared = await DifyAdapter.async_fetch_input_form(hass, {"base_url": _BASE_URL, "api_key": "k"})
@@ -985,7 +944,7 @@ async def test_fetch_input_form_skips_malformed_entries(hass: HomeAssistant) -> 
 
 
 async def test_validate_parameters_auth_error(hass: HomeAssistant) -> None:
-    session = _probe_session(_JsonResp(200, {"mode": "chat"}), _JsonResp(403))
+    session = _probe_session(FakeJsonResponse({"mode": "chat"}), FakeJsonResponse(status=403))
     with pytest.MonkeyPatch.context() as mp:
         _patch_session(mp, session)
         with pytest.raises(BackendAuthError):
@@ -1002,8 +961,8 @@ async def test_gone_conversation_dropped_from_persisted_map(hass: HomeAssistant,
     adapter = _adapter(hass, rec.session())
     ctx = TurnContext(options={"memory_scope": "device"}, memory_key="dev-A")
 
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
-    await _collect(adapter.stream_turn(_chat_log(hass), _input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
+    await collect(adapter.stream_turn(_chat_log(hass), make_input(), ctx))
 
     assert "conversation_id" not in rec.bodies[2]
     assert hass_storage["llm_middleman.dify.e1"]["data"] == {"dev-A": "new-id"}
@@ -1064,7 +1023,7 @@ async def test_agent_thought_tool_call_and_result_emitted_once(hass: HomeAssista
     ]
     # The answer opens a fresh assistant block after the tool result; tool I/O is never spoken.
     assert deltas[-2:] == [{"role": "assistant"}, {"content": "Here is the image."}]
-    assert _text_of(deltas) == "Here is the image."
+    assert text_of(deltas) == "Here is the image."
 
 
 async def test_agent_thought_with_several_tools_splits_inputs_and_observations(hass: HomeAssistant) -> None:
@@ -1116,7 +1075,7 @@ async def test_chatflow_tool_node_emits_call_and_result(hass: HomeAssistant) -> 
         ("call", "ne_tool_1", "Weather", {"city": "Berlin"}, True),
         ("result", "ne_tool_1", "Weather", {"text": "sunny"}),
     ]
-    assert _text_of(deltas) == "It is sunny."
+    assert text_of(deltas) == "It is sunny."
 
 
 async def test_chatflow_failed_tool_node_records_error_result(hass: HomeAssistant) -> None:
@@ -1135,7 +1094,7 @@ async def test_tools_without_answer_raise_without_stopping(hass: HomeAssistant) 
     rec = _Recorder(_reply(blob))
     adapter = _adapter(hass, rec.session())
     with pytest.raises(BackendStreamError):
-        await _collect(adapter.stream_turn(_chat_log(hass), _input(), TurnContext(options={}, memory_key="k")))
+        await collect(adapter.stream_turn(_chat_log(hass), make_input(), TurnContext(options={}, memory_key="k")))
     await hass.async_block_till_done()
     assert rec.urls == [_CHAT_URL]  # message_end arrived: the task is over, nothing to stop
 
@@ -1156,7 +1115,7 @@ async def test_turn_with_tool_activity_posts_exactly_once(hass: HomeAssistant, m
     rec = _Recorder(_reply(_TOOL_TURN), _reply(_TOOL_TURN))
     entity = build_entity(hass, _adapter(hass, rec.session()), {})
 
-    result = await entity._async_handle_message(_input(), mock_chat_log)
+    result = await entity._async_handle_message(make_input(), mock_chat_log)
 
     assert rec.urls == [_CHAT_URL]
     assert result.response.speech["plain"]["speech"] == "Kitchen lights are on."
@@ -1176,7 +1135,7 @@ async def test_tools_without_answer_post_once_and_speak_fallback(
     rec = _Recorder(_reply(blob), _reply(blob))
     entity = build_entity(hass, _adapter(hass, rec.session()), {})
 
-    result = await entity._async_handle_message(_input(), mock_chat_log)
+    result = await entity._async_handle_message(make_input(), mock_chat_log)
 
     assert rec.urls == [_CHAT_URL]
     assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE

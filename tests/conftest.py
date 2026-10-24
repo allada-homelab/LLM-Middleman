@@ -8,7 +8,9 @@ flows) import this harness instead of re-inventing scaffolding.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+import asyncio
+import json
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field, fields
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -19,7 +21,7 @@ from aiohttp import web
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigSubentry, ConfigSubentryData
 from homeassistant.const import CONF_PROMPT
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import chat_session, llm
 from homeassistant.helpers import config_validation as cv
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -310,6 +312,118 @@ def fake_aiohttp_session(
     else:
         session.post = MagicMock(return_value=response)
     return session
+
+
+class HangingStreamContent:
+    """Stream content that yields ``first`` and then stalls until cancelled (a run in flight)."""
+
+    def __init__(self, first: bytes) -> None:
+        self._first = first
+        self.reached = asyncio.Event()
+
+    async def iter_any(self) -> AsyncIterator[bytes]:
+        yield self._first
+        self.reached.set()
+        await asyncio.Event().wait()
+
+
+class FakeJsonResponse:
+    """Async-CM stand-in for a JSON ``GET``/``POST`` probe response: ``status``, ``json()``, ``text()``.
+
+    ``payload`` defaults to an empty object; an exception payload is raised from ``json()``
+    (an undecodable body). ``raw`` overrides ``text()`` (default: the JSON-encoded payload).
+    """
+
+    _EMPTY: Any = object()
+
+    def __init__(self, payload: object = _EMPTY, *, status: int = 200, raw: str | None = None) -> None:
+        self.status = status
+        self._payload: object = {} if payload is FakeJsonResponse._EMPTY else payload
+        self._raw = raw
+
+    async def json(self) -> Any:
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+    async def text(self) -> str:
+        return self._raw if self._raw is not None else json.dumps(self._payload)
+
+    async def __aenter__(self) -> FakeJsonResponse:
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+
+def fake_get_session(*, response: FakeJsonResponse | None = None, exc: Exception | None = None) -> MagicMock:
+    """Return a session mock whose ``.get`` yields ``response`` or raises ``exc``."""
+    session = MagicMock()
+    if exc is not None:
+        session.get = MagicMock(side_effect=exc)
+    else:
+        session.get = MagicMock(return_value=response)
+    return session
+
+
+def make_input(text: str = "hi", *, user_id: str | None = None, **fields: Any) -> conversation.ConversationInput:
+    """A ``ConversationInput`` for adapter tests; ``fields`` override any other constructor argument."""
+    values: dict[str, Any] = {
+        "context": Context(user_id=user_id),
+        "conversation_id": "conv-1",
+        "device_id": None,
+        "satellite_id": None,
+        "language": "en",
+        "agent_id": "agent-1",
+        **fields,
+    }
+    return conversation.ConversationInput(text=text, **values)
+
+
+async def collect(
+    stream: AsyncIterable[conversation.AssistantContentDeltaDict],
+) -> list[conversation.AssistantContentDeltaDict]:
+    """Drain an adapter's delta stream into a list."""
+    return [delta async for delta in stream]
+
+
+def text_of(deltas: list[conversation.AssistantContentDeltaDict]) -> str:
+    """Concatenate the ``content`` of a delta list (the text that would be spoken)."""
+    return "".join(delta.get("content") or "" for delta in deltas)
+
+
+class FakeTool:
+    """Minimal duck-typed ``llm.Tool`` (name/description/voluptuous parameters)."""
+
+    name = "get_time"
+    description: str | None = "Return the current time"
+    parameters: Any = vol.Schema({})
+
+
+class UndescribedTool(FakeTool):
+    """A tool with no description (``None``, not empty)."""
+
+    description = None
+
+
+class FakeLLMApi:
+    """Duck-typed ``llm.APIInstance`` exposing only what adapters and ``ChatLog`` read.
+
+    ``tools`` defaults to one :class:`FakeTool`; ``async_call_tool`` returns ``result``.
+    """
+
+    def __init__(
+        self,
+        tools: list[Any] | None = None,
+        result: Any = None,
+        custom_serializer: Callable[[Any], Any] | None = None,
+    ) -> None:
+        self.tools: list[Any] = tools if tools is not None else [FakeTool()]
+        self.custom_serializer = custom_serializer
+        self._result: Any = result if result is not None else {}
+
+    async def async_call_tool(self, tool_input: llm.ToolInput) -> Any:
+        return tool_call_result(self._result)
 
 
 def build_entity(

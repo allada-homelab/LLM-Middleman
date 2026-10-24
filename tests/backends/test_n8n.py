@@ -18,7 +18,7 @@ import aiohttp
 import pytest
 from homeassistant.components import conversation
 from homeassistant.const import CONF_PROMPT
-from homeassistant.core import Context, HomeAssistant
+from homeassistant.core import HomeAssistant
 
 from custom_components.llm_middleman.backends import BACKEND_TO_CLS
 from custom_components.llm_middleman.backends.base import (
@@ -45,21 +45,17 @@ from custom_components.llm_middleman.const import (
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
 )
-from tests.conftest import FakeStreamResponse, MockChatLog, build_entity, chunk_bytes, fake_aiohttp_session
+from tests.conftest import (
+    FakeStreamResponse,
+    MockChatLog,
+    build_entity,
+    chunk_bytes,
+    collect,
+    fake_aiohttp_session,
+    make_input,
+)
 
 _WEBHOOK = "https://n8n.local/webhook/abc/chat"
-
-
-def _make_input() -> conversation.ConversationInput:
-    return conversation.ConversationInput(
-        text="hi there",
-        context=Context(),
-        conversation_id="conv-1",
-        device_id=None,
-        satellite_id=None,
-        language="en",
-        agent_id="agent-1",
-    )
 
 
 def _adapter(
@@ -81,7 +77,7 @@ async def _collect(
     system_prompt: str = "",
 ) -> list[conversation.AssistantContentDeltaDict]:
     chat_log = conversation.ChatLog(adapter.hass, "conv-1", [conversation.SystemContent(content=system_prompt)])
-    return [delta async for delta in adapter.stream_turn(chat_log, _make_input(), ctx)]
+    return await collect(adapter.stream_turn(chat_log, make_input("hi there"), ctx))
 
 
 def _ctx(**options: Any) -> TurnContext:
@@ -303,7 +299,7 @@ async def test_configured_prompt_reaches_body_rendered(hass: HomeAssistant, mock
     session = fake_aiohttp_session(response=_response([b'{"output":"ok"}'], "application/json"))
     entity = build_entity(hass, _adapter(hass, session), {CONF_PROMPT: "Hi {{ 'x' | upper }}"})
 
-    await entity._async_handle_message(_make_input(), mock_chat_log)
+    await entity._async_handle_message(make_input("hi there"), mock_chat_log)
 
     system_prompt = _posted_body(session)["systemPrompt"]
     assert system_prompt.startswith("Hi X\n")
