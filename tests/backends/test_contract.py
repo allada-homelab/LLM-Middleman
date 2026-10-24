@@ -11,6 +11,8 @@ The contract, and the regression class each clause gates:
 * a multi-piece reply is spoken as exactly that text (wrong-field dispatch, dropped frames);
 * an HTTP 401/500 on the turn request is logged and voiced as the fallback — never a
   silent empty reply (an adapter that ignores the status ends the stream silently);
+* an HTTP 401/403 on the turn request asks HA to reauthenticate the entry (a 500 does
+  not), so a revoked credential surfaces as a reauth prompt instead of silent fallbacks;
 * a stream that ends with no content is voiced as the fallback;
 * the streaming request has no ``total`` deadline but an idle ``sock_read`` one (a
   ``total`` timeout kills a reply that is still streaming).
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from unittest.mock import patch
 
 import aiohttp
 import pytest
@@ -113,6 +116,21 @@ async def test_http_error_status_is_logged_with_its_status_code(
     await run_pipeline_turn(hass, entity_id)
 
     assert any(f"HTTP {status}" in text for text in _integration_error_texts(caplog))
+
+
+@pytest.mark.parametrize(("status", "reauth"), [(401, True), (403, True), (500, False)])
+async def test_auth_error_status_requests_reauth(
+    hass: HomeAssistant, live_backend: ScriptedBackend, preset: str, status: int, reauth: bool
+) -> None:
+    """A credential rejection on the turn request starts reauth; other statuses don't."""
+    live_backend.serve(preset, PIECES, status=status)
+    entry, entity_id = await setup_agent(hass, preset, live_backend.base_url)
+
+    with patch.object(entry, "async_start_reauth") as start_reauth:
+        result = await run_pipeline_turn(hass, entity_id)
+
+    assert speech(result) == ERROR_MESSAGE
+    assert start_reauth.called is reauth
 
 
 async def test_reply_without_content_is_voiced_as_fallback(

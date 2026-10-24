@@ -18,10 +18,11 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_PROMPT, Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.util import slugify
@@ -41,6 +42,7 @@ from .const import (
     CONF_URL,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    ISSUE_BACKEND_UNREACHABLE,
     PROBE_TIMEOUT,
     STORAGE_VERSION,
     SUBENTRY_TYPE_CONVERSATION,
@@ -63,10 +65,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry)
         async with asyncio.timeout(PROBE_TIMEOUT):
             await adapter_cls.async_validate_connection(hass, entry.data)
     except BackendAuthError as err:
-        # No reauth flow exists, so rejected credentials are a hard error (fix via reconfigure).
-        raise ConfigEntryError(f"Backend rejected the credentials: {err}") from err
+        # HA starts the reauth flow (config_flow.async_step_reauth) on this exception.
+        raise ConfigEntryAuthFailed(
+            translation_domain=DOMAIN, translation_key="auth_failed", translation_placeholders={"error": str(err)}
+        ) from err
     except (BackendConnectionError, TimeoutError) as err:
-        raise ConfigEntryNotReady(f"Backend is not reachable: {err}") from err
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="backend_not_ready",
+            translation_placeholders={"error": str(err) or type(err).__name__},
+        ) from err
+    # The probe reached the backend, so any outstanding unreachable issue is resolved.
+    async_delete_unreachable_issue(hass, entry.entry_id)
     # entry_id rides along so adapters needing a per-entry discriminator (the
     # langgraph thread-map Store) never fall back to a shareable base_url slug.
     connection_data = {**entry.data, "entry_id": entry.entry_id}
@@ -82,6 +92,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry)
     return True
 
 
+def _unreachable_issue_id(entry_id: str) -> str:
+    return f"{ISSUE_BACKEND_UNREACHABLE}_{entry_id}"
+
+
+@callback
+def async_create_unreachable_issue(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> None:
+    """Raise the repair issue telling the user this connection's backend can't be reached."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        _unreachable_issue_id(entry.entry_id),
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=ISSUE_BACKEND_UNREACHABLE,
+        translation_placeholders={"title": entry.title},
+        learn_more_url="https://github.com/allada-homelab/LLM-Middleman",
+    )
+
+
+@callback
+def async_delete_unreachable_issue(hass: HomeAssistant, entry_id: str) -> None:
+    """Clear the unreachable repair issue (a no-op when none is raised)."""
+    ir.async_delete_issue(hass, DOMAIN, _unreachable_issue_id(entry_id))
+
+
 async def async_update_options(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> None:
     """Reload the entry when its data/options/subentries change (core pattern)."""
     await hass.config_entries.async_reload(entry.entry_id)
@@ -93,11 +128,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> None:
-    """Delete the session-map Store a stateful preset persisted for this entry.
+    """Delete the entry's repair issue and any session-map Store its stateful preset persisted.
 
     The key mirrors the dify/langgraph adapters' per-entry Store key
     (``<domain>.<backend>.<slugified entry_id>``); tests pin it to the adapters' own.
     """
+    async_delete_unreachable_issue(hass, entry.entry_id)
     backend_type = entry.data.get(CONF_BACKEND_TYPE)
     if backend_type in (BACKEND_DIFY, BACKEND_LANGGRAPH):
         store: Store[dict[str, str]] = Store(

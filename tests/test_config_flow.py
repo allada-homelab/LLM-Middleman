@@ -40,22 +40,32 @@ from custom_components.llm_middleman.const import (
     BACKEND_DIFY,
     BACKEND_LANGGRAPH,
     BACKEND_N8N,
+    BACKEND_OLLAMA,
     BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
     CONF_ASSISTANT_ID,
     CONF_AUTH_SCHEME,
+    CONF_AUTH_TYPE,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_HEADER_NAME,
+    CONF_HEADER_VALUE,
     CONF_INPUT_MESSAGES_KEY,
     CONF_MAX_HISTORY,
     CONF_MEMORY_SCOPE,
     CONF_MODEL,
     CONF_MULTITASK_STRATEGY,
+    CONF_PASSWORD,
     CONF_RESPONSE_NODE_FILTER,
     CONF_STATELESS_RUNS,
     CONF_TIMEOUT,
+    CONF_TOKEN,
+    CONF_USERNAME,
     CONF_WEBHOOK_URL,
     DOMAIN,
+    N8N_AUTH_BASIC,
+    N8N_AUTH_HEADER,
+    N8N_AUTH_NONE,
     SUBENTRY_TYPE_CONVERSATION,
 )
 
@@ -327,6 +337,161 @@ async def test_reconfigure_reloads_once_via_update_listener(
 
     assert reload.call_count == 1
     assert "should use it for scheduling a reload" not in caplog.text
+
+
+class _AuthRejectingAdapter(FakeAdapter):
+    @classmethod
+    async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
+        raise BackendAuthError("bad key")
+
+
+async def test_reconfigure_reloads_entry_whose_setup_failed(hass: HomeAssistant) -> None:
+    """A failed-setup entry has no update listener, so reconfigure reloads it itself."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        title="OpenAI-compatible",
+        data={CONF_BACKEND_TYPE: BACKEND_OPENAI_COMPAT, CONF_BASE_URL: "http://old.local:8000"},
+    )
+    entry.add_to_hass(hass)
+    with patch.dict(_SETUP_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: _AuthRejectingAdapter}):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.state is config_entries.ConfigEntryState.SETUP_ERROR
+
+    with (
+        patch(_REGISTRY_PATH, _registry()),
+        patch.dict(_SETUP_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: FakeAdapter}),
+    ):
+        form: dict[str, Any] = dict(await entry.start_reconfigure_flow(hass))
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://new.local:9000"})
+        await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+
+
+# --- Reauthentication flow ------------------------------------------------------
+
+_OPENAI_DATA = {CONF_BACKEND_TYPE: BACKEND_OPENAI_COMPAT, CONF_BASE_URL: "http://llm.local", CONF_API_KEY: "old"}
+
+
+def _reauth_entry(hass: HomeAssistant, data: Mapping[str, Any] = _OPENAI_DATA) -> MockConfigEntry:
+    entry = MockConfigEntry(domain=DOMAIN, version=2, title="Connection", data=dict(data))
+    entry.add_to_hass(hass)
+    return entry
+
+
+async def _start_reauth(hass: HomeAssistant, entry: MockConfigEntry) -> dict[str, Any]:
+    return dict(await entry.start_reauth_flow(hass))
+
+
+async def test_reauth_updates_credentials_and_reloads_failed_entry(hass: HomeAssistant) -> None:
+    """An entry whose setup failed on auth (no update listener) is updated and reloaded."""
+    entry = _reauth_entry(hass)
+
+    with (
+        patch(_REGISTRY_PATH, _registry()),
+        patch.dict(_SETUP_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: FakeAdapter}),
+    ):
+        form = await _start_reauth(hass, entry)
+        result = await _configure(hass, form["flow_id"], {CONF_API_KEY: "new"})
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data == {**_OPENAI_DATA, CONF_API_KEY: "new"}
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+
+
+async def test_reauth_of_loaded_entry_reloads_once_via_update_listener(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A loaded entry's listener owns the reload; reload+listener together is deprecated."""
+    entry = _reauth_entry(hass)
+
+    with (
+        patch(_REGISTRY_PATH, _registry()),
+        patch.dict(_SETUP_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: FakeAdapter}),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        with patch.object(hass.config_entries, "async_reload", wraps=hass.config_entries.async_reload) as reload:
+            form = await _start_reauth(hass, entry)
+            await _configure(hass, form["flow_id"], {CONF_API_KEY: "new"})
+            await hass.async_block_till_done()
+
+    assert entry.data[CONF_API_KEY] == "new"
+    assert reload.call_count == 1
+    assert "should use it for scheduling a reload" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("exc", "error"),
+    [
+        (BackendAuthError("bad key"), "invalid_auth"),
+        (BackendConnectionError("down"), "cannot_connect"),
+        (RuntimeError("boom"), "unknown"),
+    ],
+)
+async def test_reauth_failed_probe_keeps_form_and_credentials(hass: HomeAssistant, exc: Exception, error: str) -> None:
+    """Rejected new credentials re-show the form with the mapped error; the entry is untouched."""
+    entry = _reauth_entry(hass)
+
+    with patch(_REGISTRY_PATH, _registry(**{BACKEND_OPENAI_COMPAT: _fake_adapter(exc)})):
+        form = await _start_reauth(hass, entry)
+        result = await _configure(hass, form["flow_id"], {CONF_API_KEY: "still-wrong"})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {"base": error}
+    assert entry.data[CONF_API_KEY] == "old"
+
+
+@pytest.mark.parametrize(
+    ("data", "fields"),
+    [
+        ({CONF_BACKEND_TYPE: BACKEND_OPENAI_COMPAT}, {CONF_API_KEY}),
+        ({CONF_BACKEND_TYPE: BACKEND_OLLAMA}, {CONF_API_KEY}),
+        ({CONF_BACKEND_TYPE: BACKEND_LANGGRAPH}, {CONF_API_KEY}),
+        ({CONF_BACKEND_TYPE: BACKEND_DIFY}, {CONF_API_KEY}),
+        ({CONF_BACKEND_TYPE: BACKEND_CONVERSE}, {CONF_TOKEN}),
+        ({CONF_BACKEND_TYPE: BACKEND_N8N, CONF_AUTH_TYPE: N8N_AUTH_BASIC}, {CONF_USERNAME, CONF_PASSWORD}),
+        ({CONF_BACKEND_TYPE: BACKEND_N8N, CONF_AUTH_TYPE: N8N_AUTH_HEADER}, {CONF_HEADER_NAME, CONF_HEADER_VALUE}),
+    ],
+)
+async def test_reauth_asks_only_the_backends_credential_fields(
+    hass: HomeAssistant, data: dict[str, Any], fields: set[str]
+) -> None:
+    """Reauth re-asks just the credential the entry's backend (and n8n auth type) uses."""
+    form = await _start_reauth(hass, _reauth_entry(hass, data))
+
+    assert form["step_id"] == "reauth_confirm"
+    assert _schema_keys(form["data_schema"]) == fields
+
+
+@pytest.mark.parametrize("data", [{CONF_AUTH_TYPE: N8N_AUTH_NONE}, {}])
+async def test_reauth_aborts_for_a_connection_without_credentials(hass: HomeAssistant, data: dict[str, Any]) -> None:
+    """An unauthenticated n8n webhook has nothing to re-enter, so reauth aborts cleanly."""
+    form = await _start_reauth(hass, _reauth_entry(hass, {CONF_BACKEND_TYPE: BACKEND_N8N, **data}))
+
+    assert form["type"] is FlowResultType.ABORT
+    assert form["reason"] == "reauth_not_supported"
+
+
+async def test_reauth_with_blank_optional_key_removes_it(hass: HomeAssistant) -> None:
+    """Submitting an empty optional key (HA omits the field) drops the stale stored key."""
+    entry = _reauth_entry(hass)
+
+    with (
+        patch(_REGISTRY_PATH, _registry()),
+        patch.dict(_SETUP_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: FakeAdapter}),
+    ):
+        form = await _start_reauth(hass, entry)
+        await _configure(hass, form["flow_id"], {})
+        await hass.async_block_till_done()
+
+    assert CONF_API_KEY not in entry.data
 
 
 # --- Conversation subentry flow (LLMM-007) ------------------------------------
