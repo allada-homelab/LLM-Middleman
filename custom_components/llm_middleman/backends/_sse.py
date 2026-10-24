@@ -1,4 +1,4 @@
-"""Spec-compliant Server-Sent-Events reader.
+"""Spec-compliant Server-Sent-Events reader (plus the NDJSON line framer).
 
 Frames a raw byte stream (``AsyncIterable[bytes]`` of arbitrary chunks, e.g.
 ``response.content.iter_any()``) into ``ServerSentEvent`` objects following the
@@ -10,6 +10,9 @@ Owning raw-byte framing here turns the two v0 failure modes into a typed,
 catchable error: the oversized-line ``ValueError`` (aiohttp's readline cap) and
 ``UnicodeDecodeError`` (bad UTF-8) no longer escape. This module imports nothing
 from ``base.py`` to keep the dependency direction one-way.
+
+:func:`async_iter_lines` is the newline-delimited sibling for the NDJSON presets
+(ollama, n8n), sharing the same per-line byte cap and skip-oversize strategy.
 """
 
 from __future__ import annotations
@@ -22,6 +25,10 @@ _LOGGER = logging.getLogger(__name__)
 
 _CR = 0x0D
 _LF = 0x0A
+
+# Per-line buffering cap shared by both framers: bounds memory against a peer that
+# never sends a terminator; an over-cap line is drained and skipped, never fatal.
+MAX_LINE_BYTES = 65536
 
 
 @dataclass(frozen=True)
@@ -46,7 +53,7 @@ class BackendStreamError(Exception):
 
 
 async def async_iter_sse(
-    stream: AsyncIterable[bytes], *, max_line_bytes: int = 65536
+    stream: AsyncIterable[bytes], *, max_line_bytes: int = MAX_LINE_BYTES
 ) -> AsyncGenerator[ServerSentEvent]:
     """Frame a raw byte stream into ``ServerSentEvent`` objects.
 
@@ -141,3 +148,42 @@ async def async_iter_sse(
                 )
                 line_overflowed = True
                 line_buf.clear()
+
+
+async def async_iter_lines(
+    stream: AsyncIterable[bytes], *, max_line_bytes: int = MAX_LINE_BYTES
+) -> AsyncGenerator[bytes]:
+    """Frame a raw byte stream into LF-terminated lines (NDJSON), without the ``\\n``.
+
+    Chunk boundaries need not align with lines; a final unterminated line is flushed at
+    EOF. Lines are yielded raw (blank lines included) so each caller keeps its own
+    JSON/blank-line policy. A line longer than ``max_line_bytes`` is not buffered past
+    the cap: it is logged, drained to its terminator, and skipped, so one oversized
+    object cannot grow memory without bound or abort the stream.
+    """
+    line_buf = bytearray()
+    line_overflowed = False  # current line passed the cap: drain to its terminator, then skip it
+
+    def _skip_oversize() -> None:
+        _LOGGER.warning("NDJSON line exceeded %d bytes; skipping it", max_line_bytes)
+
+    async for chunk in stream:
+        start = 0
+        while (newline := chunk.find(b"\n", start)) != -1:
+            if not line_overflowed:
+                line_buf += chunk[start:newline]
+                if len(line_buf) > max_line_bytes:
+                    _skip_oversize()
+                else:
+                    yield bytes(line_buf)
+            line_buf.clear()
+            line_overflowed = False
+            start = newline + 1
+        if not line_overflowed:
+            line_buf += chunk[start:]
+            if len(line_buf) > max_line_bytes:
+                _skip_oversize()
+                line_overflowed = True
+                line_buf.clear()
+    if line_buf:
+        yield bytes(line_buf)

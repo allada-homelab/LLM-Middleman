@@ -2,8 +2,8 @@
 
 Ollama's ``/api/chat`` streams **newline-delimited JSON** (``application/x-ndjson``),
 one JSON object per line, terminated by an object with ``done: true`` -- not SSE. So
-this adapter frames the stream itself (``_iter_ndjson`` below) instead of using
-``_sse.py``. It is a **stateless-replay** adapter: every turn it rebuilds the provider
+this adapter frames it with the shared, line-capped :func:`._sse.async_iter_lines`
+(``_iter_ndjson`` below adds the JSON decode). It is a **stateless-replay** adapter: every turn it rebuilds the provider
 ``messages[]`` from ``chat_log.content`` and trims old rounds via the shared
 ``_history.trim_history`` helper (core-ollama's ``_trim_history`` rule).
 
@@ -44,6 +44,7 @@ from custom_components.llm_middleman.const import (
 )
 
 from ._history import trim_history
+from ._sse import async_iter_lines
 from ._tools import format_function_tool, tool_result_json
 from .base import (
     BackendAdapter,
@@ -109,34 +110,20 @@ def _convert_content(content: conversation.Content) -> dict[str, Any]:
 
 
 async def _iter_ndjson(stream: AsyncIterable[bytes]) -> AsyncGenerator[dict[str, Any]]:
-    """Frame a raw NDJSON byte stream into JSON objects, one per line.
+    """Decode a raw NDJSON byte stream into JSON objects, one per line.
 
-    Maintains a byte buffer, splits on ``\\n``, and ``json.loads`` each complete
-    line; the trailing partial fragment is carried to the next chunk, and a final
-    object with no trailing newline is flushed at EOF. Boundaries need not align
-    with lines. Blank lines are skipped. A line that is not valid JSON raises
-    ``BackendStreamError`` so the entity guard can map it to the fallback (never let
-    a raw ``JSONDecodeError`` escape).
+    Lines come from :func:`async_iter_lines` (chunk-boundary agnostic, EOF tail
+    flushed, oversize lines skipped). Blank lines are skipped. A line that is not
+    valid JSON raises ``BackendStreamError`` so the entity guard can map it to the
+    fallback (never let a raw ``JSONDecodeError`` escape).
     """
-    buffer = bytearray()
-
-    def _load(raw: bytes) -> dict[str, Any]:
+    async for line in async_iter_lines(stream):
+        if not line.strip():
+            continue
         try:
-            return cast("dict[str, Any]", json.loads(raw))
+            yield cast("dict[str, Any]", json.loads(line))
         except json.JSONDecodeError as err:
-            raise BackendStreamError(f"Malformed NDJSON line: {raw!r}") from err
-
-    async for chunk in stream:
-        buffer.extend(chunk)
-        while (newline := buffer.find(b"\n")) != -1:
-            line = bytes(buffer[:newline])
-            del buffer[: newline + 1]
-            if line.strip():
-                yield _load(line)
-
-    tail = bytes(buffer).strip()
-    if tail:
-        yield _load(tail)
+            raise BackendStreamError(f"Malformed NDJSON line: {line!r}") from err
 
 
 class OllamaAdapter(BackendAdapter):

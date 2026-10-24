@@ -171,6 +171,17 @@ async def test_error_after_deltas_propagates(hass: HomeAssistant, mock_chat_log:
     assert seen == [{"role": "assistant"}, {"content": "Hi"}]
 
 
+async def test_oversize_ndjson_line_skipped_stream_continues(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    """An over-cap NDJSON line is dropped (bounded memory); later lines still stream."""
+    huge = b'{"message":{"content":"' + b"x" * 70000 + b'"}}\n'
+    blob = huge + b'{"message":{"content":"ok"}}\n{"message":{"content":""},"done":true}\n'
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse(chunk_bytes(blob, 4096))))
+    deltas = await _run(adapter, mock_chat_log)
+    assert deltas == [{"role": "assistant"}, {"content": "ok"}]
+
+
 async def test_non_200_status_raises(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
     response = FakeStreamResponse([], status=500)
     adapter = _adapter(hass, fake_aiohttp_session(response=response))

@@ -6,8 +6,8 @@ Chat Trigger and the AI Agent node. So the adapter must branch on the **actual
 response** (content-type / first bytes), never on the ``streaming`` config toggle.
 
 Streaming is NDJSON ``StructuredChunk`` lines
-(``{"type":"begin"|"item"|"end"|"error","content":…}``, n8n 1.103.0) — NOT SSE, so
-this module does not use ``_sse.py``. ``item.content`` is accumulated and streamed
+(``{"type":"begin"|"item"|"end"|"error","content":…}``, n8n 1.103.0) — NOT SSE; lines
+are framed by the shared, line-capped :func:`._sse.async_iter_lines`. ``item.content`` is accumulated and streamed
 delta-by-delta; **EOF (the stream closing) is the true done signal** — a run may emit
 several ``begin``/``end`` cycles, so ``end`` is never treated as terminal.
 
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Mapping
 from typing import Any, ClassVar, Literal
 from urllib.parse import urlparse
 
@@ -49,6 +49,7 @@ from ..const import (  # noqa: TID252 — sibling package const module
     N8N_OUTPUT_FIELD_FALLBACK,
     N8N_TARGET_WEBHOOK,
 )
+from ._sse import MAX_LINE_BYTES, async_iter_lines
 from .base import (
     BackendAdapter,
     BackendConnectionError,
@@ -67,6 +68,9 @@ _ACTION_SEND_MESSAGE = "sendMessage"
 # StructuredChunk envelope types (n8n 1.103.0). ``begin``/``end`` are segment markers,
 # not stream terminators — a single run may emit several begin/end cycles.
 _STRUCTURED_CHUNK_TYPES = frozenset({"begin", "item", "end", "error"})
+# A blocking (non-streamed) reply is read whole before parsing, so it is capped: 1 MiB is
+# far beyond any spoken reply, and an over-cap body fails the turn instead of growing memory.
+_MAX_BLOCKING_BYTES = 1 << 20
 
 _Mode = Literal["html", "ndjson", "blocking"]
 
@@ -96,6 +100,14 @@ async def _next_chunk(stream: AsyncIterator[bytes]) -> bytes | None:
         return await anext(stream)
     except StopAsyncIteration:
         return None
+
+
+async def _prepend(head: bytes, rest: AsyncIterator[bytes]) -> AsyncGenerator[bytes]:
+    """Re-attach the bytes consumed while sniffing to the front of the remaining stream."""
+    if head:
+        yield head
+    async for chunk in rest:
+        yield chunk
 
 
 class N8nAdapter(BackendAdapter):
@@ -189,8 +201,9 @@ class N8nAdapter(BackendAdapter):
         buffer = bytearray()
         exhausted = False
 
-        # Phase 1: buffer up to the first line boundary (or EOF) to sniff the real mode.
-        while b"\n" not in buffer:
+        # Phase 1: buffer up to the first line boundary (or EOF, or the line cap) to sniff
+        # the real mode.
+        while b"\n" not in buffer and len(buffer) <= MAX_LINE_BYTES:
             chunk = await _next_chunk(stream)
             if chunk is None:
                 exhausted = True
@@ -208,34 +221,19 @@ class N8nAdapter(BackendAdapter):
             if not exhausted:
                 async for chunk in stream:
                     buffer += chunk
+                    if len(buffer) > _MAX_BLOCKING_BYTES:
+                        break
+            if len(buffer) > _MAX_BLOCKING_BYTES:
+                raise BackendStreamError(f"n8n blocking reply exceeded {_MAX_BLOCKING_BYTES} bytes")
             for delta in self._blocking_deltas(bytes(buffer), ctx):
                 yield delta
             return
 
-        # NDJSON streaming path: emit item content as it arrives; EOF is the true done signal.
+        # NDJSON streaming path: emit item content as it arrives; EOF is the true done
+        # signal, and a final line with no trailing newline still counts.
         started = False
-        while True:
-            idx = buffer.find(b"\n")
-            while idx != -1:
-                line = bytes(buffer[:idx])
-                del buffer[: idx + 1]
-                for content in _line_contents(line):
-                    if not started:
-                        started = True
-                        yield {"role": "assistant"}
-                    yield {"content": content}
-                idx = buffer.find(b"\n")
-            if exhausted:
-                break
-            chunk = await _next_chunk(stream)
-            if chunk is None:
-                exhausted = True
-                continue
-            buffer += chunk
-
-        # A final line with no trailing newline still counts.
-        if buffer.strip():
-            for content in _line_contents(bytes(buffer)):
+        async for line in async_iter_lines(_prepend(bytes(buffer), stream)):
+            for content in _line_contents(line):
                 if not started:
                     started = True
                     yield {"role": "assistant"}

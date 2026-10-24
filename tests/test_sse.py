@@ -7,10 +7,14 @@ Self-contained: no conftest fixtures, no aiohttp.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
+
+import pytest
 
 from custom_components.llm_middleman.backends._sse import (
     ServerSentEvent,
+    async_iter_lines,
     async_iter_sse,
 )
 
@@ -137,3 +141,40 @@ async def test_event_type_resets_between_frames() -> None:
         ServerSentEvent("text_delta", "one"),
         ServerSentEvent("message", "two"),
     ]
+
+
+# --- NDJSON line framer ------------------------------------------------------
+
+
+async def _lines(*parts: bytes, max_line_bytes: int = 65536) -> list[bytes]:
+    return [line async for line in async_iter_lines(_chunks(*parts), max_line_bytes=max_line_bytes)]
+
+
+async def test_lines_split_across_chunks_with_eof_tail() -> None:
+    lines = await _lines(b'{"a":', b"1}\n\n{", b'"b":2}')
+    assert lines == [b'{"a":1}', b"", b'{"b":2}']
+
+
+async def test_lines_one_byte_per_chunk() -> None:
+    blob = b"ab\ncd\n"
+    assert await _lines(*(blob[i : i + 1] for i in range(len(blob)))) == [b"ab", b"cd"]
+
+
+async def test_lines_oversize_line_across_chunks_skipped_next_delivered(caplog: pytest.LogCaptureFixture) -> None:
+    """An over-cap line is never buffered whole: drained to its LF, logged, skipped."""
+    with caplog.at_level(logging.WARNING):
+        lines = await _lines(b"ok\n" + b"x" * 6, b"x" * 6, b"xx\nnext\n", max_line_bytes=8)
+    assert lines == [b"ok", b"next"]
+    assert "exceeded 8 bytes" in caplog.text
+
+
+async def test_lines_oversize_line_within_one_chunk_skipped() -> None:
+    assert await _lines(b"x" * 20 + b"\nnext\n", max_line_bytes=8) == [b"next"]
+
+
+async def test_lines_oversize_unterminated_tail_not_flushed() -> None:
+    assert await _lines(b"ok\n", b"x" * 20, max_line_bytes=8) == [b"ok"]
+
+
+async def test_lines_line_at_cap_delivered() -> None:
+    assert await _lines(b"x" * 8 + b"\n", max_line_bytes=8) == [b"x" * 8]
