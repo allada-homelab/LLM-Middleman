@@ -1,5 +1,7 @@
 # 01 — Home Assistant 2026.7 Reference (Conversation · LLM · Voice · AI Task · MCP)
 
+> **Archived** from `docs/knowledge/` because it describes the sibling repo's code, not this one.
+
 > **⚠ QUARANTINED — EXTERNAL REFERENCE, NOT A DESCRIPTION OF THIS REPO.**
 > This is a research report written for the **sibling `LLM-Home-Controller` repo** and
 > **retained here verbatim** for its generic HA 2026.7 API knowledge. It is *not* a
@@ -10,7 +12,7 @@
 > belongs to the **sibling repo**, and much of it does **not exist in `LLM-Middleman`**
 > (e.g. this repo has no `ai_task.py`, no `sensor.py`, no registered `llm.API`, and a
 > `backends/`-adapter shape). This repo's actual architecture is
-> [`03-the-shim.md`](03-the-shim.md) and [`../implementation/plan.md`](../implementation/plan.md);
+> [`03-the-shim.md`](../knowledge/03-the-shim.md) and [`../implementation/plan.md`](../implementation/plan.md);
 > ground every claim against the code — **the code wins**.
 >
 > **What is still safe to use here:**

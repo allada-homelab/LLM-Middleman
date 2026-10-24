@@ -20,15 +20,13 @@ Pick one preset per connection. Each streams the reply token-by-token
 | Preset | Talks to | Transport | HA tool loop |
 |--------|----------|-----------|--------------|
 | **OpenAI-compatible** | any `/v1/chat/completions` server (llama.cpp, vLLM, LiteLLM, Ollama's OpenAI mode, …) | SSE, `[DONE]` sentinel | Yes |
-| **Ollama** | a native Ollama server (`/api/chat`) | NDJSON, `done: true` | Not yet¹ |
-| **LangGraph** | a LangGraph deployment (`langgraph dev` / self-hosted / cloud) | SSE, `messages-tuple` | No² |
-| **Custom `/v1/converse`** | your own external agent speaking the v0 SSE contract | SSE, `text_delta`/`done`/`error` | No² |
-| **n8n** | an n8n Chat Trigger / Webhook workflow | NDJSON `StructuredChunk` (with a blocking fallback) | No² |
-| **Dify** | a Dify chat / agent / chatflow app (`/chat-messages`) | SSE, `agent_message`/`message`/`message_end` | No² |
+| **Ollama** | a native Ollama server (`/api/chat`) | NDJSON, `done: true` | Yes |
+| **LangGraph** | a LangGraph deployment (`langgraph dev` / self-hosted / cloud) | SSE, `messages-tuple` | No¹ |
+| **Custom `/v1/converse`** | your own external agent speaking the v0 SSE contract | SSE, `text_delta`/`done`/`error` | No¹ |
+| **n8n** | an n8n Chat Trigger / Webhook workflow | NDJSON `StructuredChunk` (with a blocking fallback) | No¹ |
+| **Dify** | a Dify chat / agent / chatflow app (`/chat-messages`) | SSE, `agent_message`/`message`/`message_end` | No¹ |
 
-¹ The Ollama adapter's native protocol carries tool calls; wiring them into the HA tool
-loop is tracked separately and not enabled in this build.
-² These backends run their own tools server-side — the integration passes text through and
+¹ These backends run their own tools server-side — the integration passes text through and
 does not expose Home Assistant's tools to them.
 
 ## Configuration model
@@ -104,6 +102,8 @@ The integration ships redacted config-entry diagnostics (**Settings → Devices 
 entry state, and entity metadata are included to aid support without leaking secrets.
 
 ## Installation (HACS)
+
+Requires Home Assistant **2026.7.0** or newer.
 
 1. Add this repository as a custom repository in HACS (category: Integration).
 2. Install **LLM Middleman** and restart Home Assistant.

@@ -1,4 +1,4 @@
-<!-- PR title must follow Conventional Commits: `type(scope): summary` — a CI check enforces it. -->
+<!-- PR title must follow Conventional Commits: `type(scope): summary`. -->
 
 ## What and why
 
@@ -11,7 +11,6 @@
 - [ ] `just lint` / `just fmt-check`
 - [ ] `just typecheck`
 - [ ] `just test`
-- [ ] `just test-int` (if this touches anything the integration tier covers)
 
 ## Notes for the reviewer
 

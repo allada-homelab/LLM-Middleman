@@ -33,10 +33,10 @@ if TYPE_CHECKING:
 
     from . import LLMMiddlemanConfigEntry
 
-# Every secret/PII/topology field across all five backend presets' parent and
+# Every secret/PII/topology field across all six backend presets' parent and
 # subentry schemas. Over-redaction is safe; a leaked token/URL/prompt is not.
 TO_REDACT = {
-    # Auth credentials (openai_compat/langgraph/ollama key, converse bearer, n8n
+    # Auth credentials (openai_compat/langgraph/ollama/dify key, converse bearer, n8n
     # basic-auth user+password, n8n custom-header value).
     CONF_API_KEY,
     CONF_TOKEN,
