@@ -1361,6 +1361,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
+    { name = "coverage" },
     { name = "gazetteer-matcher" },
     { name = "hassil" },
     { name = "home-assistant-intents" },
@@ -1382,6 +1383,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "basedpyright" },
+    { name = "coverage", specifier = ">=7.16.2" },
     { name = "gazetteer-matcher", specifier = ">=1.1.0" },
     { name = "hassil", specifier = ">=3.10.0" },
     { name = "home-assistant-intents", specifier = ">=2026.2.3" },
