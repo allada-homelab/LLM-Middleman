@@ -20,14 +20,17 @@ import voluptuous as vol
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
-from homeassistant.config_entries import ConfigSubentry
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigSubentry
 from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import intent, llm
+from homeassistant.helpers import issue_registry as ir
 
 from custom_components.llm_middleman.backends import BACKEND_TO_CLS
 from custom_components.llm_middleman.backends.base import (
     BackendAdapter,
+    BackendAuthError,
+    BackendStreamError,
     DeltaStream,
     TurnContext,
     build_client_timeout,
@@ -38,6 +41,7 @@ from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
     BACKEND_LANGGRAPH,
+    BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_MEMORY_SCOPE,
@@ -50,10 +54,12 @@ from custom_components.llm_middleman.const import (
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
+    UNREACHABLE_ISSUE_THRESHOLD,
 )
 from custom_components.llm_middleman.conversation import LLMMiddlemanConversationEntity
 
 from .conftest import FakeStreamResponse, MockChatLog, tool_call_result
+from .live_backend import ScriptedBackend, run_pipeline_turn, setup_agent, speech
 
 
 class FakeAdapter(BackendAdapter):
@@ -679,3 +685,124 @@ async def test_ollama_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: M
     assert isinstance(last, conversation.AssistantContent)
     assert last.content == "It is noon."
     assert result.response.speech["plain"]["speech"] == "It is noon."
+
+
+# --- reauth + repair-issue signals from the never-hangs guard -----------------------
+
+_ISSUE_ID = "backend_unreachable_entry-1"
+
+
+def _failing_entity(hass: HomeAssistant, exc: Exception) -> LLMMiddlemanConversationEntity:
+    """An entity whose adapter raises ``exc`` before any delta, on a known parent entry."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[], exc=exc, raise_after=0))
+    entity.entry.entry_id = "entry-1"
+    entity.entry.title = "Backend"
+    return entity
+
+
+async def _run_turns(entity: LLMMiddlemanConversationEntity, chat_log: MockChatLog, count: int) -> None:
+    for _ in range(count):
+        await entity._async_run_turn(_user_input(), chat_log)
+
+
+def _issue(hass: HomeAssistant) -> ir.IssueEntry | None:
+    return ir.async_get(hass).async_get_issue(DOMAIN, _ISSUE_ID)
+
+
+async def test_runtime_auth_error_starts_reauth_and_speaks_fallback(
+    hass: HomeAssistant, mock_chat_log: MockChatLog
+) -> None:
+    """A turn the backend rejects as unauthenticated asks HA to reauth, yet still answers."""
+    entity = _failing_entity(hass, BackendAuthError("HTTP 401"))
+
+    with patch.object(entity.entry, "async_start_reauth") as start_reauth:
+        result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    start_reauth.assert_called_once_with(hass)
+    assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+
+
+async def test_non_auth_error_does_not_start_reauth(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """Only a credential rejection triggers reauth, not an ordinary backend failure."""
+    entity = _failing_entity(hass, BackendStreamError("HTTP 500"))
+
+    with patch.object(entity.entry, "async_start_reauth") as start_reauth:
+        await entity._async_run_turn(_user_input(), mock_chat_log)
+
+    start_reauth.assert_not_called()
+
+
+async def test_repeated_connection_failures_raise_unreachable_issue(
+    hass: HomeAssistant, mock_chat_log: MockChatLog
+) -> None:
+    """The third consecutive unreachable turn raises a warning repair issue for the entry."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD)
+
+    issue = _issue(hass)
+    assert issue is not None
+    assert (issue.severity, issue.is_fixable, issue.translation_key) == (
+        ir.IssueSeverity.WARNING,
+        False,
+        "backend_unreachable",
+    )
+
+
+async def test_fewer_connection_failures_raise_no_issue(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A transient blip below the threshold is not worth a repair issue."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD - 1)
+
+    assert _issue(hass) is None
+
+
+async def test_wrapped_connection_failure_counts_as_unreachable(
+    hass: HomeAssistant, mock_chat_log: MockChatLog
+) -> None:
+    """An adapter that re-raises a transport error (n8n) still counts toward the issue."""
+    wrapped = BackendStreamError("n8n request failed")
+    wrapped.__cause__ = aiohttp.ServerDisconnectedError()
+    entity = _failing_entity(hass, wrapped)
+
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD)
+
+    assert _issue(hass) is not None
+
+
+async def test_reachable_failure_resets_the_unreachable_count(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A turn that reached the backend (an HTTP error) breaks the consecutive-failure run."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD - 1)
+    entity.adapter = _make_adapter(hass, deltas=[], exc=BackendStreamError("HTTP 500"), raise_after=0)
+    await _run_turns(entity, mock_chat_log, 1)
+    entity.adapter = _make_adapter(hass, deltas=[], exc=aiohttp.ServerDisconnectedError(), raise_after=0)
+
+    await _run_turns(entity, mock_chat_log, 1)
+
+    assert _issue(hass) is None
+
+
+async def test_successful_turn_clears_the_unreachable_issue(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """The next turn that reaches the backend deletes the repair issue."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD)
+    entity.adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "back"}])
+
+    await _run_turns(entity, mock_chat_log, 1)
+
+    assert _issue(hass) is None
+
+
+async def test_runtime_401_starts_one_reauth_flow(hass: HomeAssistant, live_backend: ScriptedBackend) -> None:
+    """Repeated 401 turns against a live backend open exactly one reauth flow; each is voiced."""
+    live_backend.serve(BACKEND_OPENAI_COMPAT, ["unused"], status=401)
+    entry, entity_id = await setup_agent(hass, BACKEND_OPENAI_COMPAT, live_backend.base_url)
+
+    first = await run_pipeline_turn(hass, entity_id)
+    second = await run_pipeline_turn(hass, entity_id)
+    await hass.async_block_till_done()
+
+    assert (speech(first), speech(second)) == (ERROR_MESSAGE, ERROR_MESSAGE)
+    assert len(list(entry.async_get_active_flows(hass, {SOURCE_REAUTH}))) == 1

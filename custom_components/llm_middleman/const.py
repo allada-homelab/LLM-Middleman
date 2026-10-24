@@ -78,6 +78,12 @@ SUBENTRY_TYPE_CONVERSATION = "conversation"
 # HA-side backstop against a runaway tool-calling backend; matches core openai/ollama.
 MAX_TOOL_ITERATIONS = 10
 
+# Consecutive turns that fail to reach the backend before a repair issue is raised; one
+# blip is noise, a run of them means the backend is down or moved.
+UNREACHABLE_ISSUE_THRESHOLD = 3
+# Repair-issue translation key; the issue id appends the parent entry_id.
+ISSUE_BACKEND_UNREACHABLE = "backend_unreachable"
+
 # sock_read idle timeout: kill only a truly stalled stream, not a slow-but-alive
 # one (the v0 single-total-deadline bug). Paired with CONF_TIMEOUT as the connect bound.
 IDLE_TIMEOUT = 30

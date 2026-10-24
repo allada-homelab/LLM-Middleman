@@ -11,11 +11,13 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from homeassistant.config_entries import ConfigEntryState, ConfigSubentry
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState, ConfigSubentry
 from homeassistant.const import CONF_PROMPT
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.llm_middleman import (
@@ -132,10 +134,68 @@ async def test_setup_retries_when_backend_unreachable(hass: HomeAssistant) -> No
     assert entry.state is ConfigEntryState.SETUP_RETRY
 
 
-async def test_setup_fails_when_backend_rejects_credentials(hass: HomeAssistant) -> None:
-    """Rejected credentials are a hard setup error (no reauth flow exists to recover them)."""
+async def test_setup_auth_failure_starts_reauth(hass: HomeAssistant) -> None:
+    """Rejected credentials raise ConfigEntryAuthFailed, so HA starts the reauth flow."""
     entry = await _setup_with(hass, _ProbeAuthFailingAdapter)
+
     assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert len(list(entry.async_get_active_flows(hass, {SOURCE_REAUTH}))) == 1
+
+
+@pytest.mark.parametrize(
+    ("adapter_cls", "exc_cls", "key"),
+    [
+        (_ProbeAuthFailingAdapter, ConfigEntryAuthFailed, "auth_failed"),
+        (_ProbeFailingAdapter, ConfigEntryNotReady, "backend_not_ready"),
+    ],
+)
+async def test_setup_failures_are_translated(
+    hass: HomeAssistant, adapter_cls: type[BackendAdapter], exc_cls: type[Exception], key: str
+) -> None:
+    """Setup failures carry a translation key, so the UI shows a localized reason."""
+    entry = build_config_entry(hass, backend_type="fake")
+
+    with patch.dict(_PATCH_FACTORY, {"fake": adapter_cls}), pytest.raises(exc_cls) as raised:
+        await async_setup_entry(hass, entry)
+
+    assert isinstance(raised.value, HomeAssistantError)
+    assert (raised.value.translation_domain, raised.value.translation_key) == (DOMAIN, key)
+
+
+def _create_unreachable_issue(hass: HomeAssistant, entry: MockConfigEntry) -> str:
+    issue_id = f"backend_unreachable_{entry.entry_id}"
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="backend_unreachable",
+    )
+    return issue_id
+
+
+async def test_successful_setup_clears_the_unreachable_issue(hass: HomeAssistant) -> None:
+    """A setup whose probe reached the backend proves it reachable, clearing the repair issue."""
+    entry = build_config_entry(hass, backend_type="fake")
+    issue_id = _create_unreachable_issue(hass, entry)
+
+    with patch.dict(_PATCH_FACTORY, {"fake": FakeAdapter}):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_removing_entry_clears_its_unreachable_issue(hass: HomeAssistant) -> None:
+    """A removed connection leaves no orphaned repair issue behind."""
+    entry = build_config_entry(hass, backend_type="fake")
+    issue_id = _create_unreachable_issue(hass, entry)
+
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
 
 
 async def test_setup_retries_when_probe_hangs(hass: HomeAssistant) -> None:

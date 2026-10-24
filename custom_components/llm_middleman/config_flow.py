@@ -189,6 +189,31 @@ def _n8n_schema() -> vol.Schema:
     )
 
 
+def _reauth_schema(data: Mapping[str, Any]) -> vol.Schema | None:
+    """Credential-only schema for an entry's backend; ``None`` when it has no credential.
+
+    Mirrors each connection schema's secret field(s); n8n's depend on its auth type, and
+    an unauthenticated n8n webhook has nothing to re-enter.
+    """
+    backend_type = data[CONF_BACKEND_TYPE]
+    if backend_type == BACKEND_N8N:
+        auth_type = data.get(CONF_AUTH_TYPE, N8N_AUTH_NONE)
+        if auth_type == N8N_AUTH_BASIC:
+            return vol.Schema(
+                {vol.Required(CONF_USERNAME): TextSelector(), vol.Required(CONF_PASSWORD): _password_field()}
+            )
+        if auth_type == N8N_AUTH_HEADER:
+            return vol.Schema(
+                {vol.Required(CONF_HEADER_NAME): TextSelector(), vol.Required(CONF_HEADER_VALUE): _password_field()}
+            )
+        return None
+    if backend_type == BACKEND_CONVERSE:
+        return vol.Schema({vol.Optional(CONF_TOKEN): _password_field()})
+    if backend_type == BACKEND_DIFY:
+        return vol.Schema({vol.Required(CONF_API_KEY): _password_field()})
+    return vol.Schema({vol.Optional(CONF_API_KEY): _password_field()})
+
+
 class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for LLM Middleman."""
 
@@ -229,6 +254,45 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
         """Reconfigure an existing entry: backend type is fixed, re-run its step."""
         self._backend_type = self._get_reconfigure_entry().data[CONF_BACKEND_TYPE]
         return await self._async_route_to_connection_step()
+
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
+        """Start reauth after the backend rejected the entry's credentials."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Re-ask only the credential field(s), validate them, then update the entry."""
+        entry = self._get_reauth_entry()
+        schema = _reauth_schema(entry.data)
+        if schema is None:
+            return self.async_abort(reason="reauth_not_supported")
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            fields = {str(marker.schema) for marker in schema.schema}
+            # Drop every credential field first so a blank (omitted) optional key is cleared.
+            data = {key: value for key, value in entry.data.items() if key not in fields} | user_input
+            backend_type = data[CONF_BACKEND_TYPE]
+            try:
+                await BACKEND_TO_CLS[backend_type].async_validate_connection(self.hass, data)
+            except BackendAuthError:
+                errors["base"] = "invalid_auth"
+            except BackendConnectionError:
+                errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected error validating the %s reauth", backend_type)
+                errors["base"] = "unknown"
+            else:
+                if entry.update_listeners:
+                    # Loaded entry: its update listener reloads; a second reload is deprecated.
+                    return self.async_update_and_abort(entry, data=data)
+                # Setup failed (ConfigEntryAuthFailed) before the listener was added: reload here.
+                return self.async_update_reload_and_abort(entry, data=data)
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=self.add_suggested_values_to_schema(schema, user_input) if user_input else schema,
+            errors=errors,
+        )
 
     async def _async_route_to_connection_step(self) -> ConfigFlowResult:
         """Dispatch to the connection step for the selected backend type."""
