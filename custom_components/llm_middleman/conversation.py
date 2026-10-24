@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
+import aiohttp
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigSubentry
@@ -28,8 +29,8 @@ from homeassistant.helpers import intent, translation
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from . import LLMMiddlemanConfigEntry
-from .backends.base import BackendAdapter, DeltaStream, TurnContext
+from . import LLMMiddlemanConfigEntry, async_create_unreachable_issue, async_delete_unreachable_issue
+from .backends.base import BackendAdapter, BackendAuthError, DeltaStream, TurnContext
 from .const import (
     CONF_MEMORY_SCOPE,
     DOMAIN,
@@ -39,6 +40,7 @@ from .const import (
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
     SUBENTRY_TYPE_CONVERSATION,
+    UNREACHABLE_ISSUE_THRESHOLD,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -84,6 +86,8 @@ class LLMMiddlemanConversationEntity(
         self.subentry = subentry
         self.adapter: BackendAdapter = entry.runtime_data
         self._attr_unique_id = subentry.subentry_id
+        # Consecutive round-trips that never reached the backend (repair-issue trigger).
+        self._unreachable_turns = 0
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, subentry.subentry_id)},
             name=subentry.title,
@@ -240,8 +244,9 @@ class LLMMiddlemanConversationEntity(
                 if delta.get("content"):
                     has_text = True
                 yield delta
-        except Exception:
+        except Exception as err:
             _LOGGER.exception("Backend stream failed; returning fallback message")
+            self._record_backend_failure(err)
             ctx.fallback = True
             if not started:
                 yield {"role": "assistant"}
@@ -249,10 +254,28 @@ class LLMMiddlemanConversationEntity(
             yield {"content": f"\n{message}" if has_text else message}
             return
 
+        self._record_backend_reached()
         if not started:
             ctx.fallback = True
             yield {"role": "assistant"}
             yield {"content": await self._async_fallback_message(language)}
+
+    def _record_backend_failure(self, err: Exception) -> None:
+        """Start reauth on a credential rejection; count turns that never reached the backend."""
+        if isinstance(err, BackendAuthError):
+            # HA dedupes: no second flow starts while a reauth/reconfigure one is active.
+            self.entry.async_start_reauth(self.hass)
+        if not _is_unreachable(err):
+            self._record_backend_reached()
+            return
+        self._unreachable_turns += 1
+        if self._unreachable_turns >= UNREACHABLE_ISSUE_THRESHOLD:
+            async_create_unreachable_issue(self.hass, self.entry)
+
+    def _record_backend_reached(self) -> None:
+        """The backend answered (even with an error): reset the run and clear the issue."""
+        self._unreachable_turns = 0
+        async_delete_unreachable_issue(self.hass, self.entry.entry_id)
 
     async def _async_fallback_message(self, language: str) -> str:
         """Return the translated fallback text (English constant when untranslated)."""
@@ -276,3 +299,14 @@ class LLMMiddlemanConversationEntity(
         if scope == MEMORY_SCOPE_DEVICE and user_input.device_id:
             return user_input.device_id
         return chat_log.conversation_id
+
+
+def _is_unreachable(err: BaseException) -> bool:
+    """True when ``err`` (or what it wraps) is a transport failure: refused, dropped, timed out."""
+    current: BaseException | None = err
+    while current is not None:
+        # ServerTimeoutError (connect/read timeouts) is a ClientConnectionError too.
+        if isinstance(current, aiohttp.ClientConnectionError):
+            return True
+        current = current.__cause__
+    return False

@@ -96,6 +96,26 @@
                     "base_url": "Dify API root including /v1 (a trailing slash is stripped, and /v1 is appended if you omit it).",
                     "api_key": "The Dify app's API key (starts with app-). Required."
                 }
+            },
+            "reauth_confirm": {
+                "title": "Re-enter the backend credentials",
+                "description": "The backend rejected this connection's credentials. Enter the current ones; only the credential fields change, the rest of the connection is kept.",
+                "data": {
+                    "api_key": "API key",
+                    "token": "Bearer token",
+                    "username": "Username",
+                    "password": "Password",
+                    "header_name": "Header name",
+                    "header_value": "Header value"
+                },
+                "data_description": {
+                    "api_key": "The backend's current API key. Leave empty if it no longer needs one (Dify always does).",
+                    "token": "The current bearer token. Leave empty if the backend no longer needs one.",
+                    "username": "The n8n workflow's basic-auth username.",
+                    "password": "The n8n workflow's basic-auth password.",
+                    "header_name": "The n8n workflow's authentication header name.",
+                    "header_value": "The n8n workflow's authentication header value."
+                }
             }
         },
         "error": {
@@ -108,7 +128,9 @@
         },
         "abort": {
             "already_configured": "Service is already configured",
-            "reconfigure_successful": "Re-configuration was successful"
+            "reconfigure_successful": "Re-configuration was successful",
+            "reauth_successful": "Re-authentication was successful",
+            "reauth_not_supported": "This connection has no credentials to re-enter. Use Reconfigure to change how it authenticates."
         }
     },
     "config_subentries": {
@@ -167,6 +189,18 @@
     "exceptions": {
         "backend_unavailable": {
             "message": "Sorry, I could not reach the assistant right now. Please try again."
+        },
+        "auth_failed": {
+            "message": "The backend rejected the credentials: {error}"
+        },
+        "backend_not_ready": {
+            "message": "The backend is not reachable: {error}"
+        }
+    },
+    "issues": {
+        "backend_unreachable": {
+            "title": "{title} backend is unreachable",
+            "description": "Several conversation turns in a row could not reach the {title} backend, so the assistant answered with its fallback message. Check that the backend is running and reachable from Home Assistant, or use Reconfigure on the connection if its address changed. This issue clears itself on the next turn that reaches the backend."
         }
     },
     "selector": {
