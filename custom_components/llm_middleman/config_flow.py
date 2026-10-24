@@ -321,7 +321,8 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 entry_data = {CONF_BACKEND_TYPE: self._backend_type, **data}
                 if self.source == SOURCE_RECONFIGURE:
-                    return self.async_update_reload_and_abort(self._get_reconfigure_entry(), data=entry_data)
+                    # The entry's update listener reloads it; a second reload here is deprecated.
+                    return self.async_update_and_abort(self._get_reconfigure_entry(), data=entry_data)
                 return self.async_create_entry(title=_BACKEND_TITLES[self._backend_type], data=entry_data)
 
         return self.async_show_form(

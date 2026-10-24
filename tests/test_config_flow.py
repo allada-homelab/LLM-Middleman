@@ -49,7 +49,11 @@ from custom_components.llm_middleman.const import (
     SUBENTRY_TYPE_CONVERSATION,
 )
 
+from .test_conversation import FakeAdapter
+
 _REGISTRY_PATH = "custom_components.llm_middleman.config_flow.BACKEND_TO_CLS"
+# The registry async_setup_entry builds the adapter from (patched to a fake for reloads).
+_SETUP_REGISTRY_PATH = "custom_components.llm_middleman.backends.BACKEND_TO_CLS"
 
 
 def _fake_adapter(exc: Exception | None = None) -> type:
@@ -255,6 +259,37 @@ async def test_reconfigure_updates_connection(hass: HomeAssistant) -> None:
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_BACKEND_TYPE] == BACKEND_OPENAI_COMPAT
     assert entry.data[CONF_BASE_URL] == "http://new.local:9000"
+
+
+async def test_reconfigure_reloads_once_via_update_listener(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A loaded entry reloads exactly once on reconfigure: the update listener owns the reload.
+
+    ``async_update_reload_and_abort`` would schedule a second reload on top of the
+    listener's and logs a deprecation that breaks in HA 2026.12.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        title="OpenAI-compatible",
+        data={CONF_BACKEND_TYPE: BACKEND_OPENAI_COMPAT, CONF_BASE_URL: "http://old.local:8000"},
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(_REGISTRY_PATH, _registry()),
+        patch.dict(_SETUP_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: FakeAdapter}),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        with patch.object(hass.config_entries, "async_reload", wraps=hass.config_entries.async_reload) as reload:
+            form: dict[str, Any] = dict(await entry.start_reconfigure_flow(hass))
+            await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://new.local:9000"})
+            await hass.async_block_till_done()
+
+    assert reload.call_count == 1
+    assert "should use it for scheduling a reload" not in caplog.text
 
 
 # --- Conversation subentry flow (LLMM-007) ------------------------------------
