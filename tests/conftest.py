@@ -9,16 +9,18 @@ flows) import this harness instead of re-inventing scaffolding.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import voluptuous as vol
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigSubentry, ConfigSubentryData
 from homeassistant.const import CONF_PROMPT
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import chat_session, llm
+from homeassistant.helpers import config_validation as cv
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.llm_middleman.backends.base import BackendAdapter
@@ -76,6 +78,62 @@ class MockChatLog(conversation.ChatLog):
     def llm_api(self, value: llm.APIInstance | None) -> None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Set the LLM API."""
         self._llm_api = value
+
+
+# HA 2026.10 wrapped tool payloads in ``llm.ToolResult`` (``ToolResultContent.result``,
+# returned by ``async_call_tool``); older HA used the bare JSON dict (``tool_result``).
+_HA_HAS_TOOL_RESULT_OBJ = "result" in {f.name for f in fields(conversation.ToolResultContent)}
+
+
+def tool_call_result(data: Any) -> Any:
+    """Return ``data`` in the shape ``llm.APIInstance.async_call_tool`` returns on this HA."""
+    return llm.ToolResult(data=data) if _HA_HAS_TOOL_RESULT_OBJ else data
+
+
+def tool_result_content(
+    *, agent_id: str, tool_call_id: str, tool_name: str, data: Any
+) -> conversation.ToolResultContent:
+    """Build a ``ToolResultContent`` carrying ``data`` on both HA tool-result APIs."""
+    if _HA_HAS_TOOL_RESULT_OBJ:
+        return conversation.ToolResultContent(
+            agent_id=agent_id, tool_call_id=tool_call_id, tool_name=tool_name, result=llm.ToolResult(data=data)
+        )
+    # The pre-2026.10 signature; the type-checked (latest) HA no longer has it.
+    return conversation.ToolResultContent(  # pyright: ignore[reportCallIssue]
+        agent_id=agent_id,
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        tool_result=data,  # pyright: ignore[reportCallIssue]
+    )
+
+
+# JSON Schema properties an HA-style tool schema (cv validator + coerce/range, as the
+# Assist API builds) must render to, whichever converter the running HA needs.
+TOOL_SCHEMA_PROPERTIES = {
+    "name": {"type": "string"},
+    "brightness": {"type": "integer", "minimum": 0, "maximum": 100},
+}
+
+
+def vol_tool_schema() -> vol.Schema:
+    """HA-style tool parameters via ``voluptuous`` (probatio's shim on HA >= 2026.9)."""
+    return vol.Schema(
+        {
+            vol.Required("name"): cv.string,
+            vol.Optional("brightness"): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+        }
+    )
+
+
+def probatio_tool_schema() -> Any:
+    """The same tool parameters as a native ``probatio.Schema``; skips on HA < 2026.9."""
+    probatio = pytest.importorskip("probatio")
+    return probatio.Schema(
+        {
+            probatio.Required("name"): str,
+            probatio.Optional("brightness"): probatio.All(probatio.Coerce(int), probatio.Range(min=0, max=100)),
+        }
+    )
 
 
 @pytest.fixture

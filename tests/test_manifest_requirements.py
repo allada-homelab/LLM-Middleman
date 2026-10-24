@@ -26,7 +26,8 @@ INTEGRATION = REPO_ROOT / "custom_components" / "llm_middleman"
 MANIFEST = INTEGRATION / "manifest.json"
 # hassfest fails a custom manifest that lists a package from HA core's requirements.txt
 # ("is a dependency of Home Assistant itself"); keep this to exactly what it rejects.
-HASSFEST_FORBIDDEN_CORE_REQUIREMENTS = frozenset({"aiohttp"})
+# probatio: HA core dep since 2026.9; imported only when installed (backends/_compat.py).
+HASSFEST_FORBIDDEN_CORE_REQUIREMENTS = frozenset({"aiohttp", "probatio"})
 
 
 def _stdlib_module_names() -> set[str]:

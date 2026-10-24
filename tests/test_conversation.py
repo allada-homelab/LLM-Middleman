@@ -48,7 +48,7 @@ from custom_components.llm_middleman.const import (
 )
 from custom_components.llm_middleman.conversation import LLMMiddlemanConversationEntity
 
-from .conftest import FakeStreamResponse, MockChatLog
+from .conftest import FakeStreamResponse, MockChatLog, tool_call_result
 
 
 class FakeAdapter(BackendAdapter):
@@ -421,7 +421,7 @@ class _FakeLLMApi:
         self._result = result
 
     async def async_call_tool(self, tool_input: llm.ToolInput) -> Any:
-        return self._result
+        return tool_call_result(self._result)
 
 
 class _AlwaysToolAdapter(BackendAdapter):
