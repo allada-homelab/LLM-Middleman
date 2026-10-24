@@ -48,6 +48,7 @@ from tests.conftest import (
     FakeStreamResponse,
     MockChatLog,
     chunk_bytes,
+    external_tool_history,
     fake_aiohttp_session,
     probatio_tool_schema,
     tool_call_result,
@@ -458,6 +459,20 @@ async def test_history_replays_tool_calls_and_results_default_str(
     assert messages[3]["role"] == "tool"
     assert messages[3]["tool_call_id"] == "call_1"
     assert json.loads(messages[3]["content"]) == {"data": {"now": str(now)}, "error": False}
+
+
+async def test_history_skips_external_tool_calls_and_results(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # Backend-run (external) calls from another agent must not be replayed as if this
+    # server made them; the HA-run call and its result still are.
+    mock_chat_log.content = external_tool_history()
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    _ = [d async for d in _adapter(hass, session).stream_turn(mock_chat_log, _input(), _ctx())]
+    messages = _posted_body(session)["messages"]
+
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user", "assistant", "tool"]
+    assert messages[2] == {"role": "assistant", "content": "It is sunny."}
+    assert [call["id"] for call in messages[4]["tool_calls"]] == ["call_1"]
+    assert messages[5]["tool_call_id"] == "call_1"
 
 
 @pytest.mark.skipif(not HA_HAS_TOOL_RESULT_OBJ, reason="llm.ToolResult.error needs HA >= 2026.10")

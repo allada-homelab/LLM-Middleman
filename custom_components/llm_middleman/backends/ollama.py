@@ -45,7 +45,7 @@ from custom_components.llm_middleman.const import (
 
 from ._history import trim_history
 from ._sse import async_iter_lines
-from ._tools import format_function_tool, tool_result_json
+from ._tools import format_function_tool, replayable_content, tool_result_json
 from .base import (
     BackendAdapter,
     BackendConnectionError,
@@ -171,7 +171,7 @@ class OllamaAdapter(BackendAdapter):
         (not ``/v1``); the caller strips the trailing slash before appending paths.
         """
         messages = trim_history(
-            [_convert_content(content) for content in chat_log.content],
+            [_convert_content(content) for content in replayable_content(chat_log.content)],
             int(options.get(CONF_MAX_HISTORY, 0)),
         )
         body: dict[str, Any] = {"messages": messages, "stream": True}

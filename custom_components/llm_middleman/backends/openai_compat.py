@@ -49,7 +49,7 @@ from custom_components.llm_middleman.const import (
 
 from ._history import trim_history
 from ._sse import async_iter_sse
-from ._tools import format_function_tool, tool_result_json
+from ._tools import format_function_tool, replayable_content, tool_result_json
 from .base import (
     BackendAdapter,
     DeltaStream,
@@ -205,7 +205,7 @@ class OpenAICompatAdapter(BackendAdapter):
 
     def _build_messages(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> list[dict[str, Any]]:
         """Replay ``chat_log.content`` to trimmed OpenAI ``messages[]``."""
-        messages = [_convert_content(item) for item in chat_log.content]
+        messages = [_convert_content(item) for item in replayable_content(chat_log.content)]
         max_history = int(ctx.options.get(CONF_MAX_HISTORY, 0))
         return trim_history(messages, max_history)
 

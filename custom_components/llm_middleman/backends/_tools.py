@@ -7,8 +7,9 @@ argument encoding, ``thinking``) stay in each adapter's ``_convert_content``.
 
 from __future__ import annotations
 
+import dataclasses
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from homeassistant.components import conversation
@@ -55,3 +56,27 @@ def tool_result_json(content: conversation.ToolResultContent) -> str:
     ``default=str`` because time/datetime payloads aren't JSON-native.
     """
     return json.dumps({"data": tool_result_data(content), "error": tool_result_error(content)}, default=str)
+
+
+def replayable_content(content: Iterable[conversation.Content]) -> list[conversation.Content]:
+    """Drop backend-run (``external``) tool calls and their results from a chat-log replay.
+
+    External calls are recorded by presets whose backend runs its own tools (LangGraph,
+    Dify). A stateless-replay backend never made them, so replaying them after an agent
+    switch would send tool calls/results it can't match. An assistant block left with no
+    text, thinking, or HA-run calls is dropped entirely.
+    """
+    external_ids: set[str] = set()
+    kept: list[conversation.Content] = []
+    for item in content:
+        if isinstance(item, conversation.AssistantContent) and item.tool_calls:
+            local = [call for call in item.tool_calls if not call.external]
+            if len(local) < len(item.tool_calls):
+                external_ids.update(call.id for call in item.tool_calls if call.external)
+                if not (local or item.content or item.thinking_content):
+                    continue
+                item = dataclasses.replace(item, tool_calls=local or None)
+        elif isinstance(item, conversation.ToolResultContent) and item.tool_call_id in external_ids:
+            continue
+        kept.append(item)
+    return kept

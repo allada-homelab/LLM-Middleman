@@ -115,6 +115,36 @@ def tool_result_content(
     )
 
 
+def external_tool_history() -> list[conversation.Content]:
+    """A chat log mixing backend-run (``external``) tool calls with one HA-run call.
+
+    Mirrors switching from a LangGraph/Dify agent (which records its backend's tool
+    activity as external calls) to a stateless-replay agent mid-conversation. Only
+    ``call_1`` (HA-run) and its result may be replayed.
+    """
+    return [
+        conversation.SystemContent(content="sys"),
+        conversation.UserContent(content="weather?"),
+        conversation.AssistantContent(
+            agent_id="other",
+            tool_calls=[llm.ToolInput(id="ext_1", tool_name="web_search", tool_args={"q": "w"}, external=True)],
+        ),
+        tool_result_content(agent_id="other", tool_call_id="ext_1", tool_name="web_search", data={"r": "sunny"}),
+        conversation.AssistantContent(agent_id="other", content="It is sunny."),
+        conversation.UserContent(content="light on"),
+        conversation.AssistantContent(
+            agent_id="a",
+            content="Sure",
+            tool_calls=[
+                llm.ToolInput(id="ext_2", tool_name="lookup", tool_args={}, external=True),
+                llm.ToolInput(id="call_1", tool_name="HassTurnOn", tool_args={"name": "light"}),
+            ],
+        ),
+        tool_result_content(agent_id="a", tool_call_id="ext_2", tool_name="lookup", data={"r": "x"}),
+        tool_result_content(agent_id="a", tool_call_id="call_1", tool_name="HassTurnOn", data={"ok": True}),
+    ]
+
+
 # JSON Schema properties an HA-style tool schema (cv validator + coerce/range, as the
 # Assist API builds) must render to, whichever converter the running HA needs.
 TOOL_SCHEMA_PROPERTIES = {

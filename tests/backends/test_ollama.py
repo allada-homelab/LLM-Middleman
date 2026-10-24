@@ -48,6 +48,7 @@ from tests.conftest import (
     FakeStreamResponse,
     MockChatLog,
     chunk_bytes,
+    external_tool_history,
     fake_aiohttp_session,
     probatio_tool_schema,
     tool_result_content,
@@ -480,6 +481,23 @@ async def test_history_replays_tool_calls_and_results_default_str(
     }
     assert messages[3]["role"] == "tool"
     assert json.loads(messages[3]["content"]) == {"data": {"now": str(now)}, "error": False}
+
+
+async def test_history_skips_external_tool_calls_and_results(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    # Backend-run (external) calls from another agent must not be replayed as if this
+    # model made them; the HA-run call and its result still are.
+    mock_chat_log.content.clear()
+    mock_chat_log.content.extend(external_tool_history())
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), mock_chat_log)
+    messages = session.post.call_args.kwargs["json"]["messages"]
+
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user", "assistant", "tool"]
+    assert messages[2] == {"role": "assistant", "content": "It is sunny."}
+    assert [call["function"]["name"] for call in messages[4]["tool_calls"]] == ["HassTurnOn"]
+    assert json.loads(messages[5]["content"]) == {"data": {"ok": True}, "error": False}
 
 
 # --- Registration + classvars ---
