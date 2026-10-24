@@ -47,7 +47,13 @@ jobs:
       - if: matrix.ha == 'locked'
         run: uv run basedpyright
       # --no-sync: a plain `uv run` would re-sync and undo the floor overlay.
-      - run: uv run --no-sync pytest tests/
+      # Coverage (with the pyproject fail_under gate) runs on the locked leg only.
+      - if: matrix.ha == 'floor'
+        run: uv run --no-sync pytest tests/
+      - if: matrix.ha == 'locked'
+        run: uv run --no-sync coverage run -m pytest tests/
+      - if: matrix.ha == 'locked'
+        run: uv run --no-sync coverage report
 
   pre-commit:
     name: pre-commit (all files)
