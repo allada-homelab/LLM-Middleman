@@ -282,11 +282,7 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected error validating the %s reauth", backend_type)
                 errors["base"] = "unknown"
             else:
-                if entry.update_listeners:
-                    # Loaded entry: its update listener reloads; a second reload is deprecated.
-                    return self.async_update_and_abort(entry, data=data)
-                # Setup failed (ConfigEntryAuthFailed) before the listener was added: reload here.
-                return self.async_update_reload_and_abort(entry, data=data)
+                return self._async_update_entry_and_abort(entry, data)
 
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -395,8 +391,7 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                     # connections (Dify Cloud apps differ only by key; LangGraph by assistant).
                     self._async_abort_entries_match(entry_data)
                 if self.source == SOURCE_RECONFIGURE:
-                    # The entry's update listener reloads it; a second reload here is deprecated.
-                    return self.async_update_and_abort(self._get_reconfigure_entry(), data=entry_data)
+                    return self._async_update_entry_and_abort(self._get_reconfigure_entry(), entry_data)
                 return self.async_create_entry(title=_BACKEND_TITLES[self._backend_type], data=entry_data)
 
         return self.async_show_form(
@@ -404,6 +399,17 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=self._prefilled(schema, user_input),
             errors=errors,
         )
+
+    def _async_update_entry_and_abort(self, entry: ConfigEntry, data: Mapping[str, Any]) -> ConfigFlowResult:
+        """Save ``data`` and finish the reconfigure/reauth flow, reloading the entry exactly once.
+
+        A loaded entry's update listener reloads it (a second reload alongside it is
+        deprecated, breaking in HA 2026.12); an entry whose setup failed never registered
+        the listener, so it is reloaded here.
+        """
+        if entry.update_listeners:
+            return self.async_update_and_abort(entry, data=data)
+        return self.async_update_reload_and_abort(entry, data=data)
 
     def _prefilled(self, schema: vol.Schema, user_input: Mapping[str, Any] | None) -> vol.Schema:
         """Prefill the schema: echo re-submitted input, else an entry on reconfigure."""

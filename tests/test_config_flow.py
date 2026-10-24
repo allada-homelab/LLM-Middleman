@@ -332,6 +332,38 @@ async def test_reconfigure_reloads_once_via_update_listener(
     assert "should use it for scheduling a reload" not in caplog.text
 
 
+class _AuthRejectingAdapter(FakeAdapter):
+    @classmethod
+    async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
+        raise BackendAuthError("bad key")
+
+
+async def test_reconfigure_reloads_entry_whose_setup_failed(hass: HomeAssistant) -> None:
+    """A failed-setup entry has no update listener, so reconfigure reloads it itself."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        title="OpenAI-compatible",
+        data={CONF_BACKEND_TYPE: BACKEND_OPENAI_COMPAT, CONF_BASE_URL: "http://old.local:8000"},
+    )
+    entry.add_to_hass(hass)
+    with patch.dict(_SETUP_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: _AuthRejectingAdapter}):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.state is config_entries.ConfigEntryState.SETUP_ERROR
+
+    with (
+        patch(_REGISTRY_PATH, _registry()),
+        patch.dict(_SETUP_REGISTRY_PATH, {BACKEND_OPENAI_COMPAT: FakeAdapter}),
+    ):
+        form: dict[str, Any] = dict(await entry.start_reconfigure_flow(hass))
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://new.local:9000"})
+        await hass.async_block_till_done()
+
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+
+
 # --- Reauthentication flow ------------------------------------------------------
 
 _OPENAI_DATA = {CONF_BACKEND_TYPE: BACKEND_OPENAI_COMPAT, CONF_BASE_URL: "http://llm.local", CONF_API_KEY: "old"}
