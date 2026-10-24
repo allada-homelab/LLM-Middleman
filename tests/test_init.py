@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import Mapping
+from pathlib import Path
 from types import MappingProxyType
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
-from homeassistant.config_entries import ConfigSubentry
+from homeassistant.config_entries import ConfigEntryState, ConfigSubentry
 from homeassistant.const import CONF_PROMPT
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
@@ -18,7 +23,11 @@ from custom_components.llm_middleman import (
     async_setup_entry,
     async_unload_entry,
 )
-from custom_components.llm_middleman.backends.base import BackendAdapter
+from custom_components.llm_middleman import conversation as conversation_platform
+from custom_components.llm_middleman.backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
+from custom_components.llm_middleman.backends.converse import ConverseAdapter
+from custom_components.llm_middleman.backends.dify import DifyAdapter
+from custom_components.llm_middleman.backends.langgraph import LangGraphAdapter
 from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
     CONF_BACKEND_TYPE,
@@ -87,6 +96,85 @@ async def test_setup_unknown_backend_raises(hass: HomeAssistant) -> None:
     entry = build_config_entry(hass, backend_type="does-not-exist")
     with pytest.raises(ValueError, match="does-not-exist"):
         await async_setup_entry(hass, entry)
+
+
+class _ProbeFailingAdapter(FakeAdapter):
+    """Fake adapter whose connection probe raises ``probe_error``."""
+
+    probe_error: Exception = BackendConnectionError("down")
+
+    @classmethod
+    async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
+        raise cls.probe_error
+
+
+class _ProbeAuthFailingAdapter(_ProbeFailingAdapter):
+    probe_error = BackendAuthError("bad key")
+
+
+class _ProbeHangingAdapter(FakeAdapter):
+    @classmethod
+    async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
+        await asyncio.Event().wait()
+
+
+async def _setup_with(hass: HomeAssistant, adapter_cls: type[BackendAdapter]) -> MockConfigEntry:
+    entry = build_config_entry(hass, backend_type="fake")
+    with patch.dict(_PATCH_FACTORY, {"fake": adapter_cls}):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    return entry
+
+
+async def test_setup_retries_when_backend_unreachable(hass: HomeAssistant) -> None:
+    """A failing connection probe defers setup (SETUP_RETRY) instead of loading a dead agent."""
+    entry = await _setup_with(hass, _ProbeFailingAdapter)
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_setup_fails_when_backend_rejects_credentials(hass: HomeAssistant) -> None:
+    """Rejected credentials are a hard setup error (no reauth flow exists to recover them)."""
+    entry = await _setup_with(hass, _ProbeAuthFailingAdapter)
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+
+
+async def test_setup_retries_when_probe_hangs(hass: HomeAssistant) -> None:
+    """A probe that never answers is bounded and treated as unreachable."""
+    with patch("custom_components.llm_middleman.PROBE_TIMEOUT", 0.01):
+        entry = await _setup_with(hass, _ProbeHangingAdapter)
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+def test_conversation_platform_does_not_limit_parallel_turns() -> None:
+    """PARALLEL_UPDATES = 0 (core convention): concurrent turns are never serialized."""
+    assert conversation_platform.PARALLEL_UPDATES == 0
+
+
+def test_manifest_loads_after_assist_pipeline_and_intent() -> None:
+    """Mirror core conversation integrations' after_dependencies."""
+    manifest = json.loads((Path(__file__).parents[1] / "custom_components/llm_middleman/manifest.json").read_text())
+    assert manifest["after_dependencies"] == ["assist_pipeline", "intent"]
+
+
+@pytest.mark.parametrize("adapter_cls", [DifyAdapter, LangGraphAdapter])
+async def test_removing_entry_deletes_its_session_map_store(
+    hass: HomeAssistant, hass_storage: dict[str, Any], adapter_cls: type[BackendAdapter]
+) -> None:
+    """Deleting a stateful entry removes its persisted session map, leaving other entries' alone."""
+    entry = MockConfigEntry(domain=DOMAIN, version=2, data={CONF_BACKEND_TYPE: adapter_cls.backend_type})
+    entry.add_to_hass(hass)
+    # The key the adapter itself persists under, so a drift in its derivation fails here.
+    adapter: Any = adapter_cls(hass, MagicMock(), {CONF_BASE_URL: "http://b", "entry_id": entry.entry_id})
+    own_key: str = adapter._store.key
+    other_key = f"{DOMAIN}.{adapter_cls.backend_type}.other_entry"
+    hass_storage[own_key] = {"version": 1, "data": {"dev-1": "thread-1"}}
+    hass_storage[other_key] = {"version": 1, "data": {"dev-2": "thread-2"}}
+
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert own_key not in hass_storage
+    assert other_key in hass_storage
 
 
 async def test_setup_and_unload_end_to_end(hass: HomeAssistant) -> None:
@@ -278,7 +366,9 @@ async def test_migrated_entry_sets_up_end_to_end(hass: HomeAssistant) -> None:
     before = registry.async_get_entity_id("conversation", DOMAIN, entry.entry_id)
     assert before is not None
 
-    assert await hass.config_entries.async_setup(entry.entry_id)
+    # The v0 URL is not a live server; the setup probe is exercised by its own tests.
+    with patch.object(ConverseAdapter, "async_validate_connection"):
+        assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
     assert entry.version == 2

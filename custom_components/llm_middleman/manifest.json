@@ -1,6 +1,7 @@
 {
     "domain": "llm_middleman",
     "name": "LLM Middleman",
+    "after_dependencies": ["assist_pipeline", "intent"],
     "codeowners": ["@allada-homelab"],
     "config_flow": true,
     "dependencies": ["conversation"],

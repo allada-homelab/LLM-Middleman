@@ -61,6 +61,32 @@ async def test_crlf_split_across_chunks() -> None:
     assert events == [ServerSentEvent("message", "a\nb")]
 
 
+async def test_lone_cr_terminators() -> None:
+    events = await _collect(b"data: a\rdata: b\r\r")
+    assert events == [ServerSentEvent("message", "a\nb")]
+
+
+async def test_cr_ending_a_chunk_without_lf_still_ends_the_line() -> None:
+    # A CR closing a chunk is a full terminator when the next chunk doesn't start with LF.
+    events = await _collect(b"data: a\r", b"data: b\r", b"\r")
+    assert events == [ServerSentEvent("message", "a\nb")]
+
+
+async def test_empty_chunk_between_split_crlf() -> None:
+    events = await _collect(b"data: a\r", b"", b"\n\n")
+    assert events == [ServerSentEvent("message", "a")]
+
+
+_MIXED = b"event: x\r\ndata: 1\r\rdata:  2\n:c\r\ndata: \xc3\xa9\n\r\ndata: z\r\n\r\n"
+
+
+@pytest.mark.parametrize("cut", range(1, len(_MIXED)))
+async def test_any_two_chunk_split_frames_like_the_whole(cut: int) -> None:
+    whole = await _collect(_MIXED)
+    assert whole == [ServerSentEvent("x", "1"), ServerSentEvent("message", " 2\né"), ServerSentEvent("message", "z")]
+    assert await _collect(_MIXED[:cut], _MIXED[cut:]) == whole
+
+
 async def test_comment_line_ignored() -> None:
     events = await _collect(b":keep-alive\ndata: x\n\n")
     assert events == [ServerSentEvent("message", "x")]

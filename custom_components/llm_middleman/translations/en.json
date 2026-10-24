@@ -101,9 +101,11 @@
         "error": {
             "cannot_connect": "Failed to connect. Check the URL and that the backend is reachable.",
             "invalid_auth": "Authentication failed. Check your credentials.",
+            "unknown": "Unexpected error",
             "assistant_not_found": "The deployment has no assistant or graph with this ID."
         },
         "abort": {
+            "already_configured": "Service is already configured",
             "reconfigure_successful": "Re-configuration was successful"
         }
     },
@@ -146,8 +148,14 @@
                 }
             },
             "abort": {
+                "entry_not_loaded": "The backend connection is not loaded. Fix or reload it before managing its agents.",
                 "reconfigure_successful": "Re-configuration was successful"
             }
+        }
+    },
+    "exceptions": {
+        "backend_unavailable": {
+            "message": "Sorry, I could not reach the assistant right now. Please try again."
         }
     },
     "selector": {
