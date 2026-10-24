@@ -116,6 +116,8 @@ class N8nAdapter(BackendAdapter):
     backend_type: ClassVar[str] = BACKEND_N8N
     supports_ha_tools: ClassVar[bool] = False
     supports_memory_scope: ClassVar[bool] = True
+    # Forwards the rendered system prompt (with HA's date/time) as ``systemPrompt``.
+    wants_time_prefix: ClassVar[bool] = False
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:

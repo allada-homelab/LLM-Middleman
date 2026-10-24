@@ -121,6 +121,8 @@ class OpenAICompatAdapter(BackendAdapter):
     # Formats HA tool schemas + parses streamed tool_calls (LLMM-014), so the subentry
     # flow offers CONF_LLM_HASS_API and the entity runs the tool loop.
     supports_ha_tools: ClassVar[bool] = True
+    # Replays chat_log (whose system prompt carries HA's date/time); never reads user_input.text.
+    wants_time_prefix: ClassVar[bool] = False
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:

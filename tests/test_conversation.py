@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 import voluptuous as vol
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigSubentry
@@ -24,6 +25,7 @@ from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import llm
 
+from custom_components.llm_middleman.backends import BACKEND_TO_CLS
 from custom_components.llm_middleman.backends.base import (
     BackendAdapter,
     DeltaStream,
@@ -33,6 +35,9 @@ from custom_components.llm_middleman.backends.base import (
 from custom_components.llm_middleman.backends.ollama import OllamaAdapter
 from custom_components.llm_middleman.backends.openai_compat import OpenAICompatAdapter
 from custom_components.llm_middleman.const import (
+    BACKEND_CONVERSE,
+    BACKEND_DIFY,
+    BACKEND_LANGGRAPH,
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_MEMORY_SCOPE,
@@ -68,6 +73,7 @@ class FakeAdapter(BackendAdapter):
         self.raise_after: int = 0
         self.set_continue: bool = False
         self.received_ctx: TurnContext | None = None
+        self.received_text: str | None = None
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
@@ -80,6 +86,7 @@ class FakeAdapter(BackendAdapter):
         ctx: TurnContext,
     ) -> DeltaStream:
         self.received_ctx = ctx
+        self.received_text = user_input.text
         if self.set_continue:
             ctx.continue_conversation = True
         for index, delta in enumerate(self.deltas):
@@ -384,6 +391,45 @@ async def test_converse_error_is_returned(hass: HomeAssistant) -> None:
 
     assert isinstance(result, conversation.ConversationResult)
     assert adapter.received_ctx is None
+
+
+# --- temporal context ---------------------------------------------------------
+
+
+class _NoTimePrefixAdapter(FakeAdapter):
+    wants_time_prefix = False
+
+
+async def test_time_prefix_added_for_adapters_that_want_it(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, freezer: FrozenDateTimeFactory
+) -> None:
+    """An adapter that forwards only the turn text gets it prefixed with HA's local time."""
+    await hass.config.async_update(time_zone="Europe/Berlin")
+    freezer.move_to("2026-07-04 10:00:00+00:00")
+    adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}])
+
+    await _make_entity(hass, adapter)._async_handle_message(_user_input(), mock_chat_log)
+
+    assert adapter.received_text == "[2026-07-04 12:00:00 CEST] hello"
+
+
+async def test_time_prefix_skipped_for_adapters_that_opt_out(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """An adapter whose system prompt already carries the time gets the user's text verbatim."""
+    adapter = _NoTimePrefixAdapter(hass, MagicMock(), {})
+    adapter.deltas = [{"role": "assistant"}, {"content": "ok"}]
+
+    await _make_entity(hass, adapter)._async_handle_message(_user_input(), mock_chat_log)
+
+    assert adapter.received_text == "hello"
+
+
+def test_time_prefix_opt_out_for_prompt_forwarding_and_replay_presets() -> None:
+    """Only presets that forward neither the rendered prompt nor the chat log keep the prefix."""
+    assert {cls.backend_type for cls in BACKEND_TO_CLS.values() if cls.wants_time_prefix} == {
+        BACKEND_CONVERSE,
+        BACKEND_DIFY,
+        BACKEND_LANGGRAPH,
+    }
 
 
 # --- CONTROL feature gating (LLMM-014) ---------------------------------------

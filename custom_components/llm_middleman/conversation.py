@@ -16,9 +16,7 @@ HA tool loop (LLMM-014) — one iteration for text-only turns, up to
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Literal
-from zoneinfo import ZoneInfo
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
@@ -27,6 +25,7 @@ from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import LLMMiddlemanConfigEntry
 from .backends.base import BackendAdapter, DeltaStream, TurnContext
@@ -118,9 +117,10 @@ class LLMMiddlemanConversationEntity(
         # Prepend the current datetime with HA's configured timezone so the LLM has
         # temporal context from chat history — without it a repeated request (e.g.
         # "close the shades" the next day) looks identical and the model incorrectly
-        # reports no state change.
-        tz = ZoneInfo(self.hass.config.time_zone)
-        user_input.text = f"[{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')}] {user_input.text}"
+        # reports no state change. Only for adapters that forward the bare turn text:
+        # the rendered system prompt already carries HA's date/time for the others.
+        if self.adapter.wants_time_prefix:
+            user_input.text = f"[{dt_util.now().strftime('%Y-%m-%d %H:%M:%S %Z')}] {user_input.text}"
         options = self.subentry.data
 
         try:
