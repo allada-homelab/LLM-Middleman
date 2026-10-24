@@ -607,3 +607,55 @@ async def test_unrelated_400_not_retried(hass: HomeAssistant, mock_chat_log: Moc
     with pytest.raises(BackendStreamError):
         _ = [d async for d in _adapter(hass, session).stream_turn(mock_chat_log, _input(), _ctx())]
     assert session.post.call_count == 1
+
+
+# --- reasoning passthrough --------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", ["reasoning_content", "reasoning"])
+async def test_reasoning_delta_maps_to_thinking_content(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, key: str
+) -> None:
+    blob = (
+        _data_frame({"role": "assistant", key: "Let me ", "content": None})
+        + _data_frame({key: "think."})
+        + _data_frame({"content": "Done."})
+        + b"data: [DONE]\n\n"
+    )
+    deltas = await _collect(hass, mock_chat_log, chunk_bytes(blob, 5), _ctx())
+    assert deltas == [
+        {"role": "assistant"},
+        {"thinking_content": "Let me "},
+        {"thinking_content": "think."},
+        {"content": "Done."},
+    ]
+
+
+async def test_reasoning_both_keys_emitted_once(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # Servers mid-rename send the same text under both keys; emit it once, not twice.
+    blob = (
+        _data_frame({"reasoning_content": "hmm", "reasoning": "hmm"})
+        + _data_frame({"reasoning": "", "content": "ok"})
+        + b"data: [DONE]\n\n"
+    )
+    deltas = await _collect(hass, mock_chat_log, [blob], _ctx())
+    assert deltas == [{"role": "assistant"}, {"thinking_content": "hmm"}, {"content": "ok"}]
+
+
+async def test_reasoning_never_reaches_spoken_content(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # Through the real ChatLog: reasoning lands in thinking_content, the spoken text is
+    # only the content (inline <think> tags in content pass through untouched).
+    blob = (
+        _data_frame({"reasoning_content": "secret plan"})
+        + _data_frame({"content": "<think>x</think>Hello"})
+        + b"data: [DONE]\n\n"
+    )
+    response = FakeStreamResponse([blob])
+    adapter = _adapter(hass, fake_aiohttp_session(response=response))
+    stream = adapter.stream_turn(mock_chat_log, _input(), _ctx())
+    results = [c async for c in mock_chat_log.async_add_delta_content_stream("agent-1", stream)]
+    assert len(results) == 1
+    message = results[0]
+    assert isinstance(message, conversation.AssistantContent)
+    assert message.content == "<think>x</think>Hello"
+    assert message.thinking_content == "secret plan"

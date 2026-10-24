@@ -17,7 +17,9 @@ The entity's bounded tool loop drives the re-entry; this adapter stays stateless
 
 Token stats: requests ``stream_options.include_usage`` and traces the terminal ``usage``
 chunk as HA's ``{"stats": …}`` agent detail. Servers that reject ``stream_options`` get
-one retry without it, and the connection stops sending it.
+one retry without it, and the connection stops sending it. Streamed
+``delta.reasoning_content`` / ``delta.reasoning`` map to HA ``thinking_content`` (never
+spoken).
 """
 
 from __future__ import annotations
@@ -239,7 +241,8 @@ class OpenAICompatAdapter(BackendAdapter):
         [llm.ToolInput, …]}`` delta after ``[DONE]`` / EOF, so HA can run the tools and
         the entity's loop re-enters. ``[DONE]`` ends the stream; EOF without it also
         ends it (the entity guard supplies the fallback when nothing streamed).
-        The last ``usage`` seen is traced once as ``stats`` after the stream ends.
+        Reasoning deltas stream as ``{"thinking_content": …}``; the last ``usage`` seen
+        is traced once as ``stats`` after the stream ends.
         """
         headers = {"Accept": "text/event-stream", **bearer_headers(self.connection_data.get(CONF_API_KEY))}
         url = f"{_base_url(self.connection_data)}/v1/chat/completions"
@@ -272,6 +275,16 @@ class OpenAICompatAdapter(BackendAdapter):
                 if fragments:
                     for fragment in fragments:
                         _accumulate_tool_call(tool_calls, fragment)
+                # DeepSeek/vLLM/llama.cpp say reasoning_content, OpenRouter reasoning;
+                # servers mid-rename send both with the same text, so take one.
+                reasoning: Any = (
+                    (delta.get("reasoning_content") or delta.get("reasoning")) if hasattr(delta, "get") else None
+                )
+                if reasoning and isinstance(reasoning, str):
+                    if not role_sent:
+                        yield {"role": "assistant"}
+                        role_sent = True
+                    yield {"thinking_content": reasoning}
                 content: Any = delta.get("content") if hasattr(delta, "get") else None
                 if content is None:
                     continue
