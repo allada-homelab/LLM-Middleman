@@ -333,7 +333,7 @@ class DifyAdapter(BackendAdapter):
                     raise _ConversationNotFound
                 raise BackendConnectionError(f"Dify chat-messages 404: {code or 'unknown'}")
             if resp.status in (401, 403):
-                raise BackendAuthError("Dify rejected the API key")
+                raise BackendAuthError(f"Dify rejected the API key (HTTP {resp.status})")
             if resp.status >= 400:
                 detail = _parse_data(await resp.text()) or {}
                 _LOGGER.error(
