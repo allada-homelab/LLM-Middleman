@@ -25,6 +25,7 @@ from custom_components.llm_middleman.backends import BACKEND_TO_CLS, get_backend
 from custom_components.llm_middleman.backends.base import (
     BackendAuthError,
     BackendConnectionError,
+    BackendStreamError,
     TurnContext,
 )
 from custom_components.llm_middleman.backends.openai_compat import OpenAICompatAdapter
@@ -160,6 +161,20 @@ async def test_oversized_line_drained_then_stream_continues(hass: HomeAssistant,
 async def test_malformed_json_raises(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
     with pytest.raises(json.JSONDecodeError):
         await _collect(hass, mock_chat_log, [b"data: not-json\n\n"], _ctx())
+
+
+@pytest.mark.parametrize("status", [401, 500])
+async def test_http_error_logs_and_raises(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture, status: int
+) -> None:
+    body = '{"error": {"message": "Incorrect API key provided"}}'
+    response = FakeStreamResponse([], status=status, text=body)
+    adapter = _adapter(hass, fake_aiohttp_session(response=response))
+    with caplog.at_level("ERROR"), pytest.raises(BackendStreamError):
+        _ = [d async for d in adapter.stream_turn(mock_chat_log, _input(), _ctx())]
+    assert f"HTTP {status}" in caplog.text
+    assert "Incorrect API key provided" in caplog.text
+    assert TEST_API_KEY not in caplog.text
 
 
 # --- history replay + options ---------------------------------------------------
