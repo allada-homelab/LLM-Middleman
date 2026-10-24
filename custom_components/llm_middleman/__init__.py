@@ -12,17 +12,20 @@ the parent entry's ``CONF_BACKEND_TYPE`` — and stores the shared instance in
 
 from __future__ import annotations
 
+import asyncio
 from types import MappingProxyType
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_PROMPT, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .backends import BackendAdapter, get_backend_cls
+from .backends.base import BackendAuthError, BackendConnectionError
 from .const import (
     BACKEND_CONVERSE,
     CONF_BACKEND_TYPE,
@@ -34,6 +37,7 @@ from .const import (
     CONF_URL,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    PROBE_TIMEOUT,
     SUBENTRY_TYPE_CONVERSATION,
 )
 
@@ -48,6 +52,16 @@ type LLMMiddlemanConfigEntry = ConfigEntry[BackendAdapter]
 async def async_setup_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> bool:
     """Build the backend adapter and forward the conversation platform."""
     adapter_cls = get_backend_cls(entry.data[CONF_BACKEND_TYPE])
+    # Probe the backend so a dead one surfaces as SETUP_RETRY (HA retries with backoff)
+    # rather than a loaded agent that only ever answers with the fallback.
+    try:
+        async with asyncio.timeout(PROBE_TIMEOUT):
+            await adapter_cls.async_validate_connection(hass, entry.data)
+    except BackendAuthError as err:
+        # No reauth flow exists, so rejected credentials are a hard error (fix via reconfigure).
+        raise ConfigEntryError(f"Backend rejected the credentials: {err}") from err
+    except (BackendConnectionError, TimeoutError) as err:
+        raise ConfigEntryNotReady(f"Backend is not reachable: {err}") from err
     # entry_id rides along so adapters needing a per-entry discriminator (the
     # langgraph thread-map Store) never fall back to a shareable base_url slug.
     connection_data = {**entry.data, "entry_id": entry.entry_id}

@@ -43,6 +43,9 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Turns are independent backend round-trips; never serialize them (core convention).
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant,

@@ -15,10 +15,12 @@ import random
 import time
 from collections.abc import Callable
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.core import HomeAssistant
 
+from custom_components.llm_middleman.backends import BACKEND_TO_CLS
 from custom_components.llm_middleman.const import CONF_STATELESS_RUNS, CONF_TIMEOUT, ERROR_MESSAGE
 from tests.conftest import FakeStreamResponse, chunk_bytes, fake_aiohttp_session
 from tests.live_backend import (
@@ -156,6 +158,8 @@ async def test_reply_survives_arbitrary_chunk_boundaries(
     """However the transport chunks the bytes, the spoken reply is exactly the streamed text."""
     blob = preset_wire(preset, TRICKY_PIECES, NEWLINES[newline]).blob()
     response = FakeStreamResponse(SPLITTERS[splitter](blob), headers={"Content-Type": content_type(preset)})
+    # No server sits behind backend.invalid (the session is swapped after setup): skip the setup probe.
+    monkeypatch.setattr(BACKEND_TO_CLS[preset], "async_validate_connection", AsyncMock())
     entry, entity_id = await setup_agent(hass, preset, "http://backend.invalid", **_CHUNK_OPTIONS.get(preset, {}))
     monkeypatch.setattr(entry.runtime_data, "session", fake_aiohttp_session(response=response))
 

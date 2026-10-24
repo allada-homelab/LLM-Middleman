@@ -101,6 +101,7 @@
             "invalid_auth": "Authentication failed. Check your credentials."
         },
         "abort": {
+            "already_configured": "Service is already configured",
             "reconfigure_successful": "Re-configuration was successful"
         }
     },
@@ -135,6 +136,7 @@
                 }
             },
             "abort": {
+                "entry_not_loaded": "The backend connection is not loaded. Fix or reload it before managing its agents.",
                 "reconfigure_successful": "Re-configuration was successful"
             }
         }

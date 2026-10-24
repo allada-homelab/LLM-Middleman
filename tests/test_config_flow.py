@@ -17,6 +17,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_LLM_HASS_API, CONF_NAME, CONF_PROMPT
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
     SelectSelector,  # pyright: ignore[reportUnknownVariableType]
     TextSelector,  # pyright: ignore[reportUnknownVariableType]
@@ -186,15 +187,31 @@ async def test_probe_auth_failure_shows_invalid_auth(hass: HomeAssistant) -> Non
     assert result["errors"] == {"base": "invalid_auth"}
 
 
-async def test_no_duplicate_abort(hass: HomeAssistant) -> None:
-    """Two entries with the same base URL are both created (no unique_id, no abort)."""
+async def _create_openai_entry(hass: HomeAssistant, user_input: dict[str, Any]) -> dict[str, Any]:
     with patch(_REGISTRY_PATH, _registry()):
-        for _ in range(2):
-            form = await _init_backend_step(hass, BACKEND_OPENAI_COMPAT)
-            result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "http://backend.local:8000"})
-            assert result["type"] is FlowResultType.CREATE_ENTRY
+        form = await _init_backend_step(hass, BACKEND_OPENAI_COMPAT)
+        return await _configure(hass, form["flow_id"], user_input)
 
-    assert len(hass.config_entries.async_entries(DOMAIN)) == 2
+
+async def test_identical_connection_aborts_as_duplicate(hass: HomeAssistant) -> None:
+    """Adding the exact same connection twice aborts; agents belong in subentries."""
+    connection = {CONF_BASE_URL: "http://backend.local:8000", CONF_API_KEY: "k1"}
+    await _create_openai_entry(hass, connection)
+
+    result = await _create_openai_entry(hass, connection)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
+
+
+async def test_same_url_with_other_credentials_is_not_a_duplicate(hass: HomeAssistant) -> None:
+    """One shared URL can back distinct connections (e.g. Dify Cloud apps differ only by key)."""
+    await _create_openai_entry(hass, {CONF_BASE_URL: "http://backend.local:8000", CONF_API_KEY: "k1"})
+
+    result = await _create_openai_entry(hass, {CONF_BASE_URL: "http://backend.local:8000", CONF_API_KEY: "k2"})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
 @pytest.mark.parametrize(
@@ -349,9 +366,10 @@ async def _configure_subentry(hass: HomeAssistant, flow_id: str, user_input: dic
 
 
 def _parent_entry(hass: HomeAssistant, backend_type: str, **kwargs: Any) -> MockConfigEntry:
-    """Add a configured parent backend entry to hass."""
+    """Add a configured, loaded parent backend entry to hass."""
     entry = MockConfigEntry(domain=DOMAIN, version=2, data={CONF_BACKEND_TYPE: backend_type}, **kwargs)
     entry.add_to_hass(hass)
+    entry.mock_state(hass, config_entries.ConfigEntryState.LOADED)
     return entry
 
 
@@ -408,6 +426,41 @@ async def test_create_conversation_subentry(hass: HomeAssistant) -> None:
     assert result["data"][CONF_TIMEOUT] == 45
     # The name is the subentry title, not stored option data.
     assert CONF_NAME not in result["data"]
+
+
+async def test_subentry_aborts_when_parent_not_loaded(hass: HomeAssistant) -> None:
+    """An agent can't be added under a parent entry that failed to load."""
+    entry = _parent_entry(hass, BACKEND_CONVERSE)
+    entry.mock_state(hass, config_entries.ConfigEntryState.SETUP_RETRY)
+    registry = {BACKEND_CONVERSE: _sub_adapter(backend_type=BACKEND_CONVERSE)}
+
+    with patch(_REGISTRY_PATH, registry):
+        result = await _init_subentry(hass, entry)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+
+
+async def test_reconfigure_drops_stale_llm_api_ids(hass: HomeAssistant) -> None:
+    """A stored LLM API id that no longer exists is not offered back as a selected value."""
+    entry = _parent_entry(
+        hass,
+        BACKEND_OPENAI_COMPAT,
+        subentries_data=[
+            {
+                "subentry_type": SUBENTRY_TYPE_CONVERSATION,
+                "data": {CONF_LLM_HASS_API: [llm.LLM_API_ASSIST, "removed_mcp_server"]},
+                "title": "Agent",
+                "unique_id": None,
+            }
+        ],
+    )
+    registry = {BACKEND_OPENAI_COMPAT: _sub_adapter(backend_type=BACKEND_OPENAI_COMPAT, supports_ha_tools=True)}
+
+    with patch(_REGISTRY_PATH, registry):
+        form: dict[str, Any] = dict(await entry.start_subentry_reconfigure_flow(hass, next(iter(entry.subentries))))
+
+    assert _suggested_values(form["data_schema"])[CONF_LLM_HASS_API] == [llm.LLM_API_ASSIST]
 
 
 async def test_model_dropdown_openai(hass: HomeAssistant) -> None:

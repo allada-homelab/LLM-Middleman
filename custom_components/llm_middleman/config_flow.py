@@ -18,6 +18,7 @@ from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     SOURCE_USER,
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
@@ -320,6 +321,10 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             else:
                 entry_data = {CONF_BACKEND_TYPE: self._backend_type, **data}
+                if self.source != SOURCE_RECONFIGURE:
+                    # Only an identical connection is a duplicate: one URL can back distinct
+                    # connections (Dify Cloud apps differ only by key; LangGraph by assistant).
+                    self._async_abort_entries_match(entry_data)
                 if self.source == SOURCE_RECONFIGURE:
                     # The entry's update listener reloads it; a second reload here is deprecated.
                     return self.async_update_and_abort(self._get_reconfigure_entry(), data=entry_data)
@@ -358,6 +363,9 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
     async def async_step_set_options(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Show/handle the common agent options form (create vs reconfigure)."""
         entry = self._get_entry()
+        # Core openai/ollama pattern: agents are only managed under a loaded connection.
+        if entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="entry_not_loaded")
         adapter_cls = BACKEND_TO_CLS[entry.data[CONF_BACKEND_TYPE]]
 
         if user_input is not None:
@@ -445,14 +453,21 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         # list and pulls in the tools of every named API (device control + any HA
         # MCP-client entry). Unset/empty means "no tools" — no default is stored.
         if adapter_cls.supports_ha_tools:
+            apis = llm.async_get_apis(self.hass)
+            # Drop stored ids of APIs that no longer exist (e.g. a removed MCP server) so
+            # the form doesn't preselect an option it can't render (core openai pattern).
+            valid_ids = {api.id for api in apis}
+            suggested_apis = options.get(CONF_LLM_HASS_API)
+            if suggested_apis:
+                suggested_apis = [api_id for api_id in suggested_apis if api_id in valid_ids]
             schema[
                 vol.Optional(
                     CONF_LLM_HASS_API,
-                    description={"suggested_value": options.get(CONF_LLM_HASS_API)},
+                    description={"suggested_value": suggested_apis},
                 )
             ] = SelectSelector(
                 SelectSelectorConfig(
-                    options=[SelectOptionDict(value=api.id, label=api.name) for api in llm.async_get_apis(self.hass)],
+                    options=[SelectOptionDict(value=api.id, label=api.name) for api in apis],
                     multiple=True,
                 )
             )
