@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import voluptuous as vol
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     SOURCE_USER,
@@ -79,6 +78,13 @@ from .const import (
     N8N_TARGET_WEBHOOK,
     SUBENTRY_TYPE_CONVERSATION,
 )
+
+if TYPE_CHECKING:
+    # HA >= 2026.9 aliases `voluptuous` to probatio at runtime and types flow schemas as
+    # probatio's; type-check against that. Older HA (no probatio) gets real voluptuous.
+    import probatio as vol
+else:
+    import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 

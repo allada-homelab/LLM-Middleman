@@ -236,9 +236,16 @@ async def test_migrate_moves_device_onto_subentry(hass: HomeAssistant) -> None:
 
     subentry = next(iter(entry.subentries.values()))
     moved = dev_reg.async_get(device.id)
-    assert moved is not None
+    assert isinstance(moved, dr.DeviceEntry)
     assert moved.identifiers == {(DOMAIN, subentry.subentry_id)}
-    assert subentry.subentry_id in moved.config_entries_subentries.get(entry.entry_id, set())
+    assert subentry.subentry_id in _device_subentries(moved, entry.entry_id)
+
+
+def _device_subentries(device: dr.DeviceEntry, entry_id: str) -> set[str | None]:
+    """Return the device's subentries under ``entry_id`` on both device-registry models."""
+    if hasattr(device, "config_subentry_id"):  # HA >= 2026.10: one entry + subentry per device
+        return {device.config_subentry_id} if device.config_entry_id == entry_id else set()
+    return device.config_entries_subentries.get(entry_id, set())
 
 
 async def test_migrate_missing_optional_fields(hass: HomeAssistant) -> None:

@@ -32,7 +32,6 @@ from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from voluptuous_openapi import convert  # pyright: ignore[reportUnknownVariableType]
 
 from custom_components.llm_middleman.const import (
     BACKEND_OLLAMA,
@@ -47,6 +46,7 @@ from custom_components.llm_middleman.const import (
     KEEP_ALIVE_FOREVER,
 )
 
+from ._compat import schema_to_openapi, tool_result_data
 from ._history import trim_history
 from .base import (
     BackendAdapter,
@@ -70,12 +70,12 @@ def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None)
 
     Ollama's wire shape nests ``name``/``parameters``/``description`` under ``function``
     and, unlike OpenAI's, omits ``description`` when the tool has none (core
-    ``ollama/entity.py:_format_tool``). ``convert`` (voluptuous-openapi) renders the
-    voluptuous schema to JSON Schema; ``custom_serializer`` handles HA selector types.
+    ``ollama/entity.py:_format_tool``). ``schema_to_openapi`` renders the
+    probatio/voluptuous schema to JSON Schema; ``custom_serializer`` handles HA selector types.
     """
     function: dict[str, Any] = {
         "name": tool.name,
-        "parameters": convert(tool.parameters, custom_serializer=custom_serializer),
+        "parameters": schema_to_openapi(tool.parameters, custom_serializer),
     }
     if tool.description:
         function["description"] = tool.description
@@ -130,7 +130,7 @@ def _convert_content(content: conversation.Content) -> dict[str, Any]:
             ]
         return message
     # Only ToolResultContent remains (Content is a closed union).
-    return {"role": "tool", "content": json.dumps(content.tool_result, default=str)}
+    return {"role": "tool", "content": json.dumps(tool_result_data(content), default=str)}
 
 
 async def _iter_ndjson(stream: AsyncIterable[bytes]) -> AsyncGenerator[dict[str, Any]]:
