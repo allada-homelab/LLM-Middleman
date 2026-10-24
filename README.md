@@ -54,7 +54,8 @@ Per-agent options that appear only when the chosen backend supports them:
 - **Memory scope** — for stateful backends (LangGraph, custom `/v1/converse`, n8n, Dify),
   controls the session key sent to the backend: `conversation` (default; the HA
   conversation, reset after HA's ~5-minute session timeout), `device` (one long-lived
-  thread per satellite/room), or `agent` (one continuous thread for the whole agent).
+  thread per satellite/room, separate for each agent), or `agent` (one continuous thread
+  for the whole agent).
   Stateless backends (OpenAI-compatible, Ollama) replay Home Assistant's chat log instead,
   so this option is hidden for them.
 - **Dify options** — *Dify app inputs* maps the app's input variables (a YAML mapping such
@@ -105,7 +106,8 @@ Graph-side contract and behaviour of the LangGraph preset, verified against a li
 - **Threads.** Each memory-scope session maps to a deterministic thread id
   (`uuid5(<entry_id>:<session key>)`) created on first use (`if_not_exists: create`), so a
   thread you delete server-side is simply re-created empty on the next turn. Threads made
-  by v1.1.x for `device`/`agent` scopes keep being used.
+  by v1.1.x for `device`/`agent` scopes keep being used (a v1.1.x `device` thread stays with
+  the first agent that talks on that device).
 - **What is spoken.** Only AI message text; tool calls, tool results and echoed input are
   never sent to TTS. *Spoken node* restricts speech to one graph node.
 - **Interrupts.** A graph that pauses on `interrupt(value)` has its question spoken (a

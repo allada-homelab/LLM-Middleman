@@ -194,11 +194,12 @@ async def _turn(
     *,
     options: dict[str, Any] | None = None,
     key: str = "conv-1",
+    legacy_key: str | None = None,
     text: str = "hi",
     chat_log: MagicMock | None = None,
     **input_kwargs: Any,
 ) -> tuple[list[conversation.AssistantContentDeltaDict], TurnContext]:
-    ctx = TurnContext(options=options or {}, memory_key=key)
+    ctx = TurnContext(options=options or {}, memory_key=key, legacy_memory_key=legacy_key)
     log = cast("conversation.ChatLog", chat_log if chat_log is not None else _chat_log())
     deltas = [delta async for delta in adapter.stream_turn(log, _input(text, **input_kwargs), ctx)]
     return deltas, ctx
@@ -591,6 +592,24 @@ async def test_legacy_persisted_thread_is_still_used(hass: HomeAssistant, hass_s
         f"{_BASE_URL}/threads/t-legacy/runs/stream",
         f"{_BASE_URL}/threads/{_expected_thread('e1', 'dev-B')}/runs/stream",
     ]
+
+
+async def test_legacy_device_thread_adopted_once_by_first_agent(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    # Device keys became per agent; the first agent on the device keeps the old shared
+    # thread, a sibling agent gets its own instead of sharing it.
+    hass_storage["llm_middleman.langgraph.e1"] = {"version": 1, "data": {"dev-A": "t-legacy"}}
+    server = _FakeServer(_capture("echo_whole_ai_message"), _capture("echo_whole_ai_message"))
+    adapter = _adapter(hass, server)
+    await _turn(adapter, options={"memory_scope": "device"}, key="sub-1:dev-A", legacy_key="dev-A")
+    await _turn(adapter, options={"memory_scope": "device"}, key="sub-2:dev-A", legacy_key="dev-A")
+
+    assert server.run_urls == [
+        f"{_BASE_URL}/threads/t-legacy/runs/stream",
+        f"{_BASE_URL}/threads/{_expected_thread('e1', 'sub-2:dev-A')}/runs/stream",
+    ]
+    assert hass_storage["llm_middleman.langgraph.e1"]["data"] == {"sub-1:dev-A": "t-legacy"}
 
 
 # --- cancellation ------------------------------------------------------------------------

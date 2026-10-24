@@ -211,6 +211,9 @@ class TurnContext:
 
     options: Mapping[str, Any]  # the agent subentry's options for this turn
     memory_key: str  # session key derived by the entity from the memory scope
+    # Device scope only: the pre-per-agent key (bare device_id) that sibling agents shared.
+    # Adapters with a client-side session map adopt its entry once (first agent wins).
+    legacy_memory_key: str | None = None
     continue_conversation: bool = False  # adapter may set; entity ORs into result
     fallback: bool = False  # entity-owned: the last round-trip ended in the fallback message
 

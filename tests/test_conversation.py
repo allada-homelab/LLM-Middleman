@@ -372,7 +372,7 @@ async def test_continue_conversation_default_false(hass: HomeAssistant, mock_cha
     [
         (MEMORY_SCOPE_CONVERSATION, "dev-9", "mock-conversation-id"),
         (None, None, "mock-conversation-id"),  # absent option defaults to conversation
-        (MEMORY_SCOPE_DEVICE, "dev-9", "dev-9"),
+        (MEMORY_SCOPE_DEVICE, "dev-9", "sub-1:dev-9"),  # per agent: siblings don't share
         (MEMORY_SCOPE_DEVICE, None, "mock-conversation-id"),  # no device → fall back
         (MEMORY_SCOPE_AGENT, "dev-9", "sub-1"),
     ],
@@ -393,6 +393,32 @@ async def test_memory_key_scopes(
 
     assert adapter.received_ctx is not None
     assert adapter.received_ctx.memory_key == expected
+
+
+@pytest.mark.parametrize(
+    ("scope", "device_id", "expected"),
+    [
+        (MEMORY_SCOPE_DEVICE, "dev-9", "dev-9"),
+        (MEMORY_SCOPE_DEVICE, None, None),
+        (MEMORY_SCOPE_CONVERSATION, "dev-9", None),
+        (MEMORY_SCOPE_AGENT, "dev-9", None),
+    ],
+)
+async def test_legacy_memory_key_is_the_pre_subentry_device_key(
+    hass: HomeAssistant,
+    mock_chat_log: MockChatLog,
+    scope: str,
+    device_id: str | None,
+    expected: str | None,
+) -> None:
+    """Device scope also hands adapters the old shared key so stored sessions can be adopted."""
+    adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}])
+    entity = _make_entity(hass, adapter, subentry_data={CONF_MEMORY_SCOPE: scope})
+
+    await entity._async_run_turn(_user_input(device_id=device_id), mock_chat_log)
+
+    assert adapter.received_ctx is not None
+    assert adapter.received_ctx.legacy_memory_key == expected
 
 
 # --- provide_llm_data wiring -------------------------------------------------

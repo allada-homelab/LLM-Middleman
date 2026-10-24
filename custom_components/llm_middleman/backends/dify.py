@@ -525,7 +525,7 @@ class DifyAdapter(BackendAdapter):
             "auto_generate_name": False,
         }
 
-        conversation_id = await self._lookup(session_key, persist)
+        conversation_id = await self._lookup(session_key, persist, ctx.legacy_memory_key)
         # ``task_id`` is captured inside ``_run_stream`` but read here: GeneratorExit is
         # thrown into *this* generator's yield on cancellation, so the best-effort stop
         # must fire from this frame (deterministic, not via the inner generator's GC).
@@ -824,12 +824,20 @@ class DifyAdapter(BackendAdapter):
 
     # --- conversation mapping ---------------------------------------------------
 
-    async def _lookup(self, session_key: str, persist: bool) -> str | None:
-        """Return the mapped ``conversation_id`` for ``session_key``, or ``None``."""
+    async def _lookup(self, session_key: str, persist: bool, legacy_key: str | None = None) -> str | None:
+        """Return the mapped ``conversation_id`` for ``session_key``, or ``None``.
+
+        A persisted entry under ``legacy_key`` (the pre-per-agent device key) moves to
+        ``session_key`` on first use, so one agent keeps it and siblings start fresh.
+        """
         if not persist:
             return self._mem.get(session_key)
         async with self._lock:
-            return (await self._persisted_map()).get(session_key)
+            mapping = await self._persisted_map()
+            if session_key not in mapping and legacy_key is not None and legacy_key in mapping:
+                mapping[session_key] = mapping.pop(legacy_key)
+                await self._store.async_save(mapping)
+            return mapping.get(session_key)
 
     async def _remember(self, session_key: str, conversation_id: str, persist: bool) -> None:
         """Record ``session_key -> conversation_id`` in the in-memory or persisted map."""

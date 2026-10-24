@@ -22,7 +22,8 @@ Wire behaviour (confirmed against a live ``langgraph-api`` 0.16.6 server, see
   and every run sends ``if_not_exists: "create"``, so the server creates the thread on
   first use and re-creates one it has deleted — no client-side map, lock, or 404 retry.
   A ``session_key -> thread_id`` map persisted by the LLMM-011 adapter is still honoured
-  (read-only) so existing device/agent-scope threads keep their history.
+  so existing device/agent-scope threads keep their history (a device entry is adopted by
+  the first agent that uses it, since device keys are now per agent).
 * ``on_disconnect: "cancel"`` stops a run HA abandoned (cancelled turn, idle timeout);
   a best-effort ``POST /threads/{id}/runs/{run_id}/cancel`` backs it up for proxies
   that keep the upstream connection open. ``multitask_strategy`` (default ``rollback``)
@@ -352,9 +353,11 @@ class LangGraphAdapter(BackendAdapter):
         # passed by async_setup_entry; the base_url slug keeps bare test construction working).
         self._entry_key = str(connection_data.get(_CONF_ENTRY_ID) or self._base_url or "default")
         store_key, pending_key = self.store_keys(self._entry_key)
-        # Read-only: the LLMM-011 session_key -> thread_id map for device/agent scopes.
+        # The LLMM-011 session_key -> thread_id map for device/agent scopes; never grows,
+        # only re-keys a device entry when an agent adopts it (see _thread_id).
         self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, store_key)
         self._legacy: dict[str, str] | None = None
+        self._legacy_lock = asyncio.Lock()
         # thread_id -> whether it belongs to a persisted (device/agent) scope.
         self._pending_store: Store[list[str]] = Store(hass, STORAGE_VERSION, pending_key)
         self._pending: dict[str, bool] | None = None
@@ -419,7 +422,7 @@ class LangGraphAdapter(BackendAdapter):
         else:
             scope = str(options.get(CONF_MEMORY_SCOPE, MEMORY_SCOPE_CONVERSATION))
             persist = scope in (MEMORY_SCOPE_DEVICE, MEMORY_SCOPE_AGENT)
-            thread_id = await self._thread_id(ctx.memory_key)
+            thread_id = await self._thread_id(ctx.memory_key, ctx.legacy_memory_key)
             resume = await self._take_pending_resume(thread_id, timeout)
             url = f"{self._base_url}/threads/{thread_id}/runs/stream"
             strategy = str(options.get(CONF_MULTITASK_STRATEGY) or DEFAULT_MULTITASK_STRATEGY)
@@ -469,11 +472,19 @@ class LangGraphAdapter(BackendAdapter):
 
     # --- threads -----------------------------------------------------------------
 
-    async def _thread_id(self, session_key: str) -> str:
-        """Return the legacy mapped thread for ``session_key``, else its deterministic uuid5."""
-        if self._legacy is None:
-            self._legacy = await self._store.async_load() or {}
-        legacy = self._legacy.get(session_key)
+    async def _thread_id(self, session_key: str, legacy_key: str | None = None) -> str:
+        """Return the legacy mapped thread for ``session_key``, else its deterministic uuid5.
+
+        A legacy entry under ``legacy_key`` (the pre-per-agent device key) moves to
+        ``session_key`` on first use, so one agent keeps that thread and siblings get their own.
+        """
+        async with self._legacy_lock:
+            if self._legacy is None:
+                self._legacy = await self._store.async_load() or {}
+            if session_key not in self._legacy and legacy_key is not None and legacy_key in self._legacy:
+                self._legacy[session_key] = self._legacy.pop(legacy_key)
+                await self._store.async_save(self._legacy)
+            legacy = self._legacy.get(session_key)
         if legacy is not None:
             return legacy
         return str(uuid.uuid5(_THREAD_NAMESPACE, f"{self._entry_key}:{session_key}"))

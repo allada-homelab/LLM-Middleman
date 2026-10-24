@@ -732,6 +732,25 @@ async def test_device_map_persists_across_restart(hass: HomeAssistant, hass_stor
     assert rec.bodies[0]["conversation_id"] == "conv-dev"
 
 
+async def test_legacy_device_conversation_adopted_once_by_first_agent(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    # Device keys became per agent; the first agent on the device keeps the old shared
+    # conversation, a sibling agent starts its own instead of sharing it.
+    hass_storage["llm_middleman.dify.e1"] = {"version": 1, "data": {"dev-A": "conv-old"}}
+    blob = _dify_sse(_msg("ok", cid="conv-new"), _end(cid="conv-new"))
+    rec = _Recorder(_reply(_dify_sse(_msg("ok", cid="conv-old"), _end(cid="conv-old"))), _reply(blob))
+    adapter = _adapter(hass, rec.session())
+    first = TurnContext(options={"memory_scope": "device"}, memory_key="sub-1:dev-A", legacy_memory_key="dev-A")
+    second = TurnContext(options={"memory_scope": "device"}, memory_key="sub-2:dev-A", legacy_memory_key="dev-A")
+    await _collect(adapter.stream_turn(_chat_log(hass), _input(), first))
+    await _collect(adapter.stream_turn(_chat_log(hass), _input(), second))
+
+    assert rec.bodies[0]["conversation_id"] == "conv-old"
+    assert "conversation_id" not in rec.bodies[1]
+    assert hass_storage["llm_middleman.dify.e1"]["data"] == {"sub-1:dev-A": "conv-old", "sub-2:dev-A": "conv-new"}
+
+
 # Dify has shipped >1 wire shape for a stale/deleted conversation_id 404 (the spec's
 # ``not_found`` + "Conversation Not Exists." and an older ``conversation_not_exists``), and
 # an ended conversation answers 400 ``conversation_completed``. Each must drop-and-recreate,

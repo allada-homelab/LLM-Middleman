@@ -146,10 +146,7 @@ class LLMMiddlemanConversationEntity(
 
         # One TurnContext for the whole turn (stable memory_key across iterations),
         # reused by each adapter round-trip. Built here, never on the shared adapter.
-        ctx = TurnContext(
-            options=self.subentry.data,
-            memory_key=self._derive_memory_key(user_input, chat_log),
-        )
+        ctx = self._turn_context(user_input, chat_log)
         # Bounded tool loop (core openai/ollama shape): drive the adapter, let HA run
         # any tool calls it emitted and append their results, and re-enter while the
         # last content is an unresponded tool result. Text-only turns (no tools, or a
@@ -201,10 +198,7 @@ class LLMMiddlemanConversationEntity(
         context so the caller can read ``continue_conversation``.
         """
         if ctx is None:
-            ctx = TurnContext(
-                options=self.subentry.data,
-                memory_key=self._derive_memory_key(user_input, chat_log),
-            )
+            ctx = self._turn_context(user_input, chat_log)
         ctx.fallback = False
         async for _content in chat_log.async_add_delta_content_stream(
             self.entity_id,
@@ -282,23 +276,29 @@ class LLMMiddlemanConversationEntity(
         translations = await translation.async_get_translations(self.hass, language, "exceptions", {DOMAIN})
         return translations.get(f"component.{DOMAIN}.exceptions.backend_unavailable.message", ERROR_MESSAGE)
 
-    def _derive_memory_key(
+    def _turn_context(
         self,
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
-    ) -> str:
-        """Derive the session key stateful adapters use, per ``CONF_MEMORY_SCOPE``.
+    ) -> TurnContext:
+        """Build the turn's context with the session key stateful adapters use (``CONF_MEMORY_SCOPE``).
 
-        ``conversation`` (default) → ``conversation_id``; ``device`` → the device id
-        (falling back to ``conversation_id`` when the turn has no device); ``agent`` →
-        the subentry id (one global thread per agent). Stateless adapters ignore it.
+        ``conversation`` (default) → ``conversation_id``; ``device`` →
+        ``<subentry_id>:<device_id>`` (per agent, so sibling agents on one connection don't
+        share a session; falls back to ``conversation_id`` when the turn has no device), with
+        the old shared ``device_id`` key as ``legacy_memory_key``; ``agent`` → the subentry id
+        (one global thread per agent). Stateless adapters ignore it.
         """
         scope = self.subentry.data.get(CONF_MEMORY_SCOPE, MEMORY_SCOPE_CONVERSATION)
         if scope == MEMORY_SCOPE_AGENT:
-            return self.subentry.subentry_id
+            return TurnContext(options=self.subentry.data, memory_key=self.subentry.subentry_id)
         if scope == MEMORY_SCOPE_DEVICE and user_input.device_id:
-            return user_input.device_id
-        return chat_log.conversation_id
+            return TurnContext(
+                options=self.subentry.data,
+                memory_key=f"{self.subentry.subentry_id}:{user_input.device_id}",
+                legacy_memory_key=user_input.device_id,
+            )
+        return TurnContext(options=self.subentry.data, memory_key=chat_log.conversation_id)
 
 
 def _is_unreachable(err: BaseException) -> bool:
