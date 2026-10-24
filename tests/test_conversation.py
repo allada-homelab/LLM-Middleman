@@ -99,7 +99,7 @@ def _make_adapter(hass: HomeAssistant, **script: Any) -> FakeAdapter:
 
 def _make_entity(
     hass: HomeAssistant,
-    adapter: FakeAdapter,
+    adapter: BackendAdapter,
     *,
     subentry_data: Mapping[str, Any] | None = None,
     subentry_id: str = "sub-1",
@@ -221,6 +221,28 @@ async def test_guard_exception_after_content(hass: HomeAssistant, mock_chat_log:
     assert "partial" in last.content
     assert ERROR_MESSAGE in last.content
     logger.exception.assert_called_once()
+
+
+@pytest.mark.parametrize("status", [401, 500])
+async def test_openai_compat_http_error_logs_and_falls_back(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture, status: int
+) -> None:
+    """A non-200 from openai_compat is logged with the body excerpt; the user gets the fallback."""
+    body = '{"error": {"message": "Incorrect API key provided"}}'
+    session = MagicMock()
+    session.post = MagicMock(return_value=FakeStreamResponse([], status=status, text=body))
+    adapter = OpenAICompatAdapter(hass, session, {CONF_BASE_URL: "http://backend.test", CONF_API_KEY: "sk-secret-key"})
+    entity = _make_entity(hass, adapter)
+
+    with caplog.at_level("ERROR"):
+        await entity._async_run_turn(_user_input(), mock_chat_log)
+
+    last = mock_chat_log.content[-1]
+    assert isinstance(last, conversation.AssistantContent)
+    assert last.content == ERROR_MESSAGE
+    assert f"HTTP {status}" in caplog.text
+    assert "Incorrect API key provided" in caplog.text
+    assert "sk-secret-key" not in caplog.text
 
 
 async def test_guard_injects_role_first(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
