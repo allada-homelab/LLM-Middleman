@@ -84,7 +84,8 @@ Phase milestones match `plan.md` §Implementation phases. `⇐` = depends on.
 ### Phase 5 — Fast-follow adapters
 | ID | Title | ⇐ |
 |---|---|---|
-| LLMM-020 | Dify adapter (chat/agent/chatflow apps, SSE streaming, server-side memory) | LLMM-003, LLMM-004 |
+| LLMM-020 | Dify adapter (chat/agent/chatflow apps, SSE streaming, server-side memory) — superseded by LLMM-021 | LLMM-003, LLMM-004 |
+| LLMM-021 | Dify tier-1 (spec-exact terminal states, stop/recreate hardening, usage/moderation/reasoning, inputs + HA context, per-user identity, tool activity) | LLMM-020 |
 | LLMM-022 | LangGraph tier-1 (AI-only speech, deterministic threads, run cancel, interrupts, external tool activity) | LLMM-011 |
 
 ### Fast-follow (roadmap, not v1 — file tickets when picked up)

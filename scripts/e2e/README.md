@@ -271,6 +271,37 @@ cookie from setup/login):
 - **Timing:** a slow local model in **blocking** mode can exceed the `N8N_DEFAULT_TIMEOUT=30`s;
   raise the subentry `timeout` (e.g. 180) for blocking rows. Streaming stays well under it.
 
+### dify — owner-run (LLMM-021)
+
+No Dify is reachable from the devcontainer, so these rows run against the owner's Dify
+(Cloud or self-hosted) and live HA (13 rows). Parent: `backend_type=dify`, `base_url=<Dify API root>`
+(`/v1` is appended if omitted), `api_key=<app key>`. Make one app of each type (or reuse
+existing ones): **Chatbot**, **Legacy Agent**, **Agent** (new-style, published), **Chatflow**,
+plus one **Workflow** app (for the negative row). `scripts/e2e/dify_e2e.py` drives the
+REST-observable rows (env: `HA_URL`, `HA_TOKEN`, `DIFY_BASE_URL`, `DIFY_API_KEY`,
+optional `DIFY_USER`); record results in `docs/implementation/e2e-results/dify.md`.
+
+| # | Row | How | Pass when |
+|---|---|---|---|
+| 1 | Streamed reply, no duplicate text (each app type) | `dify_e2e.py nodup --agent <entity>` per app; voice check on a satellite | not the fallback; the answer is not spoken twice (Agent's closing `message` dropped) |
+| 2 | Second turn recalls | `dify_e2e.py recall --agent <entity>` | turn 2 contains the planted token |
+| 3 | Conversation deleted in Dify recovers | `dify_e2e.py recover --agent <entity>` (deletes the latest conversation via the API, same as the console) | the next turn answers (stale id dropped, new conversation) |
+| 4 | Cancel mid-tool → stopped in Dify | ask the Agent something that calls a slow tool, cancel the voice turn (wake word / stop) | Dify app logs show the message stopped, not running to completion |
+| 5 | Chatflow failure → fallback | make an LLM node fail (bad model / code node raising) | HA speaks the fallback; HA log shows `Dify error event` |
+| 6 | Device scope survives restart | agent with `memory_scope=device`; plant a token from a satellite, restart HA, ask again from the same satellite | token recalled after restart |
+| 7 | Bad key → `invalid_auth` | parent flow with a wrong `app-…` key | form error "Authentication failed" |
+| 8 | Workflow-app key → `not_chat_app` | parent flow with the Workflow app's key | form error naming the Workflow app type |
+| 9 | Usage in trace | Settings → Voice assistants → agent → Debug, open the turn | agent detail shows `stats` (input/output tokens) and `dify_usage` |
+| 10 | Required-input app with mapping | app with a required text input `city`; `dify_e2e.py inputs` lists it; set `Dify app inputs` to `city: Berlin` | turn answers (without the mapping: fallback + log hint "map required app inputs") |
+| 11 | HA context + satellite prompt | declare optional `ha_language`, `ha_area`, and paragraph `ha_extra_system_prompt` in the app; enable "Send Home Assistant context"; trigger `assist_satellite.ask_question` ("close the garage?"), answer "yes" | the Dify run's inputs show the values; the follow-up acts on the garage |
+| 12 | Regression: owner's "New Jarvis" app | the owner's daily prompts (time, weather, a tool call, a follow-up) | same answers as before the upgrade; no fallback; no duplicate text |
+| 13 | Tool activity in the Assist chat | Agent app with a tool (and a Chatflow with a Tool node); ask something that uses it in the Assist chat UI | the tool call + result appear as tool activity, the answer is spoken once, tool input/output never spoken, one Dify message per turn in the app logs |
+
+- **Paused Chatflow:** a Chatflow with a Human Input node speaks "The assistant paused and is
+  waiting for input in Dify." — finish the form in Dify; the run is not stopped.
+- **Moderation:** with output moderation on, a flagged reply before any text speaks the preset
+  response; after text has streamed it is recorded in the trace only.
+
 ### HACS packaging — fresh-consumer install
 
 Prove the *published* artifact installs the way HACS delivers it (download the ref zip → drop

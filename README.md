@@ -24,11 +24,11 @@ Pick one preset per connection. Each streams the reply token-by-token
 | **LangGraph** | a LangGraph deployment (`langgraph dev` / self-hosted / cloud) | SSE, `messages-tuple` + `updates` | No¹ |
 | **Custom `/v1/converse`** | your own external agent speaking the v0 SSE contract | SSE, `text_delta`/`done`/`error` | No¹ |
 | **n8n** | an n8n Chat Trigger / Webhook workflow | NDJSON `StructuredChunk` (with a blocking fallback) | No¹ |
-| **Dify** | a Dify chat / agent / chatflow app (`/chat-messages`) | SSE, `agent_message`/`message`/`message_end` | No¹ |
+| **Dify** | a Dify Chatbot / Agent / Legacy Agent / Chatflow app (`/chat-messages`) | SSE, `agent_message`/`message`/`message_end` | No¹ |
 
 ¹ These backends run their own tools server-side — the integration passes text through and
-does not expose Home Assistant's tools to them. LangGraph's tool calls and results are shown
-in the Assist chat log as *external* tool activity (never executed by Home Assistant, never
+does not expose Home Assistant's tools to them. LangGraph's and Dify's tool calls and results
+(Dify: Agent tool steps and Chatflow tool nodes) are shown in the Assist chat log as *external* tool activity (never executed by Home Assistant, never
 spoken).
 
 ## Configuration model
@@ -57,6 +57,14 @@ Per-agent options that appear only when the chosen backend supports them:
   thread per satellite/room), or `agent` (one continuous thread for the whole agent).
   Stateless backends (OpenAI-compatible, Ollama) replay Home Assistant's chat log instead,
   so this option is hidden for them.
+- **Dify options** — *Dify app inputs* maps the app's input variables (a YAML mapping such
+  as `city: Berlin`; required variables must be set, and the form lists the variables the
+  app declares). *Send Home Assistant context* fills the app's optional input variables
+  `ha_language`, `ha_device_id`, `ha_area`, `ha_satellite_id`, and `ha_extra_system_prompt`
+  (only those the app declares); declare `ha_extra_system_prompt` as a paragraph input so a
+  satellite's announced question (`start_conversation` / `ask_question`) reaches the app on
+  the follow-up "yes". *Use the Home Assistant user* sends the HA user id as the Dify end
+  user (voice-satellite turns keep the shared `home-assistant` identity).
 - **Timeout** — a per-agent total deadline (paired with an idle-read timeout so a slow but
   live stream is not killed). On a timeout or backend error the agent speaks a graceful
   fallback rather than hanging the pipeline.

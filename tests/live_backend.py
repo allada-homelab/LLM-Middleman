@@ -184,6 +184,7 @@ class ScriptedBackend:
         app.router.add_get("/api/tags", self._probe({"models": []}))
         app.router.add_post("/assistants/search", self._probe([{"assistant_id": "a1", "graph_id": "agent"}]))
         app.router.add_get("/info", self._probe({"mode": "advanced-chat"}))
+        app.router.add_get("/parameters", self._probe({"user_input_form": []}))  # dify setup probe
         return app
 
     @staticmethod

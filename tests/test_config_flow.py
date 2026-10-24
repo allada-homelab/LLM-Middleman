@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import voluptuous as vol
@@ -30,6 +30,7 @@ from custom_components.llm_middleman.backends.base import (
     BackendAuthError,
     BackendConnectionError,
 )
+from custom_components.llm_middleman.backends.dify import DifyAppError
 from custom_components.llm_middleman.backends.langgraph import AssistantNotFoundError
 from custom_components.llm_middleman.config_flow import (
     ConversationSubentryFlowHandler,
@@ -48,6 +49,9 @@ from custom_components.llm_middleman.const import (
     CONF_AUTH_TYPE,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_DIFY_HA_CONTEXT,
+    CONF_DIFY_INPUTS,
+    CONF_DIFY_USER_FROM_HA,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
     CONF_INPUT_MESSAGES_KEY,
@@ -204,6 +208,18 @@ async def test_probe_auth_failure_shows_invalid_auth(hass: HomeAssistant) -> Non
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_auth"}
+
+
+@pytest.mark.parametrize("error_key", ["not_chat_app", "agent_not_published"])
+async def test_dify_app_error_shows_specific_error(hass: HomeAssistant, error_key: str) -> None:
+    """A Dify key for a workflow app / unpublished Agent gets its own error, not cannot_connect."""
+    registry = {BACKEND_DIFY: _fake_adapter(DifyAppError(error_key, "wrong app"))}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_DIFY)
+        result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "https://api.dify.ai", CONF_API_KEY: "k"})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": error_key}
 
 
 async def test_unexpected_probe_error_shows_unknown(hass: HomeAssistant) -> None:
@@ -765,6 +781,73 @@ async def test_reconfigure_prefills(hass: HomeAssistant) -> None:
     assert result["reason"] == "reconfigure_successful"
     assert entry.subentries[subentry_id].data[CONF_PROMPT] == "Updated prompt"
     assert entry.subentries[subentry_id].data[CONF_MAX_HISTORY] == 3
+
+
+# --- Dify agent options (LLMM-021) -------------------------------------------
+
+_DIFY_FIELDS = {CONF_DIFY_INPUTS, CONF_DIFY_HA_CONTEXT, CONF_DIFY_USER_FROM_HA}
+_FETCH_FORM_PATH = "custom_components.llm_middleman.config_flow.DifyAdapter.async_fetch_input_form"
+
+
+def _dify_registry() -> dict[str, type[BackendAdapter]]:
+    return {BACKEND_DIFY: _sub_adapter(backend_type=BACKEND_DIFY, supports_memory_scope=True)}
+
+
+async def test_dify_agent_form_lists_declared_inputs(hass: HomeAssistant) -> None:
+    """The Dify agent form adds the Dify options and names the app's declared inputs."""
+    entry = _parent_entry(hass, BACKEND_DIFY)
+    declared = {"city": {"variable": "city", "required": True}, "ha_language": {"variable": "ha_language"}}
+    with patch(_REGISTRY_PATH, _dify_registry()), patch(_FETCH_FORM_PATH, AsyncMock(return_value=declared)):
+        form = await _init_subentry(hass, entry)
+
+    assert _schema_keys(form["data_schema"]) >= _DIFY_FIELDS
+    assert form["description_placeholders"] == {"dify_app_inputs": "city (required), ha_language"}
+
+
+async def test_dify_agent_form_when_parameters_unreachable(hass: HomeAssistant) -> None:
+    entry = _parent_entry(hass, BACKEND_DIFY)
+    with (
+        patch(_REGISTRY_PATH, _dify_registry()),
+        patch(_FETCH_FORM_PATH, AsyncMock(side_effect=BackendConnectionError("down"))),
+    ):
+        form = await _init_subentry(hass, entry)
+
+    assert form["description_placeholders"]["dify_app_inputs"].startswith("unavailable")
+
+
+async def test_dify_fields_absent_for_other_backends(hass: HomeAssistant) -> None:
+    entry = _parent_entry(hass, BACKEND_CONVERSE)
+    with patch(_REGISTRY_PATH, {BACKEND_CONVERSE: _sub_adapter(backend_type=BACKEND_CONVERSE)}):
+        form = await _init_subentry(hass, entry)
+
+    assert not _DIFY_FIELDS & _schema_keys(form["data_schema"])
+
+
+async def test_dify_agent_options_saved(hass: HomeAssistant) -> None:
+    entry = _parent_entry(hass, BACKEND_DIFY)
+    options = {
+        CONF_DIFY_INPUTS: {"city": "Berlin", "units": 2},
+        CONF_DIFY_HA_CONTEXT: True,
+        CONF_DIFY_USER_FROM_HA: True,
+    }
+    with patch(_REGISTRY_PATH, _dify_registry()), patch(_FETCH_FORM_PATH, AsyncMock(return_value={})):
+        form = await _init_subentry(hass, entry)
+        result = await _configure_subentry(hass, form["flow_id"], {CONF_NAME: "Jarvis", **options})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert {key: result["data"][key] for key in options} == options
+
+
+@pytest.mark.parametrize("bad_inputs", [["city", "Berlin"], {"city": {"nested": "x"}}, {"": "x"}])
+async def test_dify_invalid_inputs_rejected(hass: HomeAssistant, bad_inputs: object) -> None:
+    entry = _parent_entry(hass, BACKEND_DIFY)
+    with patch(_REGISTRY_PATH, _dify_registry()), patch(_FETCH_FORM_PATH, AsyncMock(return_value={})):
+        form = await _init_subentry(hass, entry)
+        result = await _configure_subentry(hass, form["flow_id"], {CONF_NAME: "Jarvis", CONF_DIFY_INPUTS: bad_inputs})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_DIFY_INPUTS: "invalid_dify_inputs"}
+    assert _suggested_values(result["data_schema"])[CONF_DIFY_INPUTS] == bad_inputs
 
 
 # --- LangGraph-specific fields (LLMM-022) --------------------------------------------

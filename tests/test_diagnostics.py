@@ -37,6 +37,7 @@ from custom_components.llm_middleman.const import (
     CONF_AUTH_TYPE,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_DIFY_INPUTS,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
     CONF_MODEL,
@@ -200,6 +201,30 @@ async def test_diagnostics_redacts_every_secret_per_preset(hass: HomeAssistant, 
     assert subentry_dump["subentry_type"] == "conversation"
     assert subentry_dump["data"][CONF_NAME] == "Agent 0"
     assert subentry_dump["data"][CONF_MODEL] == _NON_SECRET_MODEL
+
+
+async def test_diagnostics_redacts_dify_inputs(hass: HomeAssistant) -> None:
+    """A Dify agent's ``inputs`` mapping can hold secrets: the whole value is redacted."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        data={CONF_BACKEND_TYPE: BACKEND_DIFY, **_PARENT_DATA[BACKEND_DIFY]},
+        subentries_data=[
+            ConfigSubentryData(
+                data={CONF_NAME: "Agent 0", CONF_DIFY_INPUTS: {"api_token": "dify-input-secret-value"}},
+                subentry_type="conversation",
+                title="Agent 0",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    (subentry_dump,) = result["subentries"].values()
+    assert subentry_dump["data"][CONF_DIFY_INPUTS] == REDACTED
+    assert "dify-input-secret-value" not in json.dumps(result)
 
 
 async def test_diagnostics_includes_entities(hass: HomeAssistant) -> None:
