@@ -128,7 +128,7 @@
                         "prompt": "Instructions the agent is given (a template). Sent as the system prompt to backends that accept one.",
                         "model": "Model this agent uses. Pick one the backend offers, or type a name.",
                         "max_history": "How many past turns to replay to stateless backends. Higher costs more per turn; full-replay backends may ignore it.",
-                        "timeout": "Per-turn deadline. The pipeline falls back rather than hang past this.",
+                        "timeout": "How long to wait to reach the backend. A reply that keeps streaming is never cut off; a backend that goes silent for 30 seconds is dropped and the pipeline falls back.",
                         "memory_scope": "Which conversations share memory on stateful backends: per conversation, per device, or one continuous thread for the agent.",
                         "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent."
                     }

@@ -286,5 +286,6 @@ async def test_turn_post_honors_agent_timeout(hass: HomeAssistant) -> None:
     adapter = ConverseAdapter(hass, session, {CONF_BASE_URL: TEST_BASE_URL})
     await _collect(adapter, TurnContext(options={CONF_TIMEOUT: 90}, memory_key="k"))
     timeout = session.post.call_args.kwargs["timeout"]
-    assert timeout.total == 90
+    assert timeout.total is None
+    assert timeout.sock_connect == 90
     assert timeout.sock_read == IDLE_TIMEOUT

@@ -492,5 +492,6 @@ async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_cha
     adapter = OpenAICompatAdapter(hass, session, _CONNECTION)
     _ = [d async for d in adapter.stream_turn(mock_chat_log, _input(), _ctx(timeout=120))]
     timeout = session.post.call_args.kwargs["timeout"]
-    assert timeout.total == 120
+    assert timeout.total is None
+    assert timeout.sock_connect == 120
     assert timeout.sock_read == IDLE_TIMEOUT

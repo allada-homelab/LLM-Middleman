@@ -75,7 +75,7 @@ SUBENTRY_TYPE_CONVERSATION = "conversation"
 MAX_TOOL_ITERATIONS = 10
 
 # sock_read idle timeout: kill only a truly stalled stream, not a slow-but-alive
-# one (the v0 single-total-deadline bug). Paired with CONF_TIMEOUT as the total.
+# one (the v0 single-total-deadline bug). Paired with CONF_TIMEOUT as the connect bound.
 IDLE_TIMEOUT = 30
 
 # Shown to the user (and spoken via TTS) when the external agent is unreachable
