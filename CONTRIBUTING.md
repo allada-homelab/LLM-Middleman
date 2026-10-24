@@ -70,6 +70,20 @@ Run the full pre-commit suite (the same hooks CI enforces):
 just pre-commit  # pre-commit run --all-files
 ```
 
+## Releasing
+
+1. In a PR, bump `version` in `custom_components/llm_middleman/manifest.json` and add a
+   matching `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`; merge it.
+2. Tag the merge commit and push the tag:
+
+   ```bash
+   git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
+
+The `Release` workflow checks the tag against `manifest.json` and `CHANGELOG.md`, then
+creates the GitHub release with that changelog section as the notes (skipped if the
+release already exists).
+
 ## Tests
 
 Write tests test-first when fixing a bug (a failing test that reproduces it, then
