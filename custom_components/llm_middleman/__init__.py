@@ -119,7 +119,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Move the v0 device (keyed on entry_id) onto the subentry so the entity's
         # device link (keyed on subentry_id in v1) is preserved.
         dev_reg = dr.async_get(hass)
-        if device := dev_reg.async_get_device(identifiers={(DOMAIN, entry.entry_id)}):
+        if hasattr(dev_reg, "async_get_device_by_identifier"):
+            # HA >= 2026.10: a device has one entry + subentry. async_get_device and the
+            # add/remove kwargs are deprecated there, and a bare remove_config_entry_id deletes it.
+            if device := dev_reg.async_get_device_by_identifier((DOMAIN, entry.entry_id), entry.entry_id):
+                dev_reg.async_update_device(
+                    device.id,
+                    new_identifiers={(DOMAIN, subentry_id)},
+                    new_config_subentry_id=subentry_id,
+                )
+        elif device := dev_reg.async_get_device(identifiers={(DOMAIN, entry.entry_id)}):
             dev_reg.async_update_device(
                 device.id,
                 new_identifiers={(DOMAIN, subentry_id)},

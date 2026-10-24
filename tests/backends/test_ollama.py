@@ -10,6 +10,7 @@ and the ``/api/tags`` probe.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -43,10 +44,14 @@ from custom_components.llm_middleman.const import (
 )
 from tests.conftest import (
     TEST_BASE_URL,
+    TOOL_SCHEMA_PROPERTIES,
     FakeStreamResponse,
     MockChatLog,
     chunk_bytes,
     fake_aiohttp_session,
+    probatio_tool_schema,
+    tool_result_content,
+    vol_tool_schema,
 )
 
 Delta = conversation.AssistantContentDeltaDict
@@ -335,9 +340,9 @@ class _FakeTool:
 class _FakeLLMApi:
     """Duck-typed ``llm.APIInstance`` exposing only what the adapter reads."""
 
-    def __init__(self, tools: list[Any]) -> None:
+    def __init__(self, tools: list[Any], custom_serializer: Callable[[Any], Any] | None = None) -> None:
         self.tools = tools
-        self.custom_serializer = None
+        self.custom_serializer = custom_serializer
 
 
 async def test_native_tool_call_extraction(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
@@ -387,6 +392,32 @@ async def test_tools_field_sent_when_llm_api_set(hass: HomeAssistant, mock_chat_
     assert isinstance(tools[0]["function"]["parameters"], dict)
 
 
+async def _posted_tool_parameters(hass: HomeAssistant, chat_log: conversation.ChatLog, parameters: Any) -> Any:
+    """Send one turn offering a single tool with ``parameters``; return its rendered JSON Schema."""
+    tool = _FakeTool()
+    tool.parameters = parameters
+    # selector_serializer is what the real Assist API instance passes as custom_serializer.
+    chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([tool], custom_serializer=llm.selector_serializer))
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), chat_log)
+    return session.post.call_args.kwargs["json"]["tools"][0]["function"]["parameters"]
+
+
+async def test_tool_parameters_render_voluptuous_schema(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    parameters = await _posted_tool_parameters(hass, mock_chat_log, vol_tool_schema())
+    assert parameters["properties"] == TOOL_SCHEMA_PROPERTIES
+    assert parameters["required"] == ["name"]
+
+
+async def test_tool_parameters_render_probatio_schema(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    # HA >= 2026.9 tool schemas are probatio; voluptuous_openapi renders them as "UNSUPPORTED".
+    parameters = await _posted_tool_parameters(hass, mock_chat_log, probatio_tool_schema())
+    assert parameters["properties"] == TOOL_SCHEMA_PROPERTIES
+    assert parameters["required"] == ["name"]
+
+
 async def test_tools_field_absent_without_llm_api(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
     session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
     adapter = _adapter(hass, session)
@@ -411,12 +442,7 @@ async def test_history_replays_tool_calls_and_results_default_str(
                 content=None,
                 tool_calls=[llm.ToolInput(id="call_1", tool_name="get_time", tool_args={"tz": "utc"})],
             ),
-            conversation.ToolResultContent(
-                agent_id="a",
-                tool_call_id="call_1",
-                tool_name="get_time",
-                tool_result={"now": now},  # pyright: ignore[reportArgumentType]
-            ),
+            tool_result_content(agent_id="a", tool_call_id="call_1", tool_name="get_time", data={"now": now}),
         ]
     )
     session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))

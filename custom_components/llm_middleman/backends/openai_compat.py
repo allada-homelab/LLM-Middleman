@@ -28,7 +28,6 @@ from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from voluptuous_openapi import convert  # pyright: ignore[reportUnknownVariableType]
 
 from custom_components.llm_middleman.const import (
     BACKEND_OPENAI_COMPAT,
@@ -42,6 +41,7 @@ from custom_components.llm_middleman.const import (
     DEFAULT_TIMEOUT,
 )
 
+from ._compat import schema_to_openapi, tool_result_data
 from ._history import trim_history
 from ._sse import async_iter_sse
 from .base import (
@@ -83,7 +83,7 @@ def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None)
     """Format one HA tool as an OpenAI chat/completions function-tool spec.
 
     Chat/completions nests the spec under ``function`` (not the flat Responses shape
-    core openai uses). ``convert`` (voluptuous-openapi) renders the voluptuous schema
+    core openai uses). ``schema_to_openapi`` renders the probatio/voluptuous schema
     to JSON Schema; ``custom_serializer`` handles HA-specific selector types. The
     unsupported-JSON-Schema-key strip core applies is intentionally omitted: most
     OpenAI-compatible servers tolerate ``enum``/``anyOf``/… and stripping them silently
@@ -94,7 +94,7 @@ def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None)
         "function": {
             "name": tool.name,
             "description": tool.description,
-            "parameters": convert(tool.parameters, custom_serializer=custom_serializer),
+            "parameters": schema_to_openapi(tool.parameters, custom_serializer),
         },
     }
 
@@ -143,7 +143,7 @@ def _convert_content(item: conversation.Content) -> dict[str, Any]:
     return {
         "role": "tool",
         "tool_call_id": item.tool_call_id,
-        "content": json.dumps(item.tool_result, default=str),
+        "content": json.dumps(tool_result_data(item), default=str),
     }
 
 
