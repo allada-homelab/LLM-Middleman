@@ -15,16 +15,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.components import conversation
-from homeassistant.config_entries import ConfigSubentryData
+from homeassistant.config_entries import ConfigSubentry, ConfigSubentryData
+from homeassistant.const import CONF_PROMPT
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import chat_session, llm
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.llm_middleman.backends.base import BackendAdapter
 from custom_components.llm_middleman.const import (
     CONF_NAME,
-    CONF_SYSTEM_PROMPT,
     DOMAIN,
 )
+from custom_components.llm_middleman.conversation import LLMMiddlemanConversationEntity
 
 TEST_URL = "http://middleman.local:8000"
 TEST_TOKEN = "test-token"
@@ -214,6 +216,26 @@ def fake_aiohttp_session(
     return session
 
 
+def build_entity(
+    hass: HomeAssistant, adapter: BackendAdapter, subentry_data: Mapping[str, Any]
+) -> LLMMiddlemanConversationEntity:
+    """Build a conversation entity driving a real ``adapter`` with ``subentry_data`` options.
+
+    Lets adapter tests run the entity's real ``async_provide_llm_data`` path, so the
+    agent prompt reaches the adapter the same way it does in production.
+    """
+    entry = MagicMock()
+    entry.runtime_data = adapter
+    subentry = MagicMock(spec=ConfigSubentry)
+    subentry.subentry_id = "sub-1"
+    subentry.title = "Agent"
+    subentry.data = dict(subentry_data)
+    entity = LLMMiddlemanConversationEntity(entry, subentry)
+    entity.entity_id = "conversation.test"
+    entity.hass = hass
+    return entity
+
+
 def build_config_entry(
     hass: HomeAssistant,
     *,
@@ -238,7 +260,7 @@ def build_config_entry(
         },
         subentries_data=[
             ConfigSubentryData(
-                data={CONF_NAME: f"Agent {index}", CONF_SYSTEM_PROMPT: ""},
+                data={CONF_NAME: f"Agent {index}", CONF_PROMPT: ""},
                 subentry_type="conversation",
                 title=f"Agent {index}",
                 unique_id=None,

@@ -40,6 +40,7 @@ __all__ = [
     "DeltaStream",
     "TurnContext",
     "build_client_timeout",
+    "rendered_system_prompt",
 ]
 
 
@@ -59,6 +60,19 @@ def build_client_timeout(options: Mapping[str, Any], default: float = DEFAULT_TI
         sock_connect=options.get(CONF_TIMEOUT, default),
         sock_read=IDLE_TIMEOUT,
     )
+
+
+def rendered_system_prompt(chat_log: conversation.ChatLog) -> str | None:
+    """Return the agent's rendered system prompt from ``chat_log``, or ``None`` if empty.
+
+    The entity's ``async_provide_llm_data`` renders the subentry ``CONF_PROMPT`` template
+    (plus HA's LLM-API/date-time/extra prompts) into ``chat_log.content[0]`` before any
+    adapter runs, so stateful adapters forward this rather than the raw option template.
+    """
+    first = chat_log.content[0] if chat_log.content else None
+    if isinstance(first, conversation.SystemContent) and first.content:
+        return first.content
+    return None
 
 
 # Canonical HA delta-dict stream every adapter yields. Single-arg AsyncGenerator:
