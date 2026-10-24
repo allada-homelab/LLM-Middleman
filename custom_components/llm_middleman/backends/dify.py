@@ -4,13 +4,20 @@ First-class preset for Dify (dify.ai / self-hosted ``langgenius/dify``). Dify ex
 one chat API for its Chatbot, Agent, and Chatflow app types:
 ``POST {base}/chat-messages`` with ``response_mode: "streaming"`` (blocking mode is
 **not** supported for Agent apps, so this adapter is streaming-only). Replies stream as
-WHATWG SSE (framed by :mod:`._sse`) with named ``event:`` types: ``agent_message``
-carries answer deltas for Agent apps, ``message`` for Chatbot/Chatflow — handling both
-makes one preset cover all three app types. ``message_end`` terminates; an in-stream
-``event: error`` (HTTP still 200) raises. ``ping``/``agent_thought``/``message_file``/
-``message_replace``/``tts_message*`` are ignored (``agent_thought``/``message_replace``
-are debug-logged; a moderation ``message_replace`` cannot un-speak already-streamed text,
-so it is never applied retroactively).
+WHATWG SSE (framed by :mod:`._sse`), but every event except ``ping`` is a bare
+``data: {json}`` frame with the event name INSIDE the JSON (``{"event": "message", ...}``)
+and no ``event:`` line — so dispatch is on ``payload["event"]``, falling back to the SSE
+``event:`` field only when the JSON has no ``event`` key (a proxy that re-frames).
+``ping`` arrives as ``event: ping`` with no data, which the framer never dispatches.
+``agent_message`` carries answer deltas for Agent apps, ``message`` for Chatbot/Chatflow —
+handling both makes one preset cover all app types. A new-style Agent app closes its
+``agent_message`` chunks with one ``message`` carrying the COMPLETE answer, so a
+``message`` after any ``agent_message`` in the same stream is dropped (not re-spoken).
+``message_end`` terminates; an in-stream ``error`` event (HTTP still 200) raises.
+Everything else (``agent_thought``/``message_file``/``message_replace``/``tts_message*``/
+``workflow_*``/``node_*``/…) is not spoken (``agent_thought``/``message_replace`` are
+debug-logged; a moderation ``message_replace`` cannot un-speak already-streamed text, so
+it is never applied retroactively).
 
 Dify owns conversation memory server-side: the first turn returns a ``conversation_id``
 on every event, and echoing it back continues the conversation → stateful
@@ -81,7 +88,9 @@ _CHAT_APP_MODES = frozenset({"chat", "agent-chat", "advanced-chat"})
 
 # Wire event names. ``agent_message`` (Agent apps) and ``message`` (Chatbot/Chatflow)
 # both carry answer deltas; the rest are terminal/ignored per the module docstring.
-_CONTENT_EVENTS = frozenset({"agent_message", "message"})
+_EVENT_AGENT_MESSAGE = "agent_message"
+_EVENT_MESSAGE = "message"
+_CONTENT_EVENTS = frozenset({_EVENT_AGENT_MESSAGE, _EVENT_MESSAGE})
 _EVENT_MESSAGE_END = "message_end"
 _EVENT_ERROR = "error"
 _LOGGED_IGNORED_EVENTS = frozenset({"agent_thought", "message_replace"})
@@ -335,20 +344,26 @@ class DifyAdapter(BackendAdapter):
                 )
                 raise BackendConnectionError(f"Dify chat-messages returned HTTP {resp.status}")
 
+            agent_streamed = False
             async for sse in async_iter_sse(resp.content.iter_any()):
-                event = sse.event
+                payload = _parse_data(sse.data) or {}
+                # Dify puts the event name in the JSON (no ``event:`` line, so the framer's
+                # default "message" is meaningless); the SSE field is only a proxy fallback.
+                json_event = payload.get("event")
+                event = json_event if isinstance(json_event, str) else sse.event
                 if event == _EVENT_ERROR:
-                    detail = _parse_data(sse.data) or {}
-                    _LOGGER.error("Dify error event: code=%s message=%s", detail.get("code"), detail.get("message"))
-                    raise BackendStreamError(f"Dify error event: {detail.get('code')}")
+                    _LOGGER.error("Dify error event: code=%s message=%s", payload.get("code"), payload.get("message"))
+                    raise BackendStreamError(f"Dify error event: {payload.get('code')}")
                 if event in _LOGGED_IGNORED_EVENTS:
                     # message_replace (moderation) cannot un-speak streamed text; never applied.
                     _LOGGER.debug("Dify %s event ignored: %s", event, sse.data[:200])
                     continue
                 if event not in _CONTENT_EVENTS and event != _EVENT_MESSAGE_END:
-                    continue  # ping / message_file / tts_* / unknown
-                payload = _parse_data(sse.data)
-                if payload is None:
+                    continue  # message_file / tts_* / workflow_* / node_* / unknown
+                if event == _EVENT_AGENT_MESSAGE:
+                    agent_streamed = True
+                elif event == _EVENT_MESSAGE and agent_streamed:
+                    # Agent apps close with one ``message`` holding the complete answer.
                     continue
                 if state["task_id"] is None:
                     tid = payload.get("task_id")
