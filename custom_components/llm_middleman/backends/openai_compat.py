@@ -66,8 +66,13 @@ _LOGGER = logging.getLogger(__name__)
 # The provider terminates the SSE stream with this literal payload, not JSON.
 _DONE_SENTINEL = "[DONE]"
 
-# Request-body option keys read from the subentry options, sent only when set.
-_OPTION_KEYS = (CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS)
+# Request-body option keys read from the subentry options, sent only when set; the
+# converter undoes HA's NumberSelector float storage where the API wants an integer.
+_OPTION_KEYS: tuple[tuple[str, type[float] | type[int]], ...] = (
+    (CONF_TEMPERATURE, float),
+    (CONF_TOP_P, float),
+    (CONF_MAX_TOKENS, int),
+)
 
 # Asks OpenAI-style servers for a terminal ``usage`` chunk on streamed responses.
 _STREAM_OPTIONS = {"include_usage": True}
@@ -217,9 +222,9 @@ class OpenAICompatAdapter(BackendAdapter):
         }
         if (model := ctx.options.get(CONF_MODEL)) is not None:
             body["model"] = model
-        for key in _OPTION_KEYS:
+        for key, convert in _OPTION_KEYS:
             if (value := ctx.options.get(key)) is not None:
-                body[key] = value
+                body[key] = convert(value)
         # HA tool schemas, only when an LLM API is configured for this agent.
         if chat_log.llm_api is not None and chat_log.llm_api.tools:
             body["tools"] = [

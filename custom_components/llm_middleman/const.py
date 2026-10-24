@@ -96,6 +96,8 @@ ERROR_MESSAGE = "Sorry, I could not reach the assistant right now. Please try ag
 CONF_NUM_CTX = "num_ctx"
 CONF_KEEP_ALIVE = "keep_alive"
 CONF_THINK = "think"
+# Smallest context window the agent form accepts (core ollama's MIN_NUM_CTX).
+MIN_NUM_CTX = 2048
 
 # keep_alive sentinel: -1 means "keep the model loaded forever" and must be sent as
 # the integer -1, not a duration string ("-1s" is an invalid negative duration).
@@ -126,9 +128,6 @@ LANGGRAPH_AUTH_BEARER = "bearer"
 STORAGE_VERSION = 1
 
 # --- n8n agent-subentry options (LLMM-012; connection keys live above with LLMM-006) ---
-# ``CONF_STREAMING`` is a config-flow help-text toggle only: the adapter branches on
-# the actual response, never on this toggle.
-CONF_STREAMING = "streaming"
 CONF_INPUT_FIELD = "input_field"
 CONF_OUTPUT_FIELD = "output_field"
 CONF_SESSION_FIELD = "session_field"

@@ -157,7 +157,16 @@
                         "multitask_strategy": "Double-texting (LangGraph)",
                         "input_messages_key": "Input messages key (LangGraph)",
                         "response_node_filter": "Spoken node (LangGraph)",
-                        "stateless_runs": "Stateless runs (LangGraph)"
+                        "stateless_runs": "Stateless runs (LangGraph)",
+                        "temperature": "Temperature (OpenAI-compatible)",
+                        "top_p": "Top P (OpenAI-compatible)",
+                        "max_tokens": "Maximum tokens (OpenAI-compatible)",
+                        "num_ctx": "Context window (Ollama)",
+                        "keep_alive": "Keep alive (Ollama)",
+                        "think": "Think before responding (Ollama)",
+                        "input_field": "Message field (n8n)",
+                        "output_field": "Reply field (n8n)",
+                        "session_field": "Session field (n8n)"
                     },
                     "data_description": {
                         "name": "Display name for this agent's conversation entity.",
@@ -173,7 +182,16 @@
                         "multitask_strategy": "What happens to a reply still running on this thread when a new turn arrives. Roll back (default) cancels it and removes it from the thread's history; Interrupt cancels it but keeps its partial progress; Enqueue waits for it to finish first; Reject refuses the new turn.",
                         "input_messages_key": "The graph state key the new message list is sent under (default: messages).",
                         "response_node_filter": "Only speak text produced by this graph node. Leave empty to speak every node's AI messages.",
-                        "stateless_runs": "Run each turn without a server-side thread. The graph then keeps no memory between turns."
+                        "stateless_runs": "Run each turn without a server-side thread. The graph then keeps no memory between turns.",
+                        "temperature": "Sampling temperature: higher is more varied, lower is more focused. Leave empty to use the server's default.",
+                        "top_p": "Nucleus sampling cutoff. Leave empty to use the server's default.",
+                        "max_tokens": "Longest reply the model may generate, in tokens. Leave empty to use the server's default.",
+                        "num_ctx": "Maximum number of text tokens the model can process. Lower it to reduce Ollama RAM use, raise it for long conversations or many exposed entities. Leave empty to use the model's default.",
+                        "keep_alive": "Seconds the model stays loaded in Ollama after a request. -1 keeps it loaded indefinitely, 0 unloads it right away. Leave empty to use Ollama's default.",
+                        "think": "Ask a thinking-capable model to reason before answering. The reasoning is shown in the chat log and never spoken. Leave unset to use the model's default.",
+                        "input_field": "Request body field the user's message is sent in. Must match the Chat Trigger's chat input key (default: chatInput).",
+                        "output_field": "Field of a non-streaming reply that holds the answer (default: output; text is also tried).",
+                        "session_field": "Request body field carrying the session key that n8n memory nodes partition on (default: sessionId)."
                     }
                 }
             },

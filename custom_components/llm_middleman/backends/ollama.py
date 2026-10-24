@@ -178,7 +178,8 @@ class OllamaAdapter(BackendAdapter):
         if CONF_MODEL in options:
             body["model"] = options[CONF_MODEL]
         if CONF_NUM_CTX in options:
-            body["options"] = {"num_ctx": options[CONF_NUM_CTX]}
+            # int(): HA's NumberSelector stores floats (core ollama sends int(num_ctx) too).
+            body["options"] = {"num_ctx": int(options[CONF_NUM_CTX])}
         if CONF_KEEP_ALIVE in options:
             keep_alive = int(options[CONF_KEEP_ALIVE])
             body["keep_alive"] = keep_alive if keep_alive == KEEP_ALIVE_FOREVER else f"{keep_alive}s"

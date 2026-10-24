@@ -8,7 +8,9 @@ succeeds or raises the typed connection errors the flow maps.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -54,16 +56,25 @@ from custom_components.llm_middleman.const import (
     CONF_DIFY_USER_FROM_HA,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
+    CONF_INPUT_FIELD,
     CONF_INPUT_MESSAGES_KEY,
+    CONF_KEEP_ALIVE,
     CONF_MAX_HISTORY,
+    CONF_MAX_TOKENS,
     CONF_MEMORY_SCOPE,
     CONF_MODEL,
     CONF_MULTITASK_STRATEGY,
+    CONF_NUM_CTX,
+    CONF_OUTPUT_FIELD,
     CONF_PASSWORD,
     CONF_RESPONSE_NODE_FILTER,
+    CONF_SESSION_FIELD,
     CONF_STATELESS_RUNS,
+    CONF_TEMPERATURE,
+    CONF_THINK,
     CONF_TIMEOUT,
     CONF_TOKEN,
+    CONF_TOP_P,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
     DOMAIN,
@@ -938,3 +949,68 @@ async def test_langgraph_agent_options_are_stored(hass: HomeAssistant) -> None:
         CONF_RESPONSE_NODE_FILTER: "respond",
         CONF_STATELESS_RUNS: True,
     }
+
+
+# --- preset-specific agent options read by the adapters ----------------------------
+
+_PRESET_AGENT_KEYS = {
+    BACKEND_OPENAI_COMPAT: {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS},
+    BACKEND_OLLAMA: {CONF_NUM_CTX, CONF_KEEP_ALIVE, CONF_THINK},
+    BACKEND_N8N: {CONF_INPUT_FIELD, CONF_OUTPUT_FIELD, CONF_SESSION_FIELD},
+    BACKEND_CONVERSE: set[str](),
+}
+_ALL_PRESET_AGENT_KEYS: set[str] = set[str]().union(*_PRESET_AGENT_KEYS.values())
+
+
+@pytest.mark.parametrize("backend_type", list(_PRESET_AGENT_KEYS))
+async def test_preset_agent_options_offered_only_for_their_preset(hass: HomeAssistant, backend_type: str) -> None:
+    entry = _parent_entry(hass, backend_type)
+    with patch(_REGISTRY_PATH, {backend_type: _sub_adapter(backend_type=backend_type)}):
+        form = await _init_subentry(hass, entry)
+
+    assert _schema_keys(form["data_schema"]) & _ALL_PRESET_AGENT_KEYS == _PRESET_AGENT_KEYS[backend_type]
+
+
+@pytest.mark.parametrize(
+    ("backend_type", "submitted"),
+    [
+        (BACKEND_OPENAI_COMPAT, {CONF_TEMPERATURE: 0.7, CONF_TOP_P: 0.9, CONF_MAX_TOKENS: 256}),
+        (BACKEND_OLLAMA, {CONF_NUM_CTX: 4096, CONF_KEEP_ALIVE: -1, CONF_THINK: True}),
+        (BACKEND_N8N, {CONF_INPUT_FIELD: "q", CONF_OUTPUT_FIELD: "answer", CONF_SESSION_FIELD: "sid"}),
+    ],
+)
+async def test_preset_agent_options_are_stored(
+    hass: HomeAssistant, backend_type: str, submitted: dict[str, Any]
+) -> None:
+    entry = _parent_entry(hass, backend_type)
+    with patch(_REGISTRY_PATH, {backend_type: _sub_adapter(backend_type=backend_type)}):
+        form = await _init_subentry(hass, entry)
+        result = await _configure_subentry(hass, form["flow_id"], {CONF_NAME: "Agent", **submitted})
+
+    assert {key: result["data"][key] for key in submitted} == submitted
+
+
+@pytest.mark.parametrize("backend_type", list(_PRESET_AGENT_KEYS))
+async def test_preset_agent_options_unset_by_default(hass: HomeAssistant, backend_type: str) -> None:
+    # Unset sampling/runtime options must stay absent so the backend's own default applies.
+    entry = _parent_entry(hass, backend_type)
+    with patch(_REGISTRY_PATH, {backend_type: _sub_adapter(backend_type=backend_type)}):
+        form = await _init_subentry(hass, entry)
+        result = await _configure_subentry(hass, form["flow_id"], {CONF_NAME: "Agent"})
+
+    assert not {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS, CONF_NUM_CTX, CONF_KEEP_ALIVE, CONF_THINK} & set(
+        result["data"]
+    )
+
+
+_STRINGS = json.loads((Path(__file__).parents[1] / "custom_components/llm_middleman/strings.json").read_text())
+
+
+@pytest.mark.parametrize("backend_type", list(_PRESET_AGENT_KEYS))
+async def test_every_agent_field_is_labelled_and_described(hass: HomeAssistant, backend_type: str) -> None:
+    entry = _parent_entry(hass, backend_type)
+    with patch(_REGISTRY_PATH, {backend_type: _sub_adapter(backend_type=backend_type)}):
+        form = await _init_subentry(hass, entry)
+    step = _STRINGS["config_subentries"]["conversation"]["step"]["set_options"]
+
+    assert _schema_keys(form["data_schema"]) <= set(step["data"]) & set(step["data_description"])

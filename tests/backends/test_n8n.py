@@ -36,7 +36,6 @@ from custom_components.llm_middleman.const import (
     CONF_OUTPUT_FIELD,
     CONF_PASSWORD,
     CONF_SESSION_FIELD,
-    CONF_STREAMING,
     CONF_TARGET_TYPE,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
@@ -175,7 +174,7 @@ async def test_wrong_mode_mismatch_streaming_toggle_but_blocking_body(hass: Home
     # must detect the real response and NOT wait for NDJSON deltas.
     response = _response([b'{"output":"done"}'], "application/json")
     session = fake_aiohttp_session(response=response)
-    deltas = await _collect(_adapter(hass, session), _ctx(**{CONF_STREAMING: True}))
+    deltas = await _collect(_adapter(hass, session), _ctx(streaming=True))
     assert deltas == [{"role": "assistant"}, {"content": "done"}]
 
 

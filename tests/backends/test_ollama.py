@@ -231,6 +231,16 @@ async def test_options_included_only_when_set(hass: HomeAssistant, mock_chat_log
     assert body["think"] is True
 
 
+async def test_num_ctx_from_number_selector_sent_as_int(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    # HA's NumberSelector stores floats; sent as an int like core ollama's int(num_ctx).
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), mock_chat_log, options={CONF_NUM_CTX: 4096.0})
+
+    assert repr(session.post.call_args.kwargs["json"]["options"]["num_ctx"]) == "4096"
+
+
 async def test_options_absent_when_unset(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
     session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
     adapter = _adapter(hass, session)

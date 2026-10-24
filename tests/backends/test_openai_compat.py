@@ -241,6 +241,14 @@ async def test_options_present_only_when_set(hass: HomeAssistant, mock_chat_log:
     assert body["stream"] is True
 
 
+async def test_max_tokens_from_number_selector_sent_as_int(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    # HA's NumberSelector stores floats; OpenAI rejects a decimal max_tokens (256.0).
+    session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
+    _ = [d async for d in _adapter(hass, session).stream_turn(mock_chat_log, _input(), _ctx(max_tokens=256.0))]
+
+    assert repr(_posted_body(session)["max_tokens"]) == "256"
+
+
 async def test_options_omitted_when_unset(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
     session = fake_aiohttp_session(response=FakeStreamResponse([b"data: [DONE]\n\n"]))
     adapter = _adapter(hass, session)
