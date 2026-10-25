@@ -14,7 +14,7 @@ turn to an external backend**, streaming the reply back into the pipeline (→ s
 and the Assist chat). It runs **no LLM of its own** — intelligence lives in the backend.
 
 **Current state (2026-10): v1 shipped — maintenance mode.** The v1 multi-backend
-re-architecture was released as `v1.0.0`; the latest release is **`v1.4.0`** (the
+re-architecture was released as `v1.0.0`; the latest release is **`v1.5.0`** (the
 `manifest.json` `version` is the source of truth; `pyproject.toml` mirrors it, enforced by
 `tests/test_versions.py`). Minimum Home Assistant is **2026.7.0** (`hacs.json`). What
 shipped:
@@ -41,6 +41,8 @@ plus info-level backend down/recovered logging and README reference tables. `v1.
 (2026-10-25) fixed the Timeout regression (since 1.1.4 any backend silent for 30 s failed;
 Timeout is now the maximum silence) and shipped the **tier-1 reworks of OpenAI-compatible +
 Ollama (LLMM-024) and n8n + converse (LLMM-025)**, both `in-review` pending owner-run rows.
+`v1.5.0` (2026-10-25) marks conversation and AI task entities unavailable while their
+backend is unreachable (the fallback is still spoken), completing the quality scale.
 
 Tickets LLMM-001…017 are done; LLMM-018 (live E2E matrix), LLMM-019 (release), LLMM-021 and
 LLMM-022 are `in-review` pending owner rows, and so are LLMM-023 (AI Task `generate_data`
