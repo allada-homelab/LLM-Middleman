@@ -6,6 +6,7 @@ tags: [adapters, conversation]
 generated: {by: okf-wiki/haiku, at: 2026-10-25T04:42:34Z}
 verified:
   - {by: okf-wiki/haiku, at: 2026-10-25T04:42:34Z, commit: 16dde55938d9}
+  - {by: okf-wiki/deepseek, at: 2026-10-25T07:14:05Z, commit: e2b31f41a3ed}
 sources:
   - {id: s1, resource: https://github.com/allada-homelab/LLM-Middleman/pull/110, title: PR 110 makes sock_read the agent Timeout as the one knob}
   - {id: s2, resource: https://github.com/allada-homelab/LLM-Middleman/pull/84, title: PR 84 (v1.1.4) drops total but hardcodes a 30 s sock_read}

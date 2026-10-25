@@ -6,6 +6,7 @@ tags: [adapters, config-flow]
 generated: {by: okf-wiki/haiku, at: 2026-10-24T23:52:06Z}
 verified:
   - {by: okf-wiki/haiku, at: 2026-10-24T23:52:06Z, commit: ad14312f1a7c}
+  - {by: okf-wiki/deepseek, at: 2026-10-25T07:10:57Z, commit: e2b31f41a3ed}
 sources:
   - {id: s1, resource: https://github.com/allada-homelab/LLM-Middleman/pull/99, title: "LLMM-022 probe fix, verified live against langgraph-api 0.16.6"}
   - {id: s2, resource: custom_components/llm_middleman/backends/langgraph.py, title: _probe_assistant and the UUID branch in the config probe}
