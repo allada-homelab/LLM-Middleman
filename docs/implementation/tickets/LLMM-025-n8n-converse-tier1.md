@@ -1,7 +1,7 @@
 ---
 id: LLMM-025
 title: n8n + converse tier-1 (real reply shapes, segment separators, safe webhook probe, terminal-state discipline, tool activity)
-status: in-progress
+status: in-review
 phase: 5
 depends_on: [LLMM-009, LLMM-012]
 ---
@@ -113,29 +113,68 @@ mode (2.44.6 streams no tool chunks); a separate "max silence" option.
   shown. Call id: the optional `id` field when present, else `converse-tool-N`. The result is
   `{"status": …}`; any status other than `ok` is an error.
 - **converse terminal states**: the only success terminal is `done`. EOF without it raises
-  `BackendStreamError`; after partial text, the guard appends the fallback on a new line.
-  `done` with nothing to say yields nothing, so the guard's silent-end fallback applies.
+  `BackendStreamError`, including when nothing was streamed: a silent EOF used to yield nothing,
+  and it is now a dropped stream too, like Dify. After partial text, the guard appends the
+  fallback on a new line. `done` with nothing to say yields nothing, so the guard's silent-end
+  fallback applies. An `error` event without a `code` logs `no code`, never `None`.
 - Fixtures: n8n captures replayed through the real adapter; converse fixtures are labelled
   stub-derived (`scripts/e2e/converse_sse_stub.py` is the contract's reference backend).
 
 ## Acceptance criteria
-- [ ] 1 — Text reply (`text/html`) spoken; HTML documents still rejected.
-- [ ] 2 — All Entries / All Incoming Items arrays spoken (joined).
-- [ ] 3 — JSON-string streamed items unwrapped; non-JSON / no-field items spoken verbatim.
-- [ ] 4 — Segments separated by a newline.
-- [ ] 5 — Run-free OPTIONS probe; `webhook_not_registered` / `webhook_test_url` form errors; 401/403 → `invalid_auth`.
-- [ ] 6 — Null error content logs the failing node, never `None`.
-- [ ] 7 — Blocking `intermediateSteps` surfaced as external tool calls before the reply.
-- [ ] 8 — converse empty `done` → guard fallback (translated, `ctx.fallback`).
-- [ ] 9 — converse EOF without `done` raises; docstring matches.
-- [ ] 10 — converse `tool_activity` surfaced (pre-text) or traced (post-text); never ends on a tool result.
-- [ ] 11 — converse probe: 401/403 → `invalid_auth`.
-- [ ] 12 — Spec/stub updated, additive only.
-- [ ] Fixtures captured from n8n 2.44.6 and replayed in tests.
+- [x] 1 — Text reply (`text/html`) spoken; HTML documents still rejected.
+- [x] 2 — All Entries / All Incoming Items arrays spoken (joined).
+- [x] 3 — JSON-string streamed items unwrapped; non-JSON / no-field items spoken verbatim.
+- [x] 4 — Segments separated by a newline.
+- [x] 5 — Run-free OPTIONS probe; `webhook_not_registered` / `webhook_test_url` form errors; 401/403 → `invalid_auth`.
+- [x] 6 — Null error content logs the failing node, never `None`.
+- [x] 7 — Blocking `intermediateSteps` surfaced as external tool calls before the reply.
+- [x] 8 — converse empty `done` → guard fallback (translated, `ctx.fallback`).
+- [x] 9 — converse EOF without `done` raises; docstring matches.
+- [x] 10 — converse `tool_activity` surfaced (pre-text) or traced (post-text); never ends on a tool result.
+- [x] 11 — converse probe: 401/403 → `invalid_auth`.
+- [x] 12 — Spec/stub updated, additive only.
+- [x] Fixtures captured from n8n 2.44.6 and replayed in tests.
 - [ ] Owner-run live rows against a real n8n with an AI Agent (NOT RUN).
 
 ## Verification
-(filled in at the end of the branch)
+Agent-run (devcontainer, 2026-10-25), on `feat/llmm-025-n8n-converse-tier1` off `d48e88a`:
+- Baseline before any edit: `uv run pytest -q` → `801 passed`.
+- Red first: with only `N8nWebhookError` added, the new n8n tests showed 30 failing (items 1–7,
+  probe). The new converse tests showed 14 failing (items 8–11). Two pre-existing tests pinned
+  the old behaviour and were updated to the new contract: `test_multiple_begin_end_cycles`
+  (item 4) and the converse silent-EOF / empty-`done` tests (items 8–9).
+- Live, n8nio/n8n:2.44.6 (container `llmm-025-n8n`, removed after): the real `N8nAdapter`
+  spoke all ten captured workflows correctly. `stream-err` falls back naming node `'C'`. Probes:
+  - Webhook and Chat Trigger: OK
+  - unregistered path: `webhook_not_registered`
+  - deactivated workflow: answers `Allow-Methods: OPTIONS` only, so `webhook_not_registered`
+  - `/webhook-test/`: `webhook_test_url`
+
+  Executions went 13 → 23 across ten turns plus four probes (and 13 → 13 across four probes
+  alone), so the probe started no run.
+- Live, converse stub (local, port 18099, stopped after): all eight stub cases behave as
+  specified through the real `ConverseAdapter` (cut → raises after the partial text; tool → two
+  external calls; late → traced; empty → nothing yielded).
+- Gate, locked HA 2026.10.3 (all rc=0):
+  - `uv lock --check`
+  - `uv run pytest -q` → `870 passed`
+  - `uv run coverage run -m pytest -q && uv run coverage report` → TOTAL 98% (n8n.py 96%,
+    converse.py 98%)
+  - `uv run ruff check .`
+  - `uv run ruff format --check .`
+  - `uv run basedpyright` → 0 errors
+  - `uv run pre-commit run --all-files`
+- CI floor leg (throwaway detached worktree, HA 2026.7.0 overlay per `lint.yml`, removed
+  after): `uv run --no-sync pytest -q tests/` → `862 passed, 8 skipped`, rc=0. The skips are all
+  HA-version gates; two new ones are the tool-result error flag (HA ≥ 2026.10).
+- Mutation checks: each of these turns 2–3 backend tests red:
+  - dropping the converse EOF raise or the trace
+  - dropping the n8n separator, text mode or JSON unwrap
+  - breaking the not-registered mapping
+
+Owner-run (NOT RUN): an n8n AI Agent with Return Intermediate Steps (tool calls in the Assist
+chat), setup against an inactive workflow on a real HA, and the converse stub rows in
+`scripts/e2e/README.md`.
 
 ## Risks / open questions
 - The OPTIONS probe is verified on n8n 2.44.6 only. Older n8n that 404s an unknown OPTIONS path
