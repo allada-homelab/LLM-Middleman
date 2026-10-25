@@ -9,6 +9,7 @@ continue_conversation override, and memory-scope key derivation.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -792,6 +793,107 @@ async def test_successful_turn_clears_the_unreachable_issue(hass: HomeAssistant,
     await _run_turns(entity, mock_chat_log, 1)
 
     assert _issue(hass) is None
+
+
+_CONVERSATION_LOGGER = "custom_components.llm_middleman.conversation"
+
+
+def _info_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Every INFO message the conversation module logged."""
+    return [r.getMessage() for r in caplog.records if r.name == _CONVERSATION_LOGGER and r.levelno == logging.INFO]
+
+
+def _answer(adapter: FakeAdapter) -> None:
+    """Script ``adapter`` to reach the backend and reply."""
+    adapter.exc = None
+    adapter.deltas = [{"role": "assistant"}, {"content": "back"}]
+
+
+async def test_backend_going_unreachable_logs_one_info(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The first unreachable turn logs once at info; further failed turns add nothing."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    caplog.set_level(logging.INFO, _CONVERSATION_LOGGER)
+
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD + 1)
+
+    assert _info_messages(caplog) == ["Backend of connection Backend is unreachable: Server disconnected"]
+
+
+async def test_backend_recovering_logs_one_info(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The first turn that reaches the backend again logs once at info; later turns add nothing."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    await _run_turns(entity, mock_chat_log, 1)
+    _answer(cast(FakeAdapter, entity.adapter))
+    caplog.set_level(logging.INFO, _CONVERSATION_LOGGER)
+    caplog.clear()
+
+    await _run_turns(entity, mock_chat_log, 2)
+
+    assert _info_messages(caplog) == ["Backend of connection Backend is reachable again"]
+
+
+async def test_reachable_backend_logs_no_availability_info(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Turns against a backend that never went down log no availability change."""
+    entity = _failing_entity(hass, BackendStreamError("HTTP 500"))
+    caplog.set_level(logging.INFO, _CONVERSATION_LOGGER)
+
+    await _run_turns(entity, mock_chat_log, 1)
+    _answer(cast(FakeAdapter, entity.adapter))
+    await _run_turns(entity, mock_chat_log, 1)
+
+    assert _info_messages(caplog) == []
+
+
+async def test_agents_on_one_connection_share_availability(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Reachability is per connection: one agent's outage and a sibling's recovery log once each."""
+    first = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    second = _make_entity(hass, first.adapter, subentry_id="sub-2")
+    second.entry = first.entry
+    caplog.set_level(logging.INFO, _CONVERSATION_LOGGER)
+
+    await _run_turns(first, mock_chat_log, 1)
+    await _run_turns(second, mock_chat_log, 1)
+    _answer(cast(FakeAdapter, first.adapter))
+    await _run_turns(second, mock_chat_log, 1)
+    await _run_turns(first, mock_chat_log, 1)
+
+    assert _info_messages(caplog) == [
+        "Backend of connection Backend is unreachable: Server disconnected",
+        "Backend of connection Backend is reachable again",
+    ]
+
+
+async def test_unreachable_turn_is_not_logged_as_error(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A transport failure is the expected outage the info line reports, so no per-turn error."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+
+    await _run_turns(entity, mock_chat_log, 2)
+
+    assert [r for r in caplog.records if r.name == _CONVERSATION_LOGGER and r.levelno >= logging.WARNING] == []
+
+
+async def test_reached_backend_failure_is_logged_as_error(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failure after reaching the backend is unexpected and keeps its error with traceback."""
+    entity = _failing_entity(hass, BackendStreamError("HTTP 500"))
+
+    await _run_turns(entity, mock_chat_log, 1)
+
+    errors = [r for r in caplog.records if r.name == _CONVERSATION_LOGGER and r.levelno == logging.ERROR]
+    assert [(r.getMessage(), r.exc_info is not None) for r in errors] == [
+        ("Backend stream failed; returning fallback message", True)
+    ]
 
 
 async def test_runtime_401_starts_one_reauth_flow(hass: HomeAssistant, live_backend: ScriptedBackend) -> None:

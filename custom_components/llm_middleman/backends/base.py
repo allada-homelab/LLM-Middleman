@@ -292,6 +292,9 @@ class BackendAdapter(ABC):
         self.hass = hass
         self.session = session
         self.connection_data = connection_data
+        # Consecutive round-trips that never reached the backend, owned by the entities.
+        # Lives here because this instance is the one per-connection object they share.
+        self.unreachable_turns = 0
 
     @classmethod
     def store_keys(cls, entry_key: str) -> tuple[str, ...]:

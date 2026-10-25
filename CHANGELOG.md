@@ -15,6 +15,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   task passes an LLM API. Failures raise errors instead of returning fallback text; a
   rejected API key starts reauthentication. (#106)
 
+### Changed
+
+- **Quieter logs while a backend is down.** A connection now logs one info line when its
+  backend becomes unreachable and one when it answers again, shared by all of its agents.
+  Turns that cannot reach the backend log at debug instead of an error with a traceback
+  each time; failures after reaching the backend still log as errors.
+
 ## [1.2.0] - 2026-10-25
 
 ### Added

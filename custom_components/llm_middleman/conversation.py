@@ -87,8 +87,6 @@ class LLMMiddlemanConversationEntity(
         self.subentry = subentry
         self.adapter: BackendAdapter = entry.runtime_data
         self._attr_unique_id = subentry.subentry_id
-        # Consecutive round-trips that never reached the backend (repair-issue trigger).
-        self._unreachable_turns = 0
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, subentry.subentry_id)},
             name=subentry.title,
@@ -212,7 +210,7 @@ class LLMMiddlemanConversationEntity(
         * Deltas pass through untrimmed (empty-string ``content`` included).
         * ``except Exception`` broadly (the v0 holes were ``ValueError`` from aiohttp's
           64 KB readline limit and ``UnicodeDecodeError``, plus ``TimeoutError``);
-          logs with ``_LOGGER.exception`` and appends the fallback message, opening a
+          logs via :meth:`_record_backend_failure` and appends the fallback message, opening a
           role first only if nothing was emitted yet, and separating it from any
           partial reply with a newline.
         * A silent end (stream yields nothing) emits role + fallback.
@@ -232,7 +230,6 @@ class LLMMiddlemanConversationEntity(
                     has_text = True
                 yield delta
         except Exception as err:
-            _LOGGER.exception("Backend stream failed; returning fallback message")
             self._record_backend_failure(err)
             ctx.fallback = True
             if not started:
@@ -248,18 +245,31 @@ class LLMMiddlemanConversationEntity(
             yield {"content": await self._async_fallback_message(language)}
 
     def _record_backend_failure(self, err: Exception) -> None:
-        """Start reauth on a credential rejection; count turns that never reached the backend."""
+        """Log the failure, start reauth on a credential rejection, and count unreachable turns.
+
+        A failure that reached the backend is unexpected, so it keeps an error with traceback.
+        An unreachable backend is the outage the one-time info line reports, so each such turn
+        logs only at debug (quality-scale log-when-unavailable).
+        """
         async_start_reauth_on_auth_error(self.hass, self.entry, err)
         if not _is_unreachable(err):
+            _LOGGER.exception("Backend stream failed; returning fallback message")
             self._record_backend_reached()
             return
-        self._unreachable_turns += 1
-        if self._unreachable_turns >= UNREACHABLE_ISSUE_THRESHOLD:
+        _LOGGER.debug("Backend unreachable; returning fallback message", exc_info=err)
+        self.adapter.unreachable_turns += 1
+        # Log on the first unreachable turn, as DataUpdateCoordinator does on its first failed
+        # update; only the user-facing repair issue waits out transient blips.
+        if self.adapter.unreachable_turns == 1:
+            _LOGGER.info("Backend of connection %s is unreachable: %s", self.entry.title, err)
+        if self.adapter.unreachable_turns >= UNREACHABLE_ISSUE_THRESHOLD:
             async_create_unreachable_issue(self.hass, self.entry)
 
     def _record_backend_reached(self) -> None:
         """The backend answered (even with an error): reset the run and clear the issue."""
-        self._unreachable_turns = 0
+        if self.adapter.unreachable_turns:
+            _LOGGER.info("Backend of connection %s is reachable again", self.entry.title)
+        self.adapter.unreachable_turns = 0
         async_delete_unreachable_issue(self.hass, self.entry.entry_id)
 
     async def _async_fallback_message(self, language: str) -> str:
