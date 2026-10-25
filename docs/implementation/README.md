@@ -98,7 +98,7 @@ Shipped in v1.2.0 (no separate tickets):
 - Reasoning passthrough as `thinking_content` — openai_compat (`reasoning_content` /
   `reasoning`), ollama (`thinking`), Dify (`reasoning_chunk`).
 
-Merged, unreleased:
+Shipped in v1.3.0:
 - AI Task `generate_data` subentry → LLMM-023 (#106; in review, waiting on owner-run live
   rows).
 

@@ -1,7 +1,7 @@
 # Session handoff — maintenance mode, owner-run remainder
 
-> Re-entry point after a Claude Code window reload. v1 is released (latest tag `v1.2.0`);
-> `main` carries the unreleased post-1.2.0 work listed under `## [Unreleased]` in
+> Re-entry point after a Claude Code window reload. v1 is released (latest tag `v1.3.0`);
+> `main` carries any unreleased post-1.3.0 work listed under `## [Unreleased]` in
 > `CHANGELOG.md`. This file tracks only what still needs the owner's hands, plus the
 > standing orchestration rules that must survive a reload.
 
@@ -16,7 +16,8 @@
   LLMM-022 (#99), reauth + repair issue (#100), Dify tier-1 LLMM-021 (#101), and the
   cleanup PR #102 (external tool calls not replayed, per-agent device memory, Store removal
   via `store_keys`, newly exposed agent options).
-- **Merged since v1.2.0, unreleased:** AI Task `generate_data` LLMM-023 (#106).
+- **Shipped in v1.3.0:** AI Task `generate_data` LLMM-023 (#106), backend down/recovered
+  logging and README reference tables (#108), quality-scale self-assessment (#107).
 - **Tickets in review, waiting on owner rows:** LLMM-021 (Dify), LLMM-022 (LangGraph),
   LLMM-023 (AI Task `generate_data`), LLMM-018 (live E2E matrix), LLMM-019 (release
   engineering).
