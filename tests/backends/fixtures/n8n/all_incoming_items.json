@@ -1,0 +1,8 @@
+{
+  "description": "Webhook (Using Respond to Webhook node) -> Code (2 items) -> Respond to Webhook (All Incoming Items)",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/resp-all body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "[{\"output\":\"First item.\"},{\"output\":\"Second item.\"}]"
+}

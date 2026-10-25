@@ -1,0 +1,8 @@
+{
+  "description": "SOURCE-DERIVED, NOT CAPTURED (needs a chat model): blocking reply of an AI Agent with 'Return Intermediate Steps' on, one ok tool and one failed tool. Step shape from @n8n/n8n-nodes-langchain dist/utils/agent-execution/buildSteps.js (buildSteps + buildObservation) in n8nio/n8n:2.44.6; messageLog trimmed",
+  "server": "n8nio/n8n:2.44.6 source, written 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/{id}/chat body={\"action\": \"sendMessage\", \"sessionId\": \"s1\", \"chatInput\": \"is the kitchen light on?\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\"output\":\"The kitchen light is on.\",\"intermediateSteps\":[{\"action\":{\"tool\":\"get_state\",\"toolInput\":{\"entity_id\":\"light.kitchen\"},\"log\":\"Calling get_state with input: {\\\"entity_id\\\":\\\"light.kitchen\\\"}\",\"messageLog\":[],\"toolCallId\":\"call_abc\",\"type\":\"tool_call\"},\"observation\":\"[{\\\"state\\\":\\\"on\\\"}]\"},{\"action\":{\"tool\":\"history\",\"toolInput\":{\"input\":\"kitchen\"},\"log\":\"Calling history\",\"messageLog\":[],\"toolCallId\":\"call_def\",\"type\":\"tool_call\"},\"observation\":\"{\\\"error\\\":\\\"Recorder unavailable\\\",\\\"errorType\\\":\\\"NodeOperationError\\\"}\"}]}"
+}

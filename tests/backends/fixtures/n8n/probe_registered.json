@@ -1,0 +1,9 @@
+{
+  "description": "OPTIONS + Origin on an active POST Webhook",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "OPTIONS /webhook/stream-text headers={\"Origin\": \"http://homeassistant.local:8123\"}",
+  "status": 204,
+  "content_type": null,
+  "access_control_allow_methods": "OPTIONS, POST",
+  "body": ""
+}

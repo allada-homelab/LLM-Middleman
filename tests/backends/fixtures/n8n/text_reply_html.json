@@ -1,0 +1,8 @@
+{
+  "description": "Webhook (Using Respond to Webhook node) -> Respond to Webhook (Text, no streaming)",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/resp-text body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "text/html; charset=utf-8",
+  "body": "plain text reply"
+}
