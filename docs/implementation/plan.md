@@ -335,8 +335,9 @@ Full sweep of HA 2026.7.1's AI/LLM surface performed against the installed sourc
   Assist's "Show details" view without HA executing anything (wyoming is prior art).
 
 **Skip (with reasons, so it isn't re-litigated):**
-- AI Task attachments / `GENERATE_IMAGE`, STT/TTS platforms — contradict text-only scope;
-  attachments never appear on the conversation path anyway.
+- AI Task `GENERATE_IMAGE`, STT/TTS platforms — contradict text-only scope. (LLMM-023 did
+  add image *attachments* for AI Task `generate_data`. They never appear on the
+  conversation path.)
 - Registering our own `llm.API` — our tools live in the external backends.
 - Token-usage sensors — no core prior art; trace stats is the blessed channel.
 - Repairs flows — nothing to deprecate yet.

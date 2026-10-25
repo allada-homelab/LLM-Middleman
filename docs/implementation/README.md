@@ -99,7 +99,7 @@ Done since v1.1.4 (no separate tickets):
   `reasoning`), ollama (`thinking`), Dify (`reasoning_chunk`).
 
 Open:
-- AI Task `generate_data` subentry → LLMM-023.
+- AI Task `generate_data` subentry → LLMM-023 (in review, waiting on owner-run live rows).
 - AG-UI preset — speculative; no ticket until there is a concrete backend to target.
 
 Dropped: Anthropic and OpenAI Responses-API presets — HA core ships `anthropic` (platinum

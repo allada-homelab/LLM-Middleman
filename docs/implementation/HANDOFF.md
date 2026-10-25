@@ -17,8 +17,8 @@
   the cleanup PR (external tool calls not replayed, per-agent device memory, Store removal
   via `store_keys`, newly exposed agent options).
 - **Tickets in review, waiting on owner rows:** LLMM-021 (Dify), LLMM-022 (LangGraph),
-  LLMM-018 (live E2E matrix), LLMM-019 (release engineering). **Planned:** LLMM-023 (AI
-  Task `generate_data`).
+  LLMM-023 (AI Task `generate_data`), LLMM-018 (live E2E matrix), LLMM-019 (release
+  engineering).
 - Live E2E evidence lives in `docs/implementation/e2e-results/` (`MATRIX.md` first).
 
 ## The only work left — owner-run
@@ -49,7 +49,10 @@ named results file and flip the ticket.
    `openai_compat` + `ollama` tool rows with `~/.llmm-e2e.env` (Tier 1 of
    `scripts/e2e/E2E-ENABLEMENT-GUIDE.md`) and watch `input_boolean.llmm_e2e_test` flip.
    Then LLMM-018 → `done`.
-7. **Voice-hardware checks** (Tier 2, carried over): wake-word follow-up with the mic kept
+7. **AI Task rows** (`e2e-results/ai-task.md`, all 7 NOT RUN): `ai_task.generate_data`
+   with and without a `structure`, plus an image attachment against a vision model, on a
+   real OpenAI-compatible server and a real Ollama. Then LLMM-023 → `done`.
+8. **Voice-hardware checks** (Tier 2, carried over): wake-word follow-up with the mic kept
    open and time-to-first-audio on a real satellite. Batch with items 2, 3 and 5 in one
    interactive session. Then LLMM-019 → `done` together with item 5.
 
