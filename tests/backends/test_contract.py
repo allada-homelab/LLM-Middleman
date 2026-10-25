@@ -14,8 +14,9 @@ The contract, and the regression class each clause gates:
 * an HTTP 401/403 on the turn request asks HA to reauthenticate the entry (a 500 does
   not), so a revoked credential surfaces as a reauth prompt instead of silent fallbacks;
 * a stream that ends with no content is voiced as the fallback;
-* the streaming request has no ``total`` deadline but an idle ``sock_read`` one (a
-  ``total`` timeout kills a reply that is still streaming).
+* the streaming request has no ``total`` deadline (it kills a reply that is still
+  streaming) but a ``sock_read`` one equal to the agent's Timeout (how long the backend
+  may stay silent).
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from homeassistant.components import conversation
 from homeassistant.core import Context, HomeAssistant
 
 from custom_components.llm_middleman.backends.base import TurnContext
-from custom_components.llm_middleman.const import ERROR_MESSAGE, IDLE_TIMEOUT
+from custom_components.llm_middleman.const import CONF_TIMEOUT, ERROR_MESSAGE
 from tests.conftest import (
     MockChatLog,
     collect,
@@ -148,16 +149,16 @@ async def test_reply_without_content_is_voiced_as_fallback(
     assert speech(result) == ERROR_MESSAGE
 
 
-async def test_streaming_request_has_idle_timeout_but_no_total_deadline(
+async def test_streaming_request_bounds_silence_by_agent_timeout_but_no_total_deadline(
     hass: HomeAssistant, live_backend: ScriptedBackend, preset: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every request of a turn bounds idle reads, never the whole (streaming) body."""
+    """Every request of a turn bounds silence by the agent Timeout, never the whole body."""
     live_backend.serve(preset, PIECES)
-    entry, entity_id = await setup_agent(hass, preset, live_backend.base_url)
+    entry, entity_id = await setup_agent(hass, preset, live_backend.base_url, **{CONF_TIMEOUT: 45})
     spy = _TimeoutSpy(entry.runtime_data.session)
     monkeypatch.setattr(entry.runtime_data, "session", spy)
 
     await run_pipeline_turn(hass, entity_id)
 
     assert spy.timeouts
-    assert {(timeout.total, timeout.sock_read) for timeout in spy.timeouts} == {(None, IDLE_TIMEOUT)}
+    assert {(timeout.total, timeout.sock_read) for timeout in spy.timeouts} == {(None, 45)}

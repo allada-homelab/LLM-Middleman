@@ -38,7 +38,6 @@ from custom_components.llm_middleman.const import (
     CONF_NUM_CTX,
     CONF_THINK,
     CONF_TIMEOUT,
-    IDLE_TIMEOUT,
 )
 from tests.conftest import (
     TEST_BASE_URL,
@@ -502,7 +501,7 @@ def test_convert_content_maps_roles() -> None:
 
 
 async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
-    # The per-agent CONF_TIMEOUT plus the shared idle deadline reach the wire call.
+    # The per-agent CONF_TIMEOUT bounds both connect and silence on the wire call.
     response = FakeStreamResponse([b'{"message":{"role":"assistant","content":"x"},"done":true}\n'])
     session = fake_aiohttp_session(response=response)
     adapter = _adapter(hass, session)
@@ -510,7 +509,7 @@ async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_cha
     timeout = session.post.call_args.kwargs["timeout"]
     assert timeout.total is None
     assert timeout.sock_connect == 45
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.sock_read == 45
 
 
 # --- token stats (trace) ----------------------------------------------------------

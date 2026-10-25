@@ -30,7 +30,6 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.llm_middleman.const import (
     CONF_TIMEOUT,
     DEFAULT_TIMEOUT,
-    IDLE_TIMEOUT,
 )
 
 from ._sse import BackendStreamError
@@ -61,17 +60,15 @@ def build_client_timeout(options: Mapping[str, Any], default: float = DEFAULT_TI
 
     There is deliberately no ``total`` deadline: aiohttp's ``total`` bounds the whole
     request *including* the streamed body, so it would cut off a reply that is still
-    producing tokens (the v0 60 s bug). Instead ``sock_connect`` is the per-agent
-    ``CONF_TIMEOUT`` (how long to wait to reach the backend) and ``sock_read`` is the
-    idle deadline (:data:`IDLE_TIMEOUT`), which fails a stalled backend fast while a
-    live stream runs as long as frames keep arriving. Lives on ``base`` — not the
+    producing tokens (the v0 60 s bug). Instead the per-agent ``CONF_TIMEOUT`` (or the
+    preset ``default``) is both ``sock_connect`` and ``sock_read``: how long to wait to
+    reach the backend, and the longest it may stay silent — before the reply starts
+    (a blocking reply, prompt processing, a model load) or between streamed frames — so
+    a live stream runs as long as frames keep arriving. Lives on ``base`` — not the
     entity module — so adapters import it without a cycle back through ``conversation``.
     """
-    return aiohttp.ClientTimeout(
-        total=None,
-        sock_connect=options.get(CONF_TIMEOUT, default),
-        sock_read=IDLE_TIMEOUT,
-    )
+    timeout = options.get(CONF_TIMEOUT, default)
+    return aiohttp.ClientTimeout(total=None, sock_connect=timeout, sock_read=timeout)
 
 
 def rendered_system_prompt(chat_log: conversation.ChatLog) -> str | None:

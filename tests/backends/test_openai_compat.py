@@ -36,7 +36,6 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_TEMPERATURE,
     CONF_TOP_P,
-    IDLE_TIMEOUT,
 )
 from tests.conftest import (
     HA_HAS_TOOL_RESULT_OBJ,
@@ -546,7 +545,7 @@ async def test_real_session_type_contract(hass: HomeAssistant) -> None:
 
 
 async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
-    # The per-agent CONF_TIMEOUT plus the shared idle deadline reach the wire call.
+    # The per-agent CONF_TIMEOUT bounds both connect and silence on the wire call.
     response = FakeStreamResponse([b"data: [DONE]\n\n"])
     session = fake_aiohttp_session(response=response)
     adapter = OpenAICompatAdapter(hass, session, _CONNECTION)
@@ -554,7 +553,7 @@ async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_cha
     timeout = session.post.call_args.kwargs["timeout"]
     assert timeout.total is None
     assert timeout.sock_connect == 120
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.sock_read == 120
 
 
 # --- token stats (trace) ----------------------------------------------------------

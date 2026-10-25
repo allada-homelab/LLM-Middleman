@@ -39,7 +39,6 @@ from custom_components.llm_middleman.const import (
     CONF_TARGET_TYPE,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
-    IDLE_TIMEOUT,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_TARGET_CHAT_TRIGGER,
@@ -251,11 +250,11 @@ async def test_action_included_for_chat_trigger(hass: HomeAssistant) -> None:
     # Session key and turn text are sent under the default field names.
     assert body["sessionId"] == "conv-1"
     assert body["chatInput"] == "hi there"
-    # Default connect bound is the n8n-specific 30 s; no total deadline so a live stream isn't cut off.
+    # Default bound is the n8n-specific 30 s; no total deadline so a live stream isn't cut off.
     timeout = session.post.call_args.kwargs["timeout"]
     assert timeout.total is None
     assert timeout.sock_connect == 30
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.sock_read == 30
 
 
 async def test_action_omitted_for_plain_webhook(hass: HomeAssistant) -> None:

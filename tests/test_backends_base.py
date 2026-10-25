@@ -32,7 +32,7 @@ from custom_components.llm_middleman.backends.base import (
     build_client_timeout,
     probe_json,
 )
-from custom_components.llm_middleman.const import CONF_TIMEOUT, DEFAULT_TIMEOUT, IDLE_TIMEOUT
+from custom_components.llm_middleman.const import CONF_TIMEOUT, DEFAULT_TIMEOUT, N8N_DEFAULT_TIMEOUT
 from tests.conftest import (
     FakeJsonResponse,
     collect,
@@ -143,13 +143,23 @@ def test_build_client_timeout_has_no_total_deadline() -> None:
     timeout = build_client_timeout({CONF_TIMEOUT: 7})
     assert timeout.total is None
     assert timeout.sock_connect == 7
-    assert timeout.sock_read == IDLE_TIMEOUT
+    # The agent Timeout is also how long the backend may stay silent (regression since 1.1.4).
+    assert timeout.sock_read == 7
 
 
 def test_build_client_timeout_default() -> None:
     timeout = build_client_timeout({})
     assert timeout.total is None
     assert timeout.sock_connect == DEFAULT_TIMEOUT
+    assert timeout.sock_read == DEFAULT_TIMEOUT
+
+
+def test_build_client_timeout_preset_default() -> None:
+    # n8n's own default applies to both bounds when the agent leaves Timeout unset.
+    timeout = build_client_timeout({}, N8N_DEFAULT_TIMEOUT)
+    assert timeout.total is None
+    assert timeout.sock_connect == N8N_DEFAULT_TIMEOUT
+    assert timeout.sock_read == N8N_DEFAULT_TIMEOUT
 
 
 def _probe_session(response: FakeJsonResponse) -> MagicMock:

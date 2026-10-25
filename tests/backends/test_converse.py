@@ -23,7 +23,6 @@ from custom_components.llm_middleman.const import (
     CONF_TIMEOUT,
     CONF_TOKEN,
     CONVERSE_PATH,
-    IDLE_TIMEOUT,
 )
 from tests.conftest import (
     TEST_BASE_URL,
@@ -268,7 +267,7 @@ async def test_validate_connection_maps_client_error(hass: HomeAssistant) -> Non
 
 
 async def test_turn_post_honors_agent_timeout(hass: HomeAssistant) -> None:
-    # The per-agent CONF_TIMEOUT plus the shared idle deadline reach the wire call
+    # The per-agent CONF_TIMEOUT bounds both connect and silence on the wire call
     # (v0 hardcoded one 60 s total for everyone).
     blob = sse_bytes(("done", '{"text":""}'))
     session = fake_aiohttp_session(response=FakeStreamResponse([blob]))
@@ -277,4 +276,4 @@ async def test_turn_post_honors_agent_timeout(hass: HomeAssistant) -> None:
     timeout = session.post.call_args.kwargs["timeout"]
     assert timeout.total is None
     assert timeout.sock_connect == 90
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.sock_read == 90

@@ -86,10 +86,6 @@ UNREACHABLE_ISSUE_THRESHOLD = 3
 # Repair-issue translation key; the issue id appends the parent entry_id.
 ISSUE_BACKEND_UNREACHABLE = "backend_unreachable"
 
-# sock_read idle timeout: kill only a truly stalled stream, not a slow-but-alive
-# one (the v0 single-total-deadline bug). Paired with CONF_TIMEOUT as the connect bound.
-IDLE_TIMEOUT = 30
-
 # Shown to the user (and spoken via TTS) when the external agent is unreachable
 # or errors mid-turn, so the Assist pipeline never hangs.
 ERROR_MESSAGE = "Sorry, I could not reach the assistant right now. Please try again."

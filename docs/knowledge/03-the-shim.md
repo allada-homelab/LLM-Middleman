@@ -115,9 +115,9 @@ were `ValueError` from aiohttp's 64 KB readline cap and `UnicodeDecodeError`, pl
 `TimeoutError`), logs with `_LOGGER.exception`, and appends the fallback message. A silent
 stream end also yields role + fallback.
 
-**Timeouts.** `aiohttp.ClientTimeout(total=CONF_TIMEOUT, sock_read=IDLE_TIMEOUT)` — a
-per-agent configurable total (default 60 s; n8n defaults lower) plus an idle-read timeout
-(~30 s) so a responsive-but-slow stream isn't killed. This replaces v0's single total
+**Timeouts.** `aiohttp.ClientTimeout(total=None, sock_connect=CONF_TIMEOUT,
+sock_read=CONF_TIMEOUT)` — one per-agent knob (default 60 s; n8n defaults lower) bounding
+the connect and every silence, with no total so a responsive-but-slow stream isn't killed. This replaces v0's single total
 deadline that killed slow-but-streaming backends.
 
 ---
