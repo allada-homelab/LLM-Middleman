@@ -12,6 +12,24 @@ integration owns only the plumbing.
 Instead of speaking one bespoke wire protocol, you pick a **backend preset** in the config
 UI, enter a URL and (optional) auth, and add one or more conversation *agents* under it.
 
+## Use cases
+
+- **A voice front-end for an agent you already run.** Your LangGraph graph, Dify app, n8n
+  workflow, or own service (custom `/v1/converse`) keeps its prompt, memory, and tools.
+  Home Assistant adds wake word, speech-to-text, streaming text-to-speech, and the Assist
+  chat on every phone and satellite.
+- **A local model that controls the home.** Point the Ollama or OpenAI-compatible preset at
+  Ollama, llama.cpp, or vLLM, select *Control Home Assistant*, and the model calls Home
+  Assistant's own tools. Nothing leaves your network.
+- **A hosted model through an OpenAI-compatible API** (OpenAI, OpenRouter, a LiteLLM
+  gateway), with the same tool support.
+- **Several assistants on one backend.** Each agent has its own prompt and memory scope,
+  for example a kitchen assistant that keeps one thread per satellite and a general one
+  per conversation.
+- **Automations that write text or structured data.** An AI task (OpenAI-compatible and
+  Ollama) answers `ai_task.generate_data` with a notification text, a summary, or fields
+  read from a camera image. See [Examples](#examples).
+
 ## Backend presets
 
 Pick one preset per connection. Each streams the reply token-by-token
@@ -193,6 +211,74 @@ output, so they can't enforce a structure and don't offer AI tasks.
   fails the action with an error. Unlike a conversation agent, there is no spoken
   fallback.
 
+## Examples
+
+Replace the entity ids with your own: an agent's conversation entity and an AI task's
+entity are named after the agent or task (by default `ai_task.llm_middleman_ai_task`).
+
+**Ask an agent from an automation** and send its answer to your phone:
+
+```yaml
+triggers:
+  - trigger: time
+    at: "07:00:00"
+actions:
+  - action: conversation.process
+    data:
+      agent_id: conversation.jarvis
+      text: Give me a two-sentence briefing for today.
+    response_variable: reply
+  - action: notify.mobile_app_phone
+    data:
+      message: "{{ reply.response.speech.plain.speech }}"
+```
+
+**Generate a notification text** with an AI task:
+
+```yaml
+actions:
+  - action: ai_task.generate_data
+    data:
+      task_name: garage door reminder
+      entity_id: ai_task.llm_middleman_ai_task
+      instructions: Write a short, slightly funny reminder that the garage door is still open.
+    response_variable: result
+  - action: notify.mobile_app_phone
+    data:
+      message: "{{ result.data }}"
+```
+
+**Read structured data from a camera image** (the AI task needs a vision model):
+
+```yaml
+actions:
+  - action: ai_task.generate_data
+    data:
+      task_name: driveway check
+      entity_id: ai_task.llm_middleman_ai_task
+      instructions: How many cars are in the driveway, and is a package visible?
+      structure:
+        cars:
+          description: Number of cars in the driveway
+          required: true
+          selector:
+            number:
+        package:
+          description: Whether a package is visible
+          required: true
+          selector:
+            boolean:
+      attachments:
+        - media_content_id: media-source://camera/camera.driveway
+          media_content_type: image/jpeg
+    response_variable: result
+  - if: "{{ result.data.package }}"
+    then:
+      - action: notify.mobile_app_phone
+        data:
+          message: "A package is waiting ({{ result.data.cars }} cars in the driveway)."
+```
+
 ## OpenAI-compatible and Ollama
 
 - **Errors mid-reply.** An error the server sends after the reply started (vLLM's error
@@ -263,6 +349,63 @@ conversation agent runs, and Home Assistant's intent stage handles timers and si
 commands ahead of the agent. So a matched local intent (a timer, "turn on the lights")
 never reaches this integration — that is expected, not a bug. If your agent "never got the
 message," check whether a local sentence/intent claimed the turn first.
+
+## Troubleshooting
+
+- **The agent says "Sorry, I could not reach the assistant right now."** This is the
+  fallback: the backend could not be reached, stayed silent longer than the agent's
+  *Timeout*, or returned an error. The log has the reason (see *Debug logging* below). The
+  first unreachable turn logs `Backend of connection … is unreachable` at info level, and
+  the first turn that gets through again logs `… is reachable again`.
+- **A slow backend is cut off.** *Timeout* is the longest the backend may stay silent, not
+  a limit on the whole reply. Raise it for blocking n8n workflows, large models that take
+  long to process the prompt, reasoning models, or Ollama loading a model (or set
+  Ollama's *Keep alive*).
+- **Repair: "… backend is unreachable".** Three turns or AI tasks in a row could not reach
+  the backend. Check that it runs and that Home Assistant can reach its address; use
+  **Reconfigure** on the connection if the address changed. The repair clears itself on
+  the next turn that reaches the backend.
+- **The connection asks to reauthenticate.** The backend answered 401 or 403 (at setup or
+  on a turn). Enter the new key or password in the reauthentication form; the connection
+  reloads with it. A connection without credentials offers only **Reconfigure**.
+- **The connection shows "Retrying setup".** The setup check could not reach the backend.
+  Home Assistant retries on its own; the integration's entry shows the error.
+- **Saving the connection fails.**
+  - *Failed to connect*: wrong URL, the backend is down, or Home Assistant cannot reach
+    it. For Ollama, enter the host root (`http://host:11434`), not its `/v1` or `/api`
+    path.
+  - *Authentication failed*: wrong key, token, or password.
+  - *No assistant or graph with this ID* (LangGraph): use the graph name from
+    `langgraph.json` or an assistant UUID.
+  - *No active webhook at this URL* (n8n): activate the workflow; production URLs answer
+    only while it is active. *This is an n8n test URL*: use the production URL, not
+    `/webhook-test/`.
+  - *Workflow or Text Generator app* / *no published version* (Dify): use the key of a
+    Chatbot, Agent, or Chatflow app, and publish the Agent first.
+- **"The backend connection is not loaded"** when adding an agent or AI task: fix or
+  reload the connection first.
+- **Device control does not work with Ollama.** Check *Control Home Assistant* is set and
+  *Context window* is at least 8192; a smaller window cuts off Home Assistant's tool
+  prompt. Use a model that supports tools.
+- **An AI task fails.** *Not valid JSON for the requested structure*: the model ignored
+  the schema; use a model or server that supports structured outputs (the reply is in
+  the log). *Only image attachments are supported*: other file types are refused. A
+  server error naming `json_schema` means the server does not support structured outputs.
+- **The agent never got the message.** A local intent or sentence trigger claimed it
+  first; see [A note on local intents](#a-note-on-local-intents).
+- **Debug logging.** Turn it on for the integration, reproduce the problem, and read the
+  log:
+
+  ```yaml
+  logger:
+    logs:
+      custom_components.llm_middleman: debug
+  ```
+
+  **Settings → Voice assistants → (assistant) → ⋮ → Debug** shows each pipeline run with
+  the conversation trace (token usage, and `finish_reason` for a cut-off reply). For an issue
+  report, add the [diagnostics](#diagnostics) download; credentials, URLs, and prompts
+  are redacted.
 
 ## Migration from v0
 
