@@ -416,6 +416,20 @@ async def test_legacy_memory_key_is_the_pre_subentry_device_key(
     assert adapter.received_ctx.legacy_memory_key == expected
 
 
+@pytest.mark.parametrize("scope", [MEMORY_SCOPE_CONVERSATION, MEMORY_SCOPE_DEVICE, MEMORY_SCOPE_AGENT])
+async def test_turn_context_carries_the_agent_subentry_id(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, scope: str
+) -> None:
+    """Every scope hands adapters the agent's subentry id (the openai prompt-cache key)."""
+    adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}])
+    entity = _make_entity(hass, adapter, subentry_data={CONF_MEMORY_SCOPE: scope})
+
+    await entity._async_run_turn(_user_input(device_id="dev-9"), mock_chat_log)
+
+    assert adapter.received_ctx is not None
+    assert adapter.received_ctx.subentry_id == "sub-1"
+
+
 # --- provide_llm_data wiring -------------------------------------------------
 
 

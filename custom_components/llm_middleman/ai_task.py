@@ -89,6 +89,7 @@ class LLMMiddlemanTaskEntity(ai_task.AITaskEntity):
             options=self.subentry.data,
             memory_key=chat_log.conversation_id,
             output_schema=_output_schema(task, chat_log),
+            subentry_id=self.subentry.subentry_id,
         )
         # Stateless-replay adapters build the request from chat_log and never read the
         # turn input; stream_turn's contract still takes one.

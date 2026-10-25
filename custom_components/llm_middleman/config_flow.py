@@ -77,6 +77,7 @@ from .const import (
     CONF_NUM_CTX,
     CONF_OUTPUT_FIELD,
     CONF_PASSWORD,
+    CONF_REASONING_EFFORT,
     CONF_RESPONSE_NODE_FILTER,
     CONF_SESSION_FIELD,
     CONF_STATELESS_RUNS,
@@ -110,8 +111,12 @@ from .const import (
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
     PROBE_TIMEOUT,
+    REASONING_EFFORTS,
     SUBENTRY_TYPE_AI_TASK,
     SUBENTRY_TYPE_CONVERSATION,
+    THINK_OFF,
+    THINK_ON,
+    THINK_OPTIONS,
 )
 
 if TYPE_CHECKING:
@@ -751,17 +756,36 @@ def _add_openai_compat_fields(schema: dict[Any, Any], options: Mapping[str, Any]
     schema[vol.Optional(CONF_MAX_TOKENS, description={"suggested_value": options.get(CONF_MAX_TOKENS)})] = (
         NumberSelector(NumberSelectorConfig(min=1, step=1, mode=NumberSelectorMode.BOX))
     )
+    # Reasoning models only; custom_value lets a newer level through without a release.
+    schema[vol.Optional(CONF_REASONING_EFFORT, description={"suggested_value": options.get(CONF_REASONING_EFFORT)})] = (
+        SelectSelector(
+            SelectSelectorConfig(
+                options=list(REASONING_EFFORTS),
+                translation_key=CONF_REASONING_EFFORT,
+                custom_value=True,
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        )
+    )
 
 
 def _add_ollama_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
-    """Add the Ollama runtime options (core-ollama's set); left empty, the model's default applies."""
+    """Add the Ollama runtime options (core-ollama's set).
+
+    Empty ``num_ctx`` / ``keep_alive`` send core HA's defaults; empty ``think`` leaves it to the model.
+    """
     schema[vol.Optional(CONF_NUM_CTX, description={"suggested_value": options.get(CONF_NUM_CTX)})] = NumberSelector(
         NumberSelectorConfig(min=MIN_NUM_CTX, step=1, mode=NumberSelectorMode.BOX)
     )
     schema[vol.Optional(CONF_KEEP_ALIVE, description={"suggested_value": options.get(CONF_KEEP_ALIVE)})] = (
         NumberSelector(NumberSelectorConfig(min=KEEP_ALIVE_FOREVER, step=1, mode=NumberSelectorMode.BOX))
     )
-    schema[vol.Optional(CONF_THINK, description={"suggested_value": options.get(CONF_THINK)})] = BooleanSelector()
+    # Agents saved before think levels store a bool; show it as the matching on/off choice.
+    think = options.get(CONF_THINK)
+    suggested_think = (THINK_ON if think else THINK_OFF) if isinstance(think, bool) else think
+    schema[vol.Optional(CONF_THINK, description={"suggested_value": suggested_think})] = SelectSelector(
+        SelectSelectorConfig(options=list(THINK_OPTIONS), translation_key=CONF_THINK, mode=SelectSelectorMode.DROPDOWN)
+    )
 
 
 def _add_n8n_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:

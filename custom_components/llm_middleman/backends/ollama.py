@@ -18,11 +18,19 @@ stream into ``llm.ToolInput`` deltas (repairing small-model malformed args via
 ``_parse_tool_args``), and replays prior tool calls/results back into ``messages[]`` on
 the next iteration. The entity's bounded tool loop drives the re-entry; this adapter
 stays stateless.
+
+Tier-1 (LLMM-024): tool calls keep Ollama's ``id`` and replay with ``function.index``, and
+tool results carry ``tool_name`` + ``tool_call_id`` (``api/types.go`` ``Message``). A
+mid-stream ``{"error": …}`` line (HTTP status already 200) raises
+:class:`BackendStreamError`; ``done_reason: "length"`` keeps the text and is logged +
+traced. Empty ``num_ctx`` / ``keep_alive`` options send core HA's defaults; ``think`` is a
+bool or a level.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncGenerator, AsyncIterable, Mapping, Sequence
 from typing import Any, ClassVar, cast
 
@@ -30,6 +38,7 @@ from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util.ulid import ulid_now
 
 from custom_components.llm_middleman.const import (
     BACKEND_OLLAMA,
@@ -40,7 +49,11 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_NUM_CTX,
     CONF_THINK,
+    DEFAULT_KEEP_ALIVE,
+    DEFAULT_NUM_CTX,
     KEEP_ALIVE_FOREVER,
+    THINK_OFF,
+    THINK_ON,
 )
 
 from ._history import trim_history
@@ -56,8 +69,13 @@ from .base import (
     build_client_timeout,
     json_object,
     probe_json,
+    record_truncation,
     trace_token_stats,
 )
+
+_LOGGER = logging.getLogger(__name__)
+
+_LABEL = "Ollama"
 
 
 def _fix_invalid_arguments(value: Any) -> Any:
@@ -85,6 +103,18 @@ def _parse_tool_args(arguments: dict[str, Any]) -> dict[str, Any]:
     return {k: _fix_invalid_arguments(v) for k, v in arguments.items() if v is not None and v != ""}
 
 
+def _think(value: object) -> bool | str:
+    """Map the stored ``think`` option to the wire value: a bool, or a level string.
+
+    Agents saved before levels existed store a bool; the selector stores ``on``/``off``.
+    """
+    if value is True or value == THINK_ON:
+        return True
+    if value is False or value == THINK_OFF:
+        return False
+    return str(value)
+
+
 def _convert_content(content: conversation.Content, images: Sequence[EncodedImage] = ()) -> dict[str, Any]:
     """Map one ChatLog item to an Ollama ``messages[]`` entry.
 
@@ -108,11 +138,17 @@ def _convert_content(content: conversation.Content, images: Sequence[EncodedImag
             message["thinking"] = content.thinking_content
         if content.tool_calls:
             message["tool_calls"] = [
-                {"function": {"name": call.tool_name, "arguments": call.tool_args}} for call in content.tool_calls
+                {"id": call.id, "function": {"index": index, "name": call.tool_name, "arguments": call.tool_args}}
+                for index, call in enumerate(content.tool_calls)
             ]
         return message
     # Only ToolResultContent remains (Content is a closed union).
-    return {"role": "tool", "content": tool_result_json(content)}
+    return {
+        "role": "tool",
+        "content": tool_result_json(content),
+        "tool_name": content.tool_name,
+        "tool_call_id": content.tool_call_id,
+    }
 
 
 async def _iter_ndjson(stream: AsyncIterable[bytes]) -> AsyncGenerator[dict[str, Any]]:
@@ -177,8 +213,9 @@ class OllamaAdapter(BackendAdapter):
     async def _build_request(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> dict[str, Any]:
         """Rebuild the trimmed provider ``messages[]`` and assemble the request body.
 
-        Each option is included only when configured. ``base_url`` is the host root
-        (not ``/v1``); the caller strips the trailing slash before appending paths.
+        ``num_ctx`` / ``keep_alive`` fall back to core HA's defaults when unset; ``think``
+        is sent only when configured. ``base_url`` is the host root (not ``/v1``); the
+        caller strips the trailing slash before appending paths.
         """
         options = ctx.options
         items = replayable_content(chat_log.content)
@@ -190,14 +227,12 @@ class OllamaAdapter(BackendAdapter):
         body: dict[str, Any] = {"messages": messages, "stream": True}
         if CONF_MODEL in options:
             body["model"] = options[CONF_MODEL]
-        if CONF_NUM_CTX in options:
-            # int(): HA's NumberSelector stores floats (core ollama sends int(num_ctx) too).
-            body["options"] = {"num_ctx": int(options[CONF_NUM_CTX])}
-        if CONF_KEEP_ALIVE in options:
-            keep_alive = int(options[CONF_KEEP_ALIVE])
-            body["keep_alive"] = keep_alive if keep_alive == KEEP_ALIVE_FOREVER else f"{keep_alive}s"
+        # int(): HA's NumberSelector stores floats (core ollama sends int(num_ctx) too).
+        body["options"] = {"num_ctx": int(options.get(CONF_NUM_CTX, DEFAULT_NUM_CTX))}
+        keep_alive = int(options.get(CONF_KEEP_ALIVE, DEFAULT_KEEP_ALIVE))
+        body["keep_alive"] = keep_alive if keep_alive == KEEP_ALIVE_FOREVER else f"{keep_alive}s"
         if CONF_THINK in options:
-            body["think"] = options[CONF_THINK]
+            body["think"] = _think(options[CONF_THINK])
         # HA tool schemas, only when an LLM API is configured for this agent.
         if chat_log.llm_api is not None and chat_log.llm_api.tools:
             body["tools"] = [
@@ -220,8 +255,9 @@ class OllamaAdapter(BackendAdapter):
         Stateless: rebuilds messages from ``chat_log.content`` each turn and ignores
         ``ctx.memory_key``. Emits ``{"role": "assistant"}`` once before the first
         non-empty content (or thinking) delta, then one delta per object. Whitespace
-        in content is preserved verbatim. Stops on ``done: true`` (tracing its token
-        counts as ``stats`` when present); on a silent EOF
+        in content is preserved verbatim. An ``{"error": …}`` line raises after any text
+        already streamed. Stops on ``done: true`` (tracing its token counts as ``stats``
+        when present, and a ``length`` cut-off); on a silent EOF
         the generator simply ends and LLMM-005's entity guard supplies the final
         ``AssistantContent``.
         """
@@ -238,6 +274,9 @@ class OllamaAdapter(BackendAdapter):
         ) as response:
             role_emitted = False
             async for obj in _iter_ndjson(response.content.iter_any()):
+                if (error := obj.get("error")) is not None:
+                    _LOGGER.error("%s stream error: %s", _LABEL, error)
+                    raise BackendStreamError(f"{_LABEL} stream error: {error}")
                 message: dict[str, Any] = obj.get("message") or {}
                 tool_calls = message.get("tool_calls")
                 if tool_calls:
@@ -248,7 +287,10 @@ class OllamaAdapter(BackendAdapter):
                     # (not a JSON string) -> no json.loads, just the malformed-arg repair.
                     yield {
                         "tool_calls": [
+                            # Keep Ollama's id (newer servers send one) so the result replays
+                            # with a matching tool_call_id; else mint one as ToolInput would.
                             llm.ToolInput(
+                                id=tc.get("id") or ulid_now(),
                                 tool_name=tc["function"]["name"],
                                 tool_args=_parse_tool_args(tc["function"]["arguments"]),
                             )
@@ -268,12 +310,16 @@ class OllamaAdapter(BackendAdapter):
                         yield {"role": "assistant"}
                     yield {"content": content}
                 if obj.get("done"):
+                    if obj.get("done_reason") == "length":
+                        record_truncation(chat_log, _LABEL, "length")
                     # The terminal frame carries the round-trip's token counts;
                     # prompt_eval_count is omitted when the prompt was fully cached.
                     if "prompt_eval_count" in obj or "eval_count" in obj:
+                        cached = obj.get("prompt_eval_cached_count")
                         trace_token_stats(
                             chat_log,
                             input_tokens=int(obj.get("prompt_eval_count") or 0),
+                            cached_input_tokens=cached if isinstance(cached, int) else None,
                             output_tokens=int(obj.get("eval_count") or 0),
                         )
                     break

@@ -215,6 +215,19 @@ async def test_text_task_sends_no_output_format(
     assert body["model"] == "m1"
 
 
+async def test_openai_prompt_cache_key_is_the_task_subentry(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The AI task's subentry id keys the provider prompt cache, stable across tasks."""
+    entry = await setup_entry(hass, aioclient_mock, BACKEND_OPENAI_COMPAT)
+    queue_replies(aioclient_mock, BACKEND_OPENAI_COMPAT, [text_reply(BACKEND_OPENAI_COMPAT, "ok")])
+
+    await generate(hass, task_entity_id(hass, entry))
+
+    subentry_id = next(s.subentry_id for s in entry.subentries.values() if s.subentry_type == SUBENTRY_TYPE_AI_TASK)
+    assert turn_bodies(aioclient_mock)[0]["prompt_cache_key"] == subentry_id
+
+
 async def test_structure_returns_parsed_json(
     hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, tool_preset: str
 ) -> None:

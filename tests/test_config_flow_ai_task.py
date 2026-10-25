@@ -27,6 +27,7 @@ from custom_components.llm_middleman.const import (
     CONF_MAX_TOKENS,
     CONF_MODEL,
     CONF_NUM_CTX,
+    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_THINK,
     CONF_TIMEOUT,
@@ -95,6 +96,7 @@ async def test_create_openai_ai_task_subentry(hass: HomeAssistant) -> None:
             CONF_TEMPERATURE,
             CONF_TOP_P,
             CONF_MAX_TOKENS,
+            CONF_REASONING_EFFORT,
         }
 
         result = dict(

@@ -280,11 +280,16 @@ class LLMMiddlemanConversationEntity(
         """
         scope = self.subentry.data.get(CONF_MEMORY_SCOPE, MEMORY_SCOPE_CONVERSATION)
         if scope == MEMORY_SCOPE_AGENT:
-            return TurnContext(options=self.subentry.data, memory_key=self.subentry.subentry_id)
+            return TurnContext(
+                options=self.subentry.data, memory_key=self.subentry.subentry_id, subentry_id=self.subentry.subentry_id
+            )
         if scope == MEMORY_SCOPE_DEVICE and user_input.device_id:
             return TurnContext(
                 options=self.subentry.data,
                 memory_key=f"{self.subentry.subentry_id}:{user_input.device_id}",
                 legacy_memory_key=user_input.device_id,
+                subentry_id=self.subentry.subentry_id,
             )
-        return TurnContext(options=self.subentry.data, memory_key=chat_log.conversation_id)
+        return TurnContext(
+            options=self.subentry.data, memory_key=chat_log.conversation_id, subentry_id=self.subentry.subentry_id
+        )

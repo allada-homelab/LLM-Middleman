@@ -50,6 +50,7 @@ __all__ = [
     "build_client_timeout",
     "loads_json_object",
     "probe_json",
+    "record_truncation",
     "rendered_system_prompt",
     "trace_token_stats",
 ]
@@ -90,17 +91,31 @@ def trace_token_stats(
     input_tokens: int,
     output_tokens: int,
     cached_input_tokens: int | None = None,
+    reasoning_tokens: int | None = None,
 ) -> None:
     """Record one round-trip's token usage on the conversation trace.
 
     Same ``{"stats": {...}}`` agent-detail shape HA core's anthropic/openai/cloud
-    entities trace; ``cached_input_tokens`` only when the backend reports a cache.
+    entities trace; ``cached_input_tokens`` / ``reasoning_tokens`` only when the backend
+    reports them (reasoning tokens are part of ``output_tokens``, not added to them).
     """
     stats: dict[str, int] = {"input_tokens": input_tokens}
     if cached_input_tokens is not None:
         stats["cached_input_tokens"] = cached_input_tokens
     stats["output_tokens"] = output_tokens
+    if reasoning_tokens is not None:
+        stats["reasoning_tokens"] = reasoning_tokens
     chat_log.async_trace({"stats": stats})
+
+
+def record_truncation(chat_log: conversation.ChatLog, label: str, reason: str) -> None:
+    """Log and trace a reply the backend cut short (``length`` / ``content_filter``).
+
+    The streamed text is kept: a cut-off spoken answer beats the fallback, and text already
+    streamed can't be taken back. The trace record makes the cut visible in the debug view.
+    """
+    _LOGGER.warning("%s reply was cut short (finish_reason=%s); keeping the partial text", label, reason)
+    chat_log.async_trace({"finish_reason": reason})
 
 
 def bearer_headers(token: str | None) -> dict[str, str]:
@@ -239,6 +254,8 @@ class TurnContext:
     fallback: bool = False  # entity-owned: the last round-trip ended in the fallback message
     # AI Task structured output; only adapters with ``supports_ai_task`` read it.
     output_schema: OutputSchema | None = None
+    # The agent / AI task subentry id: stable per agent across conversations (prompt-cache key).
+    subentry_id: str | None = None
 
 
 class BackendAdapter(ABC):

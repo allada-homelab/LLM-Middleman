@@ -47,6 +47,9 @@ DEFAULT_MAX_HISTORY = 20
 CONF_TEMPERATURE = "temperature"
 CONF_TOP_P = "top_p"
 CONF_MAX_TOKENS = "max_tokens"
+CONF_REASONING_EFFORT = "reasoning_effort"
+# Dropdown values (the union core openai offers across models); custom values are allowed.
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # The streaming converse endpoint appended to the configured base URL.
 CONVERSE_PATH = "/v1/converse"
@@ -96,6 +99,14 @@ CONF_KEEP_ALIVE = "keep_alive"
 CONF_THINK = "think"
 # Smallest context window the agent form accepts (core ollama's MIN_NUM_CTX).
 MIN_NUM_CTX = 2048
+# Sent when the agent leaves the option empty: core ollama's DEFAULT_NUM_CTX /
+# DEFAULT_KEEP_ALIVE (HA 2026.10.3), so both integrations load a model the same way.
+DEFAULT_NUM_CTX = 8192
+DEFAULT_KEEP_ALIVE = -1
+# think: off/on, or a level for models that support one (Ollama 0.40 also accepts "max").
+THINK_OFF = "off"
+THINK_ON = "on"
+THINK_OPTIONS = (THINK_OFF, THINK_ON, "low", "medium", "high", "max")
 
 # keep_alive sentinel: -1 means "keep the model loaded forever" and must be sent as
 # the integer -1, not a duration string ("-1s" is an invalid negative duration).
