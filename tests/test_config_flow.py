@@ -314,6 +314,28 @@ async def test_n8n_webhook_not_normalized(hass: HomeAssistant) -> None:
     assert result["data"][CONF_WEBHOOK_URL] == webhook
 
 
+@pytest.mark.parametrize(
+    ("backend_type", "secret_key"), [(BACKEND_OLLAMA, CONF_API_KEY), (BACKEND_CONVERSE, CONF_TOKEN)]
+)
+async def test_connection_step_creates_entry_with_trailing_slash_trimmed(
+    hass: HomeAssistant, backend_type: str, secret_key: str
+) -> None:
+    """The Ollama and converse steps store the base URL minus its trailing slash, no /v1 handling."""
+    with patch(_REGISTRY_PATH, {backend_type: _fake_adapter()}):
+        form = await _init_backend_step(hass, backend_type)
+        assert form["step_id"] == backend_type
+        result = await _configure(
+            hass, form["flow_id"], {CONF_BASE_URL: "http://backend.local:8000/v1/", secret_key: "s"}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        CONF_BACKEND_TYPE: backend_type,
+        CONF_BASE_URL: "http://backend.local:8000/v1",
+        secret_key: "s",
+    }
+
+
 async def test_reconfigure_updates_connection(hass: HomeAssistant) -> None:
     """Reconfigure re-runs the fixed backend's step and updates the entry data."""
     entry = MockConfigEntry(
