@@ -45,6 +45,7 @@ __all__ = [
     "BackendStreamAuthError",
     "BackendStreamError",
     "DeltaStream",
+    "OutputSchema",
     "TurnContext",
     "bearer_headers",
     "build_client_timeout",
@@ -210,6 +211,17 @@ async def probe_json(
     return body
 
 
+@dataclass(frozen=True)
+class OutputSchema:
+    """JSON Schema the reply must follow (an AI Task ``structure``, already rendered).
+
+    ``name`` labels the schema where the wire format needs one (OpenAI ``json_schema.name``).
+    """
+
+    name: str
+    schema: dict[str, Any]
+
+
 @dataclass
 class TurnContext:
     """Per-turn channel between the entity and an adapter.
@@ -228,6 +240,8 @@ class TurnContext:
     legacy_memory_key: str | None = None
     continue_conversation: bool = False  # adapter may set; entity ORs into result
     fallback: bool = False  # entity-owned: the last round-trip ended in the fallback message
+    # AI Task structured output; only adapters with ``supports_ai_task`` read it.
+    output_schema: OutputSchema | None = None
 
 
 class BackendAdapter(ABC):
@@ -255,6 +269,9 @@ class BackendAdapter(ABC):
     supports_ha_tools: ClassVar[bool] = False
     # Gates CONF_MEMORY_SCOPE in the subentry flow; stateful backends set True.
     supports_memory_scope: ClassVar[bool] = False
+    # Gates the AI Task subentry type: the adapter owns the model call, so it can enforce
+    # ``TurnContext.output_schema`` and send image attachments (stateless-replay presets).
+    supports_ai_task: ClassVar[bool] = False
     # Prefix the forwarded turn text with the local date/time. Adapters that replay the
     # chat log or forward the rendered system prompt (which already carries HA's date/time
     # prompt) opt out; the default keeps temporal context for text-only presets.

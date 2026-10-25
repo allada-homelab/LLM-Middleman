@@ -2,20 +2,29 @@
 
 Both wire formats nest a tool spec as ``{"type": "function", "function": {...}}`` and
 carry a tool result as a JSON string; the per-provider message shapes (tool-call ids,
-argument encoding, ``thinking``) stay in each adapter's ``_convert_content``.
+argument encoding, ``thinking``, image parts) stay in each adapter's ``_convert_content``.
+Image attachments (AI Task, LLMM-023) are read and base64-encoded here for both.
 """
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from homeassistant.components import conversation
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 
+from custom_components.llm_middleman.const import DOMAIN
+
 from ._compat import schema_to_openapi, tool_result_data
+
+# One image attachment ready for the wire: (MIME type, base64-encoded bytes).
+type EncodedImage = tuple[str, str]
 
 
 def format_function_tool(
@@ -80,3 +89,32 @@ def replayable_content(content: Iterable[conversation.Content]) -> list[conversa
             continue
         kept.append(item)
     return kept
+
+
+async def async_load_images(hass: HomeAssistant, items: Sequence[conversation.Content]) -> list[list[EncodedImage]]:
+    """Return each item's image attachments base64-encoded (``[]`` when it has none).
+
+    Only ``UserContent`` carries attachments (HA's AI Task puts them there). A non-image
+    attachment raises a translated error before any file is read; the reads run in the
+    executor because attachment files can be large. Attachments are sent whole, uncapped
+    (core openai/ollama do the same) — the server's request-size limit is the bound.
+    """
+    attachments = [list(item.attachments or ()) if isinstance(item, conversation.UserContent) else [] for item in items]
+    for group in attachments:
+        for attachment in group:
+            if not attachment.mime_type.startswith("image/"):
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="unsupported_attachment_type",
+                    translation_placeholders={"mime_type": attachment.mime_type},
+                )
+    if not any(attachments):
+        return [[] for _ in items]
+
+    def _read() -> list[list[EncodedImage]]:
+        return [
+            [(a.mime_type, base64.b64encode(a.path.read_bytes()).decode("ascii")) for a in group]
+            for group in attachments
+        ]
+
+    return await hass.async_add_executor_job(_read)

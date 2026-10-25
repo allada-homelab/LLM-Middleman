@@ -202,6 +202,44 @@
                 "entry_not_loaded": "The backend connection is not loaded. Fix or reload it before managing its agents.",
                 "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
             }
+        },
+        "ai_task_data": {
+            "initiate_flow": {
+                "user": "Add AI task",
+                "reconfigure": "Reconfigure AI task"
+            },
+            "entry_type": "AI task",
+            "step": {
+                "set_options": {
+                    "title": "AI task options",
+                    "data": {
+                        "name": "Name",
+                        "model": "Model",
+                        "timeout": "Timeout (seconds)",
+                        "temperature": "Temperature (OpenAI-compatible)",
+                        "top_p": "Top P (OpenAI-compatible)",
+                        "max_tokens": "Maximum tokens (OpenAI-compatible)",
+                        "num_ctx": "Context window (Ollama)",
+                        "keep_alive": "Keep alive (Ollama)",
+                        "think": "Think before responding (Ollama)"
+                    },
+                    "data_description": {
+                        "name": "Display name for this AI task entity.",
+                        "model": "Model the AI tasks use. Pick one the backend offers, or type a name. Use a vision model for image attachments.",
+                        "timeout": "How long to wait to reach the backend. A reply that keeps streaming is never cut off; a backend that goes silent for 30 seconds fails the task.",
+                        "temperature": "Sampling temperature: higher is more varied, lower is more focused. Leave empty to use the server's default.",
+                        "top_p": "Nucleus sampling cutoff. Leave empty to use the server's default.",
+                        "max_tokens": "Longest reply the model may generate, in tokens. Leave empty to use the server's default.",
+                        "num_ctx": "Maximum number of text tokens the model can process. Leave empty to use the model's default.",
+                        "keep_alive": "Seconds the model stays loaded in Ollama after a request. -1 keeps it loaded indefinitely, 0 unloads it right away. Leave empty to use Ollama's default.",
+                        "think": "Ask a thinking-capable model to reason before answering. Leave unset to use the model's default."
+                    }
+                }
+            },
+            "abort": {
+                "entry_not_loaded": "The backend connection is not loaded. Fix or reload it before managing its AI tasks.",
+                "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
+            }
         }
     },
     "exceptions": {
@@ -213,6 +251,18 @@
         },
         "backend_not_ready": {
             "message": "The backend is not reachable: {error}"
+        },
+        "unsupported_attachment_type": {
+            "message": "Only image attachments are supported, not {mime_type}."
+        },
+        "ai_task_backend_error": {
+            "message": "The AI task failed: {error}"
+        },
+        "ai_task_no_response": {
+            "message": "The backend returned no answer for the AI task."
+        },
+        "ai_task_json_parse_error": {
+            "message": "The model's answer was not valid JSON for the requested structure."
         }
     },
     "issues": {

@@ -43,6 +43,8 @@ core's OpenAI and Ollama integrations use):
   (model where the backend has a catalog, timeout, and more). One agent = one conversation
   entity you can assign under **Settings → Voice assistants**. One connection can host
   several agents with different prompts or memory settings.
+- **Each *AI task* subentry is an AI Task entity** (OpenAI-compatible and Ollama
+  connections only). See [AI Task](#ai-task-generate_data).
 
 Per-agent options that appear only when the chosen backend supports them:
 
@@ -83,6 +85,34 @@ HA's date/time and any `extra_system_prompt`) and then forwarded:
   leading `system` message of the run input instead. See [LangGraph](#langgraph) for the
   rest of the run context.
 - **Custom `/v1/converse` / Dify** — not forwarded; the backend owns its prompt.
+
+## AI Task (`generate_data`)
+
+OpenAI-compatible and Ollama connections also offer **Add AI task**. Each AI task
+subentry becomes an AI Task entity for Home Assistant's `ai_task.generate_data` action, so
+automations can ask the same server for text or structured data without a second
+integration. The other presets forward a turn to a backend that owns its own prompt and
+output, so they can't enforce a structure and don't offer AI tasks.
+
+- **Options:** model (from the server's catalog, or typed), timeout, and the preset's
+  sampling/runtime options (OpenAI-compatible: temperature, top P, max tokens; Ollama:
+  context window, keep alive, think). There's no prompt or memory option. Each task
+  brings its own instructions and runs as a fresh single-turn chat.
+- **Structured output:** with a `structure`, the schema is sent as
+  `response_format: {type: json_schema, strict: false}` (OpenAI-compatible) or as
+  Ollama's `format`. The reply is parsed and returned as an object. If the reply isn't
+  valid JSON, the action fails with an error and the reply is logged. Some
+  OpenAI-compatible servers (older vLLM or LM Studio builds, some gateways) reject
+  `json_schema`. The action then fails with the server's error, which is also logged.
+  Use a server or model that supports structured outputs.
+- **Attachments:** only images are supported, and the model must have vision. Images are
+  sent base64-encoded with no size cap, so the server's request-size limit applies. Any
+  other file type fails the action.
+- **Home Assistant tools:** when the caller passes an LLM API (`llm_api`) with the task,
+  the model can call its tools. The tool loop has the same limit as conversation turns.
+- **Errors:** an unreachable backend, an empty reply, or a tool loop that hits its limit
+  fails the action with an error. Unlike a conversation agent, there is no spoken
+  fallback.
 
 ## Follow-up listening
 
@@ -146,7 +176,8 @@ and the existing entity id is preserved so automations and Assist exposure keep 
 
 The integration ships redacted config-entry diagnostics (**Settings → Devices & Services →
 … → Download diagnostics**). Credentials, URLs, and prompts are redacted; backend type,
-entry state, and entity metadata are included to aid support without leaking secrets. A
+entry state, entity metadata, and every conversation-agent and AI-task subentry are
+included to aid support without leaking secrets. A
 loaded LangGraph connection also reports its last run id.
 
 ## Installation (HACS)

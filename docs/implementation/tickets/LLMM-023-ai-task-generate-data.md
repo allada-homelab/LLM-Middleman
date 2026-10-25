@@ -1,7 +1,7 @@
 ---
 id: LLMM-023
 title: AI Task generate_data subentry for openai_compat and ollama
-status: todo
+status: in-review
 phase: 5
 depends_on: [LLMM-007, LLMM-008, LLMM-010]
 ---
@@ -72,18 +72,48 @@ there).
   attachments branch; keep `backends/_tools.py:replayable_content` in the path.
 
 ## Acceptance criteria
-- [ ] An `openai_compat` or `ollama` connection offers "Add AI task"; other presets do not.
-- [ ] `ai_task.generate_data` without `structure` returns the model's text.
-- [ ] With `structure`, the request carries `response_format` (openai_compat) / `format`
+Tests are in `tests/test_ai_task.py` (driven through HA's real `ai_task.generate_data`
+service, network mocked at `aioclient_mock`) and `tests/test_config_flow_ai_task.py`.
+
+- [x] An `openai_compat` or `ollama` connection offers "Add AI task"; other presets do not.
+      (`test_ai_task_offered_for_capable_presets`, `test_ai_task_not_offered_for_forwarding_presets`,
+      `test_create_openai_ai_task_subentry`, `test_ollama_ai_task_form_fields`)
+- [x] `ai_task.generate_data` without `structure` returns the model's text.
+      (`test_generate_data_returns_text`, `test_text_task_sends_no_output_format`)
+- [x] With `structure`, the request carries `response_format` (openai_compat) / `format`
       (ollama) rendered from the schema on both HA 2026.7 (voluptuous) and ≥ 2026.9
       (probatio), and the result is the parsed JSON object.
-- [ ] Unparsable JSON raises a translated `HomeAssistantError`, logged with the response.
-- [ ] Image attachments reach the model in each preset's wire shape; a non-image raises a
-      translated error.
-- [ ] `task.llm_api` set → the HA tool loop runs, bounded like conversation turns.
-- [ ] Removing the subentry removes its entity; diagnostics include it, redacted.
-- [ ] Unit tests for each criterion; both CI legs (locked + floor) green; coverage ≥ the
+      (`test_structure_sets_openai_response_format`, `test_structure_sets_ollama_format`,
+      `test_structure_returns_parsed_json`, `test_structure_renders_voluptuous_and_probatio`;
+      the service-driven tests exercise voluptuous on the floor leg and probatio on the locked leg)
+- [x] Unparsable JSON raises a translated `HomeAssistantError`, logged with the response.
+      (`test_unparsable_json_raises_translated_error`)
+- [x] Image attachments reach the model in each preset's wire shape; a non-image raises a
+      translated error. (`test_image_attachment_openai_wire`, `test_image_attachment_ollama_wire`,
+      `test_non_image_attachment_raises_translated_error`)
+- [x] `task.llm_api` set → the HA tool loop runs, bounded like conversation turns.
+      (`test_llm_api_runs_tool_loop`, `test_tool_loop_is_bounded`)
+- [x] Removing the subentry removes its entity; diagnostics include it, redacted.
+      (`test_removing_subentry_removes_entity`, `test_diagnostics_include_ai_task_subentry_redacted`,
+      `test_platforms_only_build_their_own_subentry_type`)
+- [x] Unit tests for each criterion; both CI legs (locked + floor) green; coverage ≥ the
       gate.
+
+Live rows (Verification below) are **owner-run**: the `ollama/ollama` image is ~3.4 GB
+compressed, over the devcontainer's pull budget. See `e2e-results/ai-task.md`.
+
+## Decisions (open questions resolved)
+- **Servers that reject `response_format.json_schema`:** no `json_object` fallback and no
+  toggle. The server's 4xx reaches the user as the translated `ai_task_backend_error`, and
+  `_post_checked` logs its body. Documented in the README.
+- **`strict`:** `false`, as planned. HA structure schemas don't mark every property
+  required or set `additionalProperties: false`, which strict mode requires.
+- **Attachment size:** no cap, documented in the README (core openai/ollama don't cap
+  either). Files are read in the executor.
+- **Failures:** unlike a conversation turn there is no spoken fallback. Backend errors,
+  an empty stream, and a hit tool-loop cap raise translated errors to the automation.
+- **Test dependency:** `pyturbojpeg==1.8.3` is back in the dev group. HA 2026.7 and
+  2026.10 pin the same version, so the CI floor step needs no change.
 
 ## Verification
 - `uv run pytest -q`, `uv run basedpyright`, `uv run ruff check .`, and the floor leg from

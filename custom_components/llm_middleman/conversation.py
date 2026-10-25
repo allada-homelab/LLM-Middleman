@@ -30,7 +30,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import LLMMiddlemanConfigEntry, async_create_unreachable_issue, async_delete_unreachable_issue
-from .backends.base import BackendAdapter, BackendAuthError, DeltaStream, TurnContext
+from .backends.base import BackendAdapter, DeltaStream, TurnContext
 from .const import (
     CONF_MEMORY_SCOPE,
     DOMAIN,
@@ -42,6 +42,7 @@ from .const import (
     SUBENTRY_TYPE_CONVERSATION,
     UNREACHABLE_ISSUE_THRESHOLD,
 )
+from .helpers import async_run_tool_loop, async_start_reauth_on_auth_error
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -147,16 +148,8 @@ class LLMMiddlemanConversationEntity(
         # One TurnContext for the whole turn (stable memory_key across iterations),
         # reused by each adapter round-trip. Built here, never on the shared adapter.
         ctx = self._turn_context(user_input, chat_log)
-        # Bounded tool loop (core openai/ollama shape): drive the adapter, let HA run
-        # any tool calls it emitted and append their results, and re-enter while the
-        # last content is an unresponded tool result. Text-only turns (no tools, or a
-        # backend that never calls one) break after exactly one iteration. The range()
-        # cap is the HA-side backstop against a runaway tool-calling backend.
-        for _ in range(MAX_TOOL_ITERATIONS):
-            await self._async_run_turn(user_input, chat_log, ctx)
-            if not chat_log.unresponded_tool_results:
-                break
-        else:
+        # Bounded tool loop shared with the AI Task platform (helpers.async_run_tool_loop).
+        if not await async_run_tool_loop(chat_log, lambda: self._async_run_turn(user_input, chat_log, ctx)):
             # Exhausted the cap while the backend was still mid-tool-call (last content
             # is an unresponded tool result). Append a fallback assistant turn so the
             # pipeline gets a spoken reply instead of async_get_result_from_chat_log
@@ -256,9 +249,7 @@ class LLMMiddlemanConversationEntity(
 
     def _record_backend_failure(self, err: Exception) -> None:
         """Start reauth on a credential rejection; count turns that never reached the backend."""
-        if isinstance(err, BackendAuthError):
-            # HA dedupes: no second flow starts while a reauth/reconfigure one is active.
-            self.entry.async_start_reauth(self.hass)
+        async_start_reauth_on_auth_error(self.hass, self.entry, err)
         if not _is_unreachable(err):
             self._record_backend_reached()
             return

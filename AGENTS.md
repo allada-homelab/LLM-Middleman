@@ -38,10 +38,10 @@ tool activity in the Assist chat, and the **tier-1 reworks of Dify (LLMM-021) an
 (LLMM-022)** — both `in-review`, merged and unit-gated, waiting only on owner-run live rows.
 
 Tickets LLMM-001…017 are done; LLMM-018 (live E2E matrix), LLMM-019 (release), LLMM-021 and
-LLMM-022 are `in-review` pending owner rows; LLMM-023 (AI Task `generate_data`) is the next
-planned feature. The remaining work is **owner-run** (Dify/LangGraph live rows, reauth on a
-real HA, HACS install of the next release, tool-call rows against a capable model,
-voice-hardware checks) — see `docs/implementation/HANDOFF.md`.
+LLMM-022 are `in-review` pending owner rows, and so is LLMM-023 (AI Task `generate_data`
+subentries for openai_compat/ollama). The remaining work is **owner-run** (Dify/LangGraph/
+AI Task live rows, reauth on a real HA, HACS install of the next release, tool-call rows
+against a capable model, voice-hardware checks) — see `docs/implementation/HANDOFF.md`.
 
 **Quality-scale snapshot** (no `quality_scale.yaml` is declared): Bronze rules are met
 (config flow with a connection test, `already_configured` for duplicate connections,
