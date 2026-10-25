@@ -7,16 +7,20 @@ same assertions hold on the floor HA (``tool_result`` payload) and HA >= 2026.10
 
 from __future__ import annotations
 
+import sys
 from collections.abc import AsyncIterator
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from homeassistant.components import conversation
 
+from custom_components.llm_middleman.backends import _compat
 from custom_components.llm_middleman.backends._compat import (
     AssistantDelta,
     external_tool_call_delta,
     external_tool_result_delta,
+    schema_to_openapi,
     tool_result_data,
 )
 from tests.conftest import HA_HAS_TOOL_RESULT_OBJ, MockChatLog
@@ -74,3 +78,34 @@ async def test_error_flag_is_carried(mock_chat_log: MockChatLog) -> None:
     _, result, _ = await _feed(mock_chat_log, {"error": "boom"}, error=True)
     assert isinstance(result, conversation.ToolResultContent)
     assert result.result.error is True
+
+
+# The tests below force the older-HA branches on the locked HA; the floor leg runs them for real.
+
+_DICT_SCHEMA = {"city": str}
+_DICT_SCHEMA_OPENAPI: dict[str, Any] = {"type": "object", "properties": {"city": {"type": "string"}}, "required": []}
+
+
+def test_schema_without_probatio_renders_via_voluptuous_openapi(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "probatio", None)  # HA < 2026.9: `import probatio` fails
+    assert schema_to_openapi(_DICT_SCHEMA, None) == _DICT_SCHEMA_OPENAPI
+
+
+def test_non_probatio_schema_renders_via_voluptuous_openapi() -> None:
+    assert schema_to_openapi(_DICT_SCHEMA, None) == _DICT_SCHEMA_OPENAPI
+
+
+def test_tool_result_data_reads_pre_2026_10_tool_result() -> None:
+    legacy = cast(conversation.ToolResultContent, SimpleNamespace(tool_result={"temp": 21}))
+    assert tool_result_data(legacy) == {"temp": 21}
+
+
+def test_result_delta_carries_bare_payload_before_2026_10(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_compat, "_DELTA_HAS_RESULT_OBJ", False)
+    delta = cast(dict[str, Any], external_tool_result_delta("call_1", "get_weather", "sunny"))
+    assert delta == {
+        "role": "tool_result",
+        "tool_call_id": "call_1",
+        "tool_name": "get_weather",
+        "tool_result": {"result": "sunny"},
+    }

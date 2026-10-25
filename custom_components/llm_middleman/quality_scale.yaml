@@ -8,7 +8,8 @@
 # custom-manifest schema would accept it, but tiers are awarded through core review,
 # and a self-declared tier on a custom integration would be an unreviewed claim.
 #
-# Highest tier fully met: Bronze. Silver is blocked by the two `todo` rules below.
+# Highest tier fully met: Bronze. Silver is blocked only by the `entity-unavailable` todo
+# below, which is deliberate (the never-hang guarantee).
 rules:
   # Bronze
   action-setup:
@@ -85,11 +86,12 @@ rules:
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:
-    status: todo
+    status: done
     comment: >-
-      The rule asks for over 95% in every module. Total is 98% (gate 94), but on the locked
-      leg __init__.py is about 91% (its pre-2026.10 device-registry branch runs only on the
-      floor leg) and backends/_compat.py about 80%.
+      The rule asks for over 95% in every module. On the locked leg every module is at 96%
+      or more (total 98%, CI gate 94). The older-HA compatibility branches in __init__.py
+      and backends/_compat.py are covered on the locked leg by tests that simulate the
+      older API, and run for real on the floor leg.
 
   # Gold
   devices: done

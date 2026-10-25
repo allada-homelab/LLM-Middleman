@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState, ConfigSubentry
@@ -433,6 +433,48 @@ async def test_migrate_moves_device_onto_subentry(hass: HomeAssistant) -> None:
     assert isinstance(moved, dr.DeviceEntry)
     assert moved.identifiers == {(DOMAIN, subentry.subentry_id)}
     assert subentry.subentry_id in _device_subentries(moved, entry.entry_id)
+
+
+async def test_migrate_moves_device_on_pre_2026_10_device_registry(hass: HomeAssistant) -> None:
+    """Before HA 2026.10 the device is re-attached via the add/remove kwargs (floor leg runs it for real)."""
+    entry = _build_v0_entry(hass)
+    dev_reg = MagicMock(spec=["async_get_device", "async_update_device"])  # no async_get_device_by_identifier
+    dev_reg.async_get_device.return_value = MagicMock(id="dev1")
+
+    with patch("custom_components.llm_middleman.dr.async_get", return_value=dev_reg):
+        assert await async_migrate_entry(hass, entry) is True
+
+    subentry_id = next(iter(entry.subentries))
+    assert dev_reg.async_update_device.call_args_list == [
+        call(
+            "dev1",
+            new_identifiers={(DOMAIN, subentry_id)},
+            add_config_subentry_id=subentry_id,
+            add_config_entry_id=entry.entry_id,
+        ),
+        call("dev1", remove_config_entry_id=entry.entry_id, remove_config_subentry_id=None),
+    ]
+
+
+async def test_migrate_v0_entry_without_entity(hass: HomeAssistant) -> None:
+    """A v0 entry whose entity was never registered still migrates."""
+    entry = MockConfigEntry(domain=DOMAIN, version=1, data=_V0_DATA)
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry) is True
+
+    assert entry.version == 2
+    assert len(entry.subentries) == 1
+
+
+async def test_migrate_current_entry_is_unchanged(hass: HomeAssistant) -> None:
+    """A version-2 entry needs no migration and is left as it is."""
+    entry = build_config_entry(hass, backend_type=BACKEND_CONVERSE)
+    data_before, subentries_before = dict(entry.data), dict(entry.subentries)
+
+    assert await async_migrate_entry(hass, entry) is True
+
+    assert (dict(entry.data), dict(entry.subentries)) == (data_before, subentries_before)
 
 
 def _device_subentries(device: dr.DeviceEntry, entry_id: str) -> set[str | None]:

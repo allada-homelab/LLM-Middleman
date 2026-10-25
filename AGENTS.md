@@ -50,8 +50,8 @@ against a capable model, voice-hardware checks) — see `docs/implementation/HAN
 
 **Quality scale:** `custom_components/llm_middleman/quality_scale.yaml` is the
 per-rule self-assessment (core's format, rule list pinned to HA 2026.10.3). Bronze is
-fully met; Silver is blocked by its two `todo` rules (entity-unavailable, per-module
-test-coverage). Nothing validates the file — hassfest skips it for
+fully met; Silver is blocked only by its deliberate `entity-unavailable` todo (the entity
+stays available so a fallback is always spoken). Nothing validates the file — hassfest skips it for
 custom integrations — so keep it honest by hand when a rule's status changes. The manifest
 sets no `quality_scale` (see the file's header).
 
