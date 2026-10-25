@@ -1,0 +1,7 @@
+{
+  "description": "OpenRouter mid-stream error: top-level error plus finish_reason error, HTTP 200",
+  "source": "spec-derived",
+  "spec": "https://openrouter.ai/docs/api-reference/errors (Mid-stream errors)",
+  "status": 200,
+  "body": "data: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"created\":1792900000,\"model\":\"openai/gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Turning\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"gen-1\",\"object\":\"chat.completion.chunk\",\"created\":1792900000,\"model\":\"openai/gpt-4o-mini\",\"provider\":\"openai\",\"error\":{\"code\":\"server_error\",\"message\":\"Provider disconnected unexpectedly\"},\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"error\"}]}\n\ndata: [DONE]\n\n"
+}

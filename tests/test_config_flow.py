@@ -68,6 +68,7 @@ from custom_components.llm_middleman.const import (
     CONF_NUM_CTX,
     CONF_OUTPUT_FIELD,
     CONF_PASSWORD,
+    CONF_REASONING_EFFORT,
     CONF_RESPONSE_NODE_FILTER,
     CONF_SESSION_FIELD,
     CONF_STATELESS_RUNS,
@@ -989,7 +990,7 @@ async def test_langgraph_agent_options_are_stored(hass: HomeAssistant) -> None:
 # --- preset-specific agent options read by the adapters ----------------------------
 
 _PRESET_AGENT_KEYS = {
-    BACKEND_OPENAI_COMPAT: {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS},
+    BACKEND_OPENAI_COMPAT: {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS, CONF_REASONING_EFFORT},
     BACKEND_OLLAMA: {CONF_NUM_CTX, CONF_KEEP_ALIVE, CONF_THINK},
     BACKEND_N8N: {CONF_INPUT_FIELD, CONF_OUTPUT_FIELD, CONF_SESSION_FIELD},
     BACKEND_CONVERSE: set[str](),
@@ -1009,8 +1010,11 @@ async def test_preset_agent_options_offered_only_for_their_preset(hass: HomeAssi
 @pytest.mark.parametrize(
     ("backend_type", "submitted"),
     [
-        (BACKEND_OPENAI_COMPAT, {CONF_TEMPERATURE: 0.7, CONF_TOP_P: 0.9, CONF_MAX_TOKENS: 256}),
-        (BACKEND_OLLAMA, {CONF_NUM_CTX: 4096, CONF_KEEP_ALIVE: -1, CONF_THINK: True}),
+        (
+            BACKEND_OPENAI_COMPAT,
+            {CONF_TEMPERATURE: 0.7, CONF_TOP_P: 0.9, CONF_MAX_TOKENS: 256, CONF_REASONING_EFFORT: "low"},
+        ),
+        (BACKEND_OLLAMA, {CONF_NUM_CTX: 4096, CONF_KEEP_ALIVE: -1, CONF_THINK: "high"}),
         (BACKEND_N8N, {CONF_INPUT_FIELD: "q", CONF_OUTPUT_FIELD: "answer", CONF_SESSION_FIELD: "sid"}),
     ],
 )
@@ -1033,9 +1037,24 @@ async def test_preset_agent_options_unset_by_default(hass: HomeAssistant, backen
         form = await _init_subentry(hass, entry)
         result = await _configure_subentry(hass, form["flow_id"], {CONF_NAME: "Agent"})
 
-    assert not {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS, CONF_NUM_CTX, CONF_KEEP_ALIVE, CONF_THINK} & set(
-        result["data"]
+    sampling_keys = {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS, CONF_REASONING_EFFORT}
+    assert not (sampling_keys | {CONF_NUM_CTX, CONF_KEEP_ALIVE, CONF_THINK}) & set(result["data"])
+
+
+@pytest.mark.parametrize(("stored", "shown"), [(True, "on"), (False, "off"), ("medium", "medium")])
+async def test_stored_think_prefills_its_choice(hass: HomeAssistant, stored: bool | str, shown: str) -> None:
+    # Agents saved before think levels hold a bool; the select shows the matching on/off.
+    entry = _parent_entry(
+        hass,
+        BACKEND_OLLAMA,
+        subentries_data=[
+            {"subentry_type": SUBENTRY_TYPE_CONVERSATION, "data": {CONF_THINK: stored}, "title": "A", "unique_id": None}
+        ],
     )
+    with patch(_REGISTRY_PATH, {BACKEND_OLLAMA: _sub_adapter(backend_type=BACKEND_OLLAMA)}):
+        form: dict[str, Any] = dict(await entry.start_subentry_reconfigure_flow(hass, next(iter(entry.subentries))))
+
+    assert _suggested_values(form["data_schema"])[CONF_THINK] == shown
 
 
 _STRINGS = json.loads((Path(__file__).parents[1] / "custom_components/llm_middleman/strings.json").read_text())

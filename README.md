@@ -139,10 +139,11 @@ the ones the connection's preset uses. "Default" is the value the form starts wi
 | Control Home Assistant | OpenAI-compatible, Ollama | none | HA LLM APIs whose tools the model may call (device control, MCP-client tools). Empty means no tools and no device control. |
 | Temperature | OpenAI-compatible | server default | Sampling temperature, 0–2. |
 | Top P | OpenAI-compatible | server default | Nucleus sampling cutoff, 0–1. |
-| Maximum tokens | OpenAI-compatible | server default | Longest reply, in tokens. |
-| Context window | Ollama | model default | `num_ctx`, at least 2048 tokens. Lower it to save RAM, raise it for long conversations or many exposed entities. |
-| Keep alive | Ollama | Ollama default | Seconds the model stays loaded after a request; `-1` keeps it loaded, `0` unloads it at once. |
-| Think before responding | Ollama | model default | Ask a thinking-capable model to reason first. The reasoning appears in the chat log and is never spoken. |
+| Maximum tokens | OpenAI-compatible | server default | Longest reply, in tokens. Sent as `max_tokens`; a model that rejects it (OpenAI reasoning models) gets `max_completion_tokens` instead. |
+| Reasoning effort | OpenAI-compatible | not sent | `reasoning_effort` for reasoning models: none, minimal, low, medium, high, extra high, maximum, or a typed value. Leave it empty for other models, which may reject it. |
+| Context window | Ollama | model default | `num_ctx`, at least 2048 tokens. Lower it to save RAM, raise it for long conversations or many exposed entities. With *Control Home Assistant* set, use at least 8192: Home Assistant's tool prompt is large, and Ollama's own default can be 4096 on smaller GPUs. |
+| Keep alive | Ollama | Ollama default | Seconds the model stays loaded after a request; `-1` keeps it loaded, `0` unloads it at once. Set it if model loads make replies slow; empty leaves the server's `OLLAMA_KEEP_ALIVE` in charge. |
+| Think before responding | Ollama | model default | *On*, *Off*, or a level (*Low*, *Medium*, *High*, *Maximum*) for models that take one. The reasoning appears in the chat log and is never spoken. |
 | Double-texting | LangGraph | Roll back | What a new turn does to a run still going on the same thread: *Roll back*, *Interrupt*, *Enqueue*, or *Reject* (see [LangGraph](#langgraph)). |
 | Input messages key | LangGraph | `messages` | Graph state key the new message list is sent under. |
 | Spoken node | LangGraph | empty (every node) | Speak only AI messages produced by this graph node. |
@@ -161,7 +162,7 @@ Each **AI task** (Add AI task, OpenAI-compatible and Ollama only) has a smaller 
 | Name | Both | `LLM Middleman AI Task` | Name of the AI task's device and entity. Asked when you add the task only. |
 | Model | Both | none | As for agents. Use a vision model for image attachments. |
 | Timeout (seconds) | Both | `60` (10–300) | As for agents, except that a silent backend fails the task instead of speaking a fallback. |
-| Temperature, Top P, Maximum tokens | OpenAI-compatible | server default | As for agents. |
+| Temperature, Top P, Maximum tokens, Reasoning effort | OpenAI-compatible | server default / not sent | As for agents. |
 | Context window, Keep alive, Think before responding | Ollama | model / Ollama default | As for agents. |
 
 ## AI Task (`generate_data`)
@@ -173,7 +174,7 @@ integration. The other presets forward a turn to a backend that owns its own pro
 output, so they can't enforce a structure and don't offer AI tasks.
 
 - **Options:** model (from the server's catalog, or typed), timeout, and the preset's
-  sampling/runtime options (OpenAI-compatible: temperature, top P, max tokens; Ollama:
+  sampling/runtime options (OpenAI-compatible: temperature, top P, max tokens, reasoning effort; Ollama:
   context window, keep alive, think). There's no prompt or memory option. Each task
   brings its own instructions and runs as a fresh single-turn chat.
 - **Structured output:** with a `structure`, the schema is sent as
@@ -191,6 +192,25 @@ output, so they can't enforce a structure and don't offer AI tasks.
 - **Errors:** an unreachable backend, an empty reply, or a tool loop that hits its limit
   fails the action with an error. Unlike a conversation agent, there is no spoken
   fallback.
+
+## OpenAI-compatible and Ollama
+
+- **Errors mid-reply.** An error the server sends after the reply started (vLLM's error
+  frame, OpenRouter's `finish_reason: "error"`, Ollama's final `{"error"}` line) keeps any
+  text already spoken and adds the fallback message, and the turn is marked failed.
+- **Cut-off replies.** A reply stopped by the token limit (`length`) or a content filter
+  keeps its text. A warning is logged and `finish_reason` is written to the conversation
+  trace.
+- **Refusals.** An OpenAI-compatible model's `refusal` is spoken as its answer.
+- **Rate limits.** On OpenAI-compatible servers, HTTP 429 (rate limit or exhausted quota) fails the turn with an error
+  naming the server's reason (spoken as the fallback in a conversation, raised by AI tasks).
+- **Prompt caching.** OpenAI-compatible requests carry `prompt_cache_key` set to the agent's
+  id, so all of an agent's conversations share the provider's prompt cache. A server that
+  rejects `prompt_cache_key` or `stream_options` gets the request again without it.
+- **Token usage.** Input, cached-input, output and (OpenAI) reasoning tokens are written to
+  the conversation trace.
+- **Tools on Ollama.** Tool calls keep Ollama's call id, and tool results are sent back with
+  the tool name and call id, so models that run several tools at once can match them.
 
 ## Follow-up listening
 

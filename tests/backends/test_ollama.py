@@ -48,6 +48,7 @@ from tests.conftest import (
     FakeTool,
     MockChatLog,
     UndescribedTool,
+    capture_response,
     chunk_bytes,
     collect,
     external_tool_history,
@@ -55,6 +56,7 @@ from tests.conftest import (
     fake_get_session,
     make_input,
     probatio_tool_schema,
+    text_of,
     tool_result_content,
     vol_tool_schema,
 )
@@ -240,6 +242,8 @@ async def test_num_ctx_from_number_selector_sent_as_int(
 
 
 async def test_options_absent_when_unset(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    # Unset means not sent: the Ollama server's own config (VRAM-sized num_ctx,
+    # OLLAMA_KEEP_ALIVE) must apply, not a value forced by the integration.
     session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
     adapter = _adapter(hass, session)
     await _run(adapter, mock_chat_log, options={CONF_MODEL: "llama3"})
@@ -441,7 +445,7 @@ async def test_history_replays_tool_calls_and_results_default_str(
     assert messages[2] == {
         "role": "assistant",
         "content": "",
-        "tool_calls": [{"function": {"name": "get_time", "arguments": {"tz": "utc"}}}],
+        "tool_calls": [{"id": "call_1", "function": {"index": 0, "name": "get_time", "arguments": {"tz": "utc"}}}],
     }
     assert messages[3]["role"] == "tool"
     assert json.loads(messages[3]["content"]) == {"data": {"now": str(now)}, "error": False}
@@ -543,3 +547,122 @@ async def test_no_counts_no_trace(hass: HomeAssistant, mock_chat_log: conversati
     with patch.object(mock_chat_log, "async_trace") as trace:
         await _run(adapter, mock_chat_log)
     trace.assert_not_called()
+
+
+# --- real-server captures + tier-1 (LLMM-024) ---------------------------------------
+
+
+async def _replay(
+    hass: HomeAssistant, chat_log: conversation.ChatLog, name: str, *, options: dict[str, Any] | None = None
+) -> list[Delta]:
+    adapter = _adapter(hass, fake_aiohttp_session(response=capture_response("ollama", name)))
+    return await _run(adapter, chat_log, options=options)
+
+
+def _posted(session: MagicMock) -> dict[str, Any]:
+    return session.post.call_args.kwargs["json"]
+
+
+async def _post_with(hass: HomeAssistant, chat_log: conversation.ChatLog, options: dict[str, Any]) -> dict[str, Any]:
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), chat_log, options=options)
+    return _posted(session)
+
+
+@pytest.mark.parametrize("name", ["plain", "plain_repeat", "thinking", "think_low", "tool_followup"])
+async def test_captured_reply_streams_as_normal_reply(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, name: str
+) -> None:
+    deltas = await _replay(hass, mock_chat_log, name)
+    assert deltas[0] == {"role": "assistant"}
+    assert text_of(deltas).strip()
+
+
+async def test_captured_tool_call_keeps_the_server_id(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    deltas = await _replay(hass, mock_chat_log, "tool")
+    calls = deltas[1].get("tool_calls")
+    assert calls is not None
+    assert [(call.id, call.tool_name, call.tool_args) for call in calls] == [
+        ("call_fr5n9hrf", "HassTurnOn", {"domain": ["kitchen"], "name": "light"})
+    ]
+
+
+async def test_midstream_error_line_raises_after_partial_text(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    adapter = _adapter(hass, fake_aiohttp_session(response=capture_response("ollama", "midstream_error")))
+    deltas: list[Delta] = []
+    with caplog.at_level("ERROR"), pytest.raises(BackendStreamError, match="error was encountered"):
+        async for delta in adapter.stream_turn(mock_chat_log, make_input(), TurnContext(options={}, memory_key="k")):
+            deltas.append(delta)
+    assert text_of(deltas) == "The kitchen"
+    assert "Ollama stream error" in caplog.text
+
+
+async def test_length_truncation_keeps_text_warns_and_traces(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"), patch.object(mock_chat_log, "async_trace") as trace:
+        deltas = await _replay(hass, mock_chat_log, "length")
+    assert text_of(deltas)
+    trace.assert_any_call({"finish_reason": "length"})
+    assert "finish_reason=length" in caplog.text
+
+
+async def test_stop_done_reason_not_traced(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        await _replay(hass, mock_chat_log, "plain")
+    assert all("finish_reason" not in call.args[0] for call in trace.call_args_list)
+
+
+async def test_cached_prompt_tokens_traced(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        await _replay(hass, mock_chat_log, "plain_repeat")
+    trace.assert_called_once_with({"stats": {"input_tokens": 39, "cached_input_tokens": 38, "output_tokens": 6}})
+
+
+@pytest.mark.parametrize(("name", "status"), [("error_404_model", 404), ("error_400_bad_think", 400)])
+async def test_captured_error_bodies_raise(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, name: str, status: int
+) -> None:
+    with pytest.raises(BackendConnectionError, match=f"HTTP {status}"):
+        await _replay(hass, mock_chat_log, name)
+
+
+@pytest.mark.parametrize(
+    ("stored", "sent"),
+    [(True, True), (False, False), ("on", True), ("off", False), ("low", "low"), ("high", "high"), ("max", "max")],
+)
+async def test_think_sent_as_bool_or_level(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, stored: bool | str, sent: bool | str
+) -> None:
+    body = await _post_with(hass, mock_chat_log, {CONF_THINK: stored})
+    assert body["think"] == sent
+
+
+async def test_tool_replay_carries_ids_index_and_tool_name(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    mock_chat_log.content.clear()
+    mock_chat_log.content.extend(
+        [
+            conversation.SystemContent(content="sys"),
+            conversation.UserContent(content="lights on"),
+            conversation.AssistantContent(
+                agent_id="a",
+                content=None,
+                tool_calls=[
+                    llm.ToolInput(id="call_a", tool_name="HassTurnOn", tool_args={"name": "kitchen"}),
+                    llm.ToolInput(id="call_b", tool_name="HassTurnOn", tool_args={"name": "hall"}),
+                ],
+            ),
+            tool_result_content(agent_id="a", tool_call_id="call_b", tool_name="HassTurnOn", data={"ok": True}),
+        ]
+    )
+    messages = (await _post_with(hass, mock_chat_log, {}))["messages"]
+    assert messages[2]["tool_calls"] == [
+        {"id": "call_a", "function": {"index": 0, "name": "HassTurnOn", "arguments": {"name": "kitchen"}}},
+        {"id": "call_b", "function": {"index": 1, "name": "HassTurnOn", "arguments": {"name": "hall"}}},
+    ]
+    assert messages[3]["tool_name"] == "HassTurnOn"
+    assert messages[3]["tool_call_id"] == "call_b"

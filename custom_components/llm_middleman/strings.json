@@ -163,6 +163,7 @@
                         "temperature": "Temperature (OpenAI-compatible)",
                         "top_p": "Top P (OpenAI-compatible)",
                         "max_tokens": "Maximum tokens (OpenAI-compatible)",
+                        "reasoning_effort": "Reasoning effort (OpenAI-compatible)",
                         "num_ctx": "Context window (Ollama)",
                         "keep_alive": "Keep alive (Ollama)",
                         "think": "Think before responding (Ollama)",
@@ -188,9 +189,10 @@
                         "temperature": "Sampling temperature: higher is more varied, lower is more focused. Leave empty to use the server's default.",
                         "top_p": "Nucleus sampling cutoff. Leave empty to use the server's default.",
                         "max_tokens": "Longest reply the model may generate, in tokens. Leave empty to use the server's default.",
+                        "reasoning_effort": "How hard a reasoning model thinks before answering (for example OpenAI o-series or gpt-5). Leave empty to send nothing and use the server's default; other models may reject it.",
                         "num_ctx": "Maximum number of text tokens the model can process. Lower it to reduce Ollama RAM use, raise it for long conversations or many exposed entities. Leave empty to use the model's default.",
                         "keep_alive": "Seconds the model stays loaded in Ollama after a request. -1 keeps it loaded indefinitely, 0 unloads it right away. Leave empty to use Ollama's default.",
-                        "think": "Ask a thinking-capable model to reason before answering. The reasoning is shown in the chat log and never spoken. Leave unset to use the model's default.",
+                        "think": "Ask a thinking-capable model to reason before answering: on, off, or a level (low, medium, high, max) for models that support levels. The reasoning is shown in the chat log and never spoken. Leave unset to use the model's default.",
                         "input_field": "Request body field the user's message is sent in. Must match the Chat Trigger's chat input key (default: chatInput).",
                         "output_field": "Field of a non-streaming reply that holds the answer (default: output; text is also tried).",
                         "session_field": "Request body field carrying the session key that n8n memory nodes partition on (default: sessionId)."
@@ -221,6 +223,7 @@
                         "temperature": "Temperature (OpenAI-compatible)",
                         "top_p": "Top P (OpenAI-compatible)",
                         "max_tokens": "Maximum tokens (OpenAI-compatible)",
+                        "reasoning_effort": "Reasoning effort (OpenAI-compatible)",
                         "num_ctx": "Context window (Ollama)",
                         "keep_alive": "Keep alive (Ollama)",
                         "think": "Think before responding (Ollama)"
@@ -232,9 +235,10 @@
                         "temperature": "Sampling temperature: higher is more varied, lower is more focused. Leave empty to use the server's default.",
                         "top_p": "Nucleus sampling cutoff. Leave empty to use the server's default.",
                         "max_tokens": "Longest reply the model may generate, in tokens. Leave empty to use the server's default.",
+                        "reasoning_effort": "How hard a reasoning model thinks before answering (for example OpenAI o-series or gpt-5). Leave empty to send nothing and use the server's default; other models may reject it.",
                         "num_ctx": "Maximum number of text tokens the model can process. Leave empty to use the model's default.",
                         "keep_alive": "Seconds the model stays loaded in Ollama after a request. -1 keeps it loaded indefinitely, 0 unloads it right away. Leave empty to use Ollama's default.",
-                        "think": "Ask a thinking-capable model to reason before answering. Leave unset to use the model's default."
+                        "think": "Ask a thinking-capable model to reason before answering: on, off, or a level (low, medium, high, max). Leave unset to use the model's default."
                     }
                 }
             },
@@ -253,6 +257,9 @@
         },
         "backend_not_ready": {
             "message": "The backend is not reachable: {error}"
+        },
+        "backend_rate_limited": {
+            "message": "The backend refused the request because of a rate limit or an exhausted quota: {error}"
         },
         "unsupported_attachment_type": {
             "message": "Only image attachments are supported, not {mime_type}."
@@ -316,6 +323,27 @@
                 "interrupt": "Interrupt",
                 "enqueue": "Enqueue",
                 "reject": "Reject"
+            }
+        },
+        "reasoning_effort": {
+            "options": {
+                "none": "None",
+                "minimal": "Minimal",
+                "low": "Low",
+                "medium": "Medium",
+                "high": "High",
+                "xhigh": "Extra high",
+                "max": "Maximum"
+            }
+        },
+        "think": {
+            "options": {
+                "off": "Off",
+                "on": "On",
+                "low": "Low",
+                "medium": "Medium",
+                "high": "High",
+                "max": "Maximum"
             }
         }
     }

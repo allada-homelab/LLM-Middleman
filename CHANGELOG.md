@@ -6,8 +6,39 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **OpenAI-compatible and Ollama tier-1 (LLMM-024, #113).**
+  - New **Reasoning effort** option for OpenAI-compatible agents and AI tasks
+    (`reasoning_effort`, sent only when set).
+  - Requests now carry `prompt_cache_key` set to the agent's id, so an agent's conversations
+    share the provider's prompt cache. A server that rejects the field gets the request again
+    without it.
+  - Ollama's **Think before responding** offers levels (low, medium, high, maximum) as well as
+    on/off. Existing agents keep their setting.
+  - Reasoning tokens (OpenAI) and cached prompt tokens (Ollama) are added to the conversation
+    trace.
+
+### Changed
+
+- **OpenAI-compatible rate limits are named.** HTTP 429 (rate limit or exhausted quota)
+  raises an error with the server's reason; AI tasks show it, conversations still speak the
+  fallback. (#113)
+
 ### Fixed
 
+- **Mid-reply errors are no longer swallowed** (OpenAI-compatible, Ollama). An error the
+  server sends after the reply started (vLLM, OpenRouter, Ollama's final error line) ended
+  the turn as if it had finished. The text already spoken is kept, the fallback is added,
+  and the turn is marked failed. (#113)
+- **Cut-off replies are recorded.** A reply stopped by the token limit or a content filter
+  keeps its text and now logs a warning and writes `finish_reason` to the trace. (#113)
+- **OpenAI reasoning models work with Maximum tokens set.** They reject `max_tokens`; the
+  request is retried once with `max_completion_tokens`, and that model keeps using it. (#113)
+- **OpenAI-compatible refusals are spoken.** A refusal-only reply used to speak the fallback
+  message. (#113)
+- **Ollama tool calls keep their ids.** Tool results now go back with the tool name and call
+  id, so a model that calls several tools at once can match each result. (#113)
 - **The Timeout setting again bounds how long a backend may stay silent.** Since 1.1.4 any
   backend that sent nothing for 30 seconds failed, whatever its Timeout said: a blocking
   n8n reply, a slow model still processing the prompt, a reasoning model, or an Ollama model
