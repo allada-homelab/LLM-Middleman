@@ -90,7 +90,7 @@ Phase milestones match `plan.md` §Implementation phases. `⇐` = depends on.
 | LLMM-023 | AI Task `generate_data` subentry for openai_compat + ollama (structured output, image attachments) | LLMM-007, LLMM-008, LLMM-010 |
 
 ### Fast-follow (roadmap, not v1 — file tickets when picked up)
-Done since v1.1.4 (no separate tickets):
+Shipped in v1.2.0 (no separate tickets):
 - Token stats via the conversation trace (`base.trace_token_stats`, core's `{"stats": …}`
   shape) — openai_compat, ollama, LangGraph, Dify.
 - External tool-activity surfacing (`ToolInput(external=True)` via `backends/_compat.py`) —
@@ -98,8 +98,11 @@ Done since v1.1.4 (no separate tickets):
 - Reasoning passthrough as `thinking_content` — openai_compat (`reasoning_content` /
   `reasoning`), ollama (`thinking`), Dify (`reasoning_chunk`).
 
+Merged, unreleased:
+- AI Task `generate_data` subentry → LLMM-023 (#106; in review, waiting on owner-run live
+  rows).
+
 Open:
-- AI Task `generate_data` subentry → LLMM-023 (in review, waiting on owner-run live rows).
 - AG-UI preset — speculative; no ticket until there is a concrete backend to target.
 
 Dropped: Anthropic and OpenAI Responses-API presets — HA core ships `anthropic` (platinum
