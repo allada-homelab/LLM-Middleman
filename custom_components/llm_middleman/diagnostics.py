@@ -3,7 +3,7 @@
 HA auto-discovers ``async_get_config_entry_diagnostics`` by module presence — no
 platform registration in ``__init__.py`` is needed. The dump mirrors core's
 ``anthropic``/``openai_conversation`` diagnostics: parent metadata, redacted parent
-``data``/``options``, each conversation subentry's redacted ``data``, and the entry's
+``data``/``options``, each subentry's (conversation agent or AI task) redacted ``data``, and the entry's
 entities. Every credential, URL, and prompt is redacted (see ``TO_REDACT``).
 """
 

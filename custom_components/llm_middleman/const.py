@@ -73,6 +73,8 @@ MEMORY_SCOPE_AGENT = "agent"  # one global thread per agent subentry
 
 # Subentry type for a conversation agent (one entity per such subentry).
 SUBENTRY_TYPE_CONVERSATION = "conversation"
+# Subentry type for an AI Task generate_data entity (LLMM-023; core's key for it).
+SUBENTRY_TYPE_AI_TASK = "ai_task_data"
 
 # Upper bound on assistant<->tool round-trips within a single turn (LLMM-014). The
 # HA-side backstop against a runaway tool-calling backend; matches core openai/ollama.

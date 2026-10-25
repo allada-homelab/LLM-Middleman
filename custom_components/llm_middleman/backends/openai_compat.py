@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 
@@ -49,7 +49,7 @@ from custom_components.llm_middleman.const import (
 
 from ._history import trim_history
 from ._sse import async_iter_sse
-from ._tools import format_function_tool, replayable_content, tool_result_json
+from ._tools import EncodedImage, async_load_images, format_function_tool, replayable_content, tool_result_json
 from .base import (
     BackendAdapter,
     BackendStreamError,
@@ -137,18 +137,25 @@ def _tool_input(call: dict[str, str]) -> llm.ToolInput | None:
     return llm.ToolInput(id=call["id"], tool_name=call["name"], tool_args=args)
 
 
-def _convert_content(item: conversation.Content) -> dict[str, Any]:
+def _convert_content(item: conversation.Content, images: Sequence[EncodedImage] = ()) -> dict[str, Any]:
     """Map one HA ChatLog content item to an OpenAI chat message.
 
     Assistant turns carry any ``tool_calls`` (LLMM-014) so a re-entered tool loop
     replays them; the closed ``Content`` union makes the final branch the tool-result
     case, serialized with ``default=str`` (a ``time``/``datetime`` tool result is not
-    otherwise JSON-serializable).
+    otherwise JSON-serializable). A user turn with ``images`` (AI Task attachments,
+    already encoded) becomes a content-parts array with base64 data-URL ``image_url`` parts.
     """
     if isinstance(item, conversation.SystemContent):
         return {"role": "system", "content": item.content}
     if isinstance(item, conversation.UserContent):
-        return {"role": "user", "content": item.content}
+        if not images:
+            return {"role": "user", "content": item.content}
+        parts: list[dict[str, Any]] = [{"type": "text", "text": item.content}]
+        parts.extend(
+            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{data}"}} for mime_type, data in images
+        )
+        return {"role": "user", "content": parts}
     if isinstance(item, conversation.AssistantContent):
         message: dict[str, Any] = {"role": "assistant", "content": item.content or ""}
         if item.tool_calls:
@@ -177,6 +184,8 @@ class OpenAICompatAdapter(BackendAdapter):
     supports_ha_tools: ClassVar[bool] = True
     # Replays chat_log (whose system prompt carries HA's date/time); never reads user_input.text.
     wants_time_prefix: ClassVar[bool] = False
+    # Sends TurnContext.output_schema as response_format and images as content parts (LLMM-023).
+    supports_ai_task: ClassVar[bool] = True
     # Connection capability, not per-turn state: flipped once when the server rejects
     # stream_options so later turns skip the doomed attempt (a concurrent flip is benign).
     _stream_options_supported: bool = True
@@ -212,16 +221,18 @@ class OpenAICompatAdapter(BackendAdapter):
                 models.append(entry_id)
         return models
 
-    def _build_messages(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> list[dict[str, Any]]:
-        """Replay ``chat_log.content`` to trimmed OpenAI ``messages[]``."""
-        messages = [_convert_content(item) for item in replayable_content(chat_log.content)]
+    async def _build_messages(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> list[dict[str, Any]]:
+        """Replay ``chat_log.content`` (with any image attachments) to trimmed OpenAI ``messages[]``."""
+        items = replayable_content(chat_log.content)
+        images = await async_load_images(self.hass, items)
+        messages = [_convert_content(item, item_images) for item, item_images in zip(items, images, strict=True)]
         max_history = int(ctx.options.get(CONF_MAX_HISTORY, 0))
         return trim_history(messages, max_history)
 
-    def _build_body(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> dict[str, Any]:
+    async def _build_body(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> dict[str, Any]:
         """Assemble the chat/completions request body from history + options."""
         body: dict[str, Any] = {
-            "messages": self._build_messages(chat_log, ctx),
+            "messages": await self._build_messages(chat_log, ctx),
             "stream": True,
         }
         if (model := ctx.options.get(CONF_MODEL)) is not None:
@@ -234,6 +245,14 @@ class OpenAICompatAdapter(BackendAdapter):
             body["tools"] = [
                 format_function_tool(tool, chat_log.llm_api.custom_serializer) for tool in chat_log.llm_api.tools
             ]
+        # AI Task structured output. strict=False: strict mode demands every property be
+        # required and additionalProperties false, which HA schemas don't guarantee. A
+        # server that rejects json_schema fails the request with its own error body (logged).
+        if ctx.output_schema is not None:
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": ctx.output_schema.name, "schema": ctx.output_schema.schema, "strict": False},
+            }
         return body
 
     @asynccontextmanager
@@ -286,7 +305,7 @@ class OpenAICompatAdapter(BackendAdapter):
         tool_calls: dict[int, dict[str, str]] = {}
         usage: dict[str, Any] | None = None
         async with self._open_stream(
-            url, self._build_body(chat_log, ctx), headers, build_client_timeout(ctx.options)
+            url, await self._build_body(chat_log, ctx), headers, build_client_timeout(ctx.options)
         ) as response:
             async for event in async_iter_sse(response.content.iter_any()):
                 if event.data == _DONE_SENTINEL:

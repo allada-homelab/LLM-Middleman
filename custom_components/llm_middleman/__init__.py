@@ -3,7 +3,8 @@
 A backend-agnostic, text-only passthrough conversation agent: it forwards each
 Assist turn to an external LLM backend (selected via a preset) and streams the reply
 back into the pipeline. All intelligence (tools, memory, providers) lives in the
-external service; this integration owns only the HA plumbing.
+external service; this integration owns only the HA plumbing. Connections whose preset
+owns the model call (openai_compat, ollama) also serve AI Task ``generate_data``.
 
 Setup builds the backend adapter once — via the ``BACKEND_TO_CLS`` factory keyed on
 the parent entry's ``CONF_BACKEND_TYPE`` — and stores the shared instance in
@@ -45,7 +46,7 @@ from .const import (
     SUBENTRY_TYPE_CONVERSATION,
 )
 
-PLATFORMS = (Platform.CONVERSATION,)
+PLATFORMS = (Platform.AI_TASK, Platform.CONVERSATION)
 
 # Default agent name when a v0 entry carries no ``name`` (v0's title fallback).
 _DEFAULT_AGENT_NAME = "LLM Middleman"

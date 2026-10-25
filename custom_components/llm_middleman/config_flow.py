@@ -110,6 +110,7 @@ from .const import (
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
     PROBE_TIMEOUT,
+    SUBENTRY_TYPE_AI_TASK,
     SUBENTRY_TYPE_CONVERSATION,
 )
 
@@ -124,6 +125,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # Default display name for a newly added conversation agent.
 _DEFAULT_AGENT_NAME = "LLM Middleman"
+# Default display name for a newly added AI task entity.
+_DEFAULT_AI_TASK_NAME = "LLM Middleman AI Task"
 
 # Fixed per-backend entry title. The human-facing agent name lives on the
 # conversation subentry (LLMM-007), so the parent title is a stable backend label.
@@ -292,8 +295,13 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
     @classmethod
     @callback
     def async_get_supported_subentry_types(cls, config_entry: ConfigEntry) -> dict[str, type[ConfigSubentryFlow]]:
-        """Expose the conversation-agent subentry type for every backend (LLMM-007)."""
-        return {SUBENTRY_TYPE_CONVERSATION: ConversationSubentryFlowHandler}
+        """Expose conversation agents for every backend (LLMM-007), AI tasks where supported (LLMM-023)."""
+        types: dict[str, type[ConfigSubentryFlow]] = {SUBENTRY_TYPE_CONVERSATION: ConversationSubentryFlowHandler}
+        # HA asks for every stored entry, including a v0 one (no backend type) whose migration failed.
+        adapter_cls = BACKEND_TO_CLS.get(config_entry.data.get(CONF_BACKEND_TYPE, ""))
+        if adapter_cls is not None and adapter_cls.supports_ai_task:
+            types[SUBENTRY_TYPE_AI_TASK] = AITaskSubentryFlowHandler
+        return types
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Step 1: choose the backend type, then route to its connection step."""
@@ -667,6 +675,41 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         return SelectSelector(  # pyright: ignore[reportUnknownVariableType]
             SelectSelectorConfig(options=models, custom_value=True, mode=SelectSelectorMode.DROPDOWN)
         )
+
+
+class AITaskSubentryFlowHandler(ConversationSubentryFlowHandler):
+    """AI Task ``generate_data`` subentry flow (LLMM-023), for ``supports_ai_task`` adapters.
+
+    Same create/reconfigure steps as a conversation agent, with a narrower form: the
+    task supplies its own instructions and LLM API per call, and runs single-turn, so
+    there is no prompt, memory scope, tool API, or history depth — just the model, the
+    preset's sampling/runtime options, and the timeout.
+    """
+
+    async def _build_schema(
+        self,
+        adapter_cls: type[BackendAdapter],
+        entry: ConfigEntry,
+        options: Mapping[str, Any],
+    ) -> vol.Schema:
+        """Build the AI task schema; ``options`` prefills each field."""
+        schema: dict[Any, Any] = {}
+        if self._is_new:
+            schema[vol.Required(CONF_NAME, default=_DEFAULT_AI_TASK_NAME)] = TextSelector()
+        model_selector = await self._model_selector(adapter_cls, entry)
+        if model_selector is not None:
+            schema[vol.Optional(CONF_MODEL, description={"suggested_value": options.get(CONF_MODEL)})] = model_selector
+        schema[
+            vol.Optional(
+                CONF_TIMEOUT,
+                description={"suggested_value": options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)},
+            )
+        ] = NumberSelector(NumberSelectorConfig(min=10, max=300, step=1, mode=NumberSelectorMode.BOX))
+        if adapter_cls.backend_type == BACKEND_OPENAI_COMPAT:
+            _add_openai_compat_fields(schema, options)
+        if adapter_cls.backend_type == BACKEND_OLLAMA:
+            _add_ollama_fields(schema, options)
+        return vol.Schema(schema)
 
 
 def _add_langgraph_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:

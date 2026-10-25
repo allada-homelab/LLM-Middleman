@@ -23,7 +23,7 @@ stays stateless.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator, AsyncIterable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, Mapping, Sequence
 from typing import Any, ClassVar, cast
 
 from homeassistant.components import conversation
@@ -45,7 +45,7 @@ from custom_components.llm_middleman.const import (
 
 from ._history import trim_history
 from ._sse import async_iter_lines
-from ._tools import format_function_tool, replayable_content, tool_result_json
+from ._tools import EncodedImage, async_load_images, format_function_tool, replayable_content, tool_result_json
 from .base import (
     BackendAdapter,
     BackendConnectionError,
@@ -85,19 +85,23 @@ def _parse_tool_args(arguments: dict[str, Any]) -> dict[str, Any]:
     return {k: _fix_invalid_arguments(v) for k, v in arguments.items() if v is not None and v != ""}
 
 
-def _convert_content(content: conversation.Content) -> dict[str, Any]:
+def _convert_content(content: conversation.Content, images: Sequence[EncodedImage] = ()) -> dict[str, Any]:
     """Map one ChatLog item to an Ollama ``messages[]`` entry.
 
     Assistant turns carry any ``tool_calls`` (LLMM-015) so a re-entered tool loop
     replays them in Ollama's ``{"function": {"name", "arguments"}}`` wire shape; the
     closed ``Content`` union makes the final branch the tool-result case, serialized
     with ``default=str`` (a ``time``/``datetime`` tool result is not otherwise
-    JSON-serializable).
+    JSON-serializable). A user turn's ``images`` (AI Task attachments, already
+    encoded) go in the message's base64 ``images`` list.
     """
     if isinstance(content, conversation.SystemContent):
         return {"role": "system", "content": content.content}
     if isinstance(content, conversation.UserContent):
-        return {"role": "user", "content": content.content}
+        user: dict[str, Any] = {"role": "user", "content": content.content}
+        if images:
+            user["images"] = [data for _mime_type, data in images]
+        return user
     if isinstance(content, conversation.AssistantContent):
         message: dict[str, Any] = {"role": "assistant", "content": content.content or ""}
         if content.thinking_content:
@@ -141,6 +145,8 @@ class OllamaAdapter(BackendAdapter):
     supports_ha_tools: ClassVar[bool] = True
     # Replays chat_log (whose system prompt carries HA's date/time); never reads user_input.text.
     wants_time_prefix: ClassVar[bool] = False
+    # Sends TurnContext.output_schema as ``format`` and images in ``images`` (LLMM-023).
+    supports_ai_task: ClassVar[bool] = True
 
     @classmethod
     async def _async_get_models(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -168,14 +174,17 @@ class OllamaAdapter(BackendAdapter):
         models = await cls._async_get_models(hass, data)
         return [model["model"] for model in models]
 
-    def _build_request(self, chat_log: conversation.ChatLog, options: Mapping[str, Any]) -> dict[str, Any]:
+    async def _build_request(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> dict[str, Any]:
         """Rebuild the trimmed provider ``messages[]`` and assemble the request body.
 
         Each option is included only when configured. ``base_url`` is the host root
         (not ``/v1``); the caller strips the trailing slash before appending paths.
         """
+        options = ctx.options
+        items = replayable_content(chat_log.content)
+        images = await async_load_images(self.hass, items)
         messages = trim_history(
-            [_convert_content(content) for content in replayable_content(chat_log.content)],
+            [_convert_content(item, item_images) for item, item_images in zip(items, images, strict=True)],
             int(options.get(CONF_MAX_HISTORY, 0)),
         )
         body: dict[str, Any] = {"messages": messages, "stream": True}
@@ -195,6 +204,9 @@ class OllamaAdapter(BackendAdapter):
                 format_function_tool(tool, chat_log.llm_api.custom_serializer, omit_empty_description=True)
                 for tool in chat_log.llm_api.tools
             ]
+        # AI Task structured output (Ollama structured outputs: a JSON Schema in ``format``).
+        if ctx.output_schema is not None:
+            body["format"] = ctx.output_schema.schema
         return body
 
     async def stream_turn(
@@ -214,7 +226,7 @@ class OllamaAdapter(BackendAdapter):
         ``AssistantContent``.
         """
         base_url = self.connection_data[CONF_BASE_URL].rstrip("/")
-        body = self._build_request(chat_log, ctx.options)
+        body = await self._build_request(chat_log, ctx)
 
         async with self._post_checked(
             f"{base_url}/api/chat",
