@@ -20,7 +20,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **Quieter logs while a backend is down.** A connection now logs one info line when its
-  backend becomes unreachable and one when it answers again, shared by all of its agents.
+  backend becomes unreachable and one when it answers again, shared by all of its agents
+  and AI tasks. AI tasks that cannot reach the backend now also count toward the
+  "Backend unreachable" repair issue.
   Turns that cannot reach the backend log at debug instead of an error with a traceback
   each time; failures after reaching the backend still log as errors.
 

@@ -77,10 +77,11 @@ rules:
   log-when-unavailable:
     status: done
     comment: >-
-      The first turn that cannot reach a connection's backend logs once at info, and the
-      first turn that reaches it again logs once at info. The state is per connection
-      (the shared adapter), so sibling agents don't repeat it. Unreachable turns in
-      between log at debug.
+      The first conversation turn or AI task that cannot reach a connection's backend logs
+      once at info, and the first that reaches it again (or a setup probe while the repair
+      issue is open) logs once at info. The state is per connection (the shared adapter,
+      helpers.py), so sibling entities don't repeat it. Unreachable turns in between log at
+      debug. A failed setup probe raises ConfigEntryNotReady, which HA core logs itself.
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:

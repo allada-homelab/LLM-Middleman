@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-import aiohttp
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigSubentry
@@ -29,7 +28,7 @@ from homeassistant.helpers import intent, translation
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from . import LLMMiddlemanConfigEntry, async_create_unreachable_issue, async_delete_unreachable_issue
+from . import LLMMiddlemanConfigEntry
 from .backends.base import BackendAdapter, DeltaStream, TurnContext
 from .const import (
     CONF_MEMORY_SCOPE,
@@ -40,9 +39,13 @@ from .const import (
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
     SUBENTRY_TYPE_CONVERSATION,
-    UNREACHABLE_ISSUE_THRESHOLD,
 )
-from .helpers import async_run_tool_loop, async_start_reauth_on_auth_error
+from .helpers import (
+    async_record_backend_failure,
+    async_record_backend_reached,
+    async_run_tool_loop,
+    is_unreachable,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -238,39 +241,24 @@ class LLMMiddlemanConversationEntity(
             yield {"content": f"\n{message}" if has_text else message}
             return
 
-        self._record_backend_reached()
+        async_record_backend_reached(self.hass, self.entry, self.adapter)
         if not started:
             ctx.fallback = True
             yield {"role": "assistant"}
             yield {"content": await self._async_fallback_message(language)}
 
     def _record_backend_failure(self, err: Exception) -> None:
-        """Log the failure, start reauth on a credential rejection, and count unreachable turns.
+        """Log the swallowed failure, then record it on the connection's reachability state.
 
         A failure that reached the backend is unexpected, so it keeps an error with traceback.
         An unreachable backend is the outage the one-time info line reports, so each such turn
         logs only at debug (quality-scale log-when-unavailable).
         """
-        async_start_reauth_on_auth_error(self.hass, self.entry, err)
-        if not _is_unreachable(err):
+        if is_unreachable(err):
+            _LOGGER.debug("Backend unreachable; returning fallback message", exc_info=err)
+        else:
             _LOGGER.exception("Backend stream failed; returning fallback message")
-            self._record_backend_reached()
-            return
-        _LOGGER.debug("Backend unreachable; returning fallback message", exc_info=err)
-        self.adapter.unreachable_turns += 1
-        # Log on the first unreachable turn, as DataUpdateCoordinator does on its first failed
-        # update; only the user-facing repair issue waits out transient blips.
-        if self.adapter.unreachable_turns == 1:
-            _LOGGER.info("Backend of connection %s is unreachable: %s", self.entry.title, err)
-        if self.adapter.unreachable_turns >= UNREACHABLE_ISSUE_THRESHOLD:
-            async_create_unreachable_issue(self.hass, self.entry)
-
-    def _record_backend_reached(self) -> None:
-        """The backend answered (even with an error): reset the run and clear the issue."""
-        if self.adapter.unreachable_turns:
-            _LOGGER.info("Backend of connection %s is reachable again", self.entry.title)
-        self.adapter.unreachable_turns = 0
-        async_delete_unreachable_issue(self.hass, self.entry.entry_id)
+        async_record_backend_failure(self.hass, self.entry, self.adapter, err)
 
     async def _async_fallback_message(self, language: str) -> str:
         """Return the translated fallback text (English constant when untranslated)."""
@@ -300,14 +288,3 @@ class LLMMiddlemanConversationEntity(
                 legacy_memory_key=user_input.device_id,
             )
         return TurnContext(options=self.subentry.data, memory_key=chat_log.conversation_id)
-
-
-def _is_unreachable(err: BaseException) -> bool:
-    """True when ``err`` (or what it wraps) is a transport failure: refused, dropped, timed out."""
-    current: BaseException | None = err
-    while current is not None:
-        # ServerTimeoutError (connect/read timeouts) is a ClientConnectionError too.
-        if isinstance(current, aiohttp.ClientConnectionError):
-            return True
-        current = current.__cause__
-    return False
