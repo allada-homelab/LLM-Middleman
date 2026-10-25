@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-25
+
 ### Added
 
 - **Reauthentication.** Rejected credentials at setup, or a 401/403 during a turn, now
