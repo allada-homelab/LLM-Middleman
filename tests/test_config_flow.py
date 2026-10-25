@@ -34,6 +34,7 @@ from custom_components.llm_middleman.backends.base import (
 )
 from custom_components.llm_middleman.backends.dify import DifyAppError
 from custom_components.llm_middleman.backends.langgraph import AssistantNotFoundError
+from custom_components.llm_middleman.backends.n8n import N8nWebhookError
 from custom_components.llm_middleman.config_flow import (
     ConversationSubentryFlowHandler,
     LLMMiddlemanConfigFlow,
@@ -229,6 +230,18 @@ async def test_dify_app_error_shows_specific_error(hass: HomeAssistant, error_ke
     with patch(_REGISTRY_PATH, registry):
         form = await _init_backend_step(hass, BACKEND_DIFY)
         result = await _configure(hass, form["flow_id"], {CONF_BASE_URL: "https://api.dify.ai", CONF_API_KEY: "k"})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": error_key}
+
+
+@pytest.mark.parametrize("error_key", ["webhook_not_registered", "webhook_test_url"])
+async def test_n8n_webhook_error_shows_specific_error(hass: HomeAssistant, error_key: str) -> None:
+    """An inactive n8n workflow / test URL gets its own error, not cannot_connect."""
+    registry = {BACKEND_N8N: _fake_adapter(N8nWebhookError(error_key, "not usable"))}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_N8N)
+        result = await _configure(hass, form["flow_id"], {CONF_WEBHOOK_URL: "https://n8n.local/webhook/abc/chat"})
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": error_key}

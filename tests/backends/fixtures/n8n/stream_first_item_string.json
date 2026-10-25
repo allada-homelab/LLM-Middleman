@@ -1,0 +1,8 @@
+{
+  "description": "Webhook (streaming) -> Code -> Respond to Webhook (First Incoming Item, enableStreaming)",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/stream-first body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\"type\":\"begin\",\"metadata\":{\"nodeId\":\"09a78b7d-decd-4ee7-b9eb-c92c639751a3\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925783}}\n{\"type\":\"item\",\"content\":\"{\\\"output\\\":\\\"first item reply\\\"}\",\"metadata\":{\"nodeId\":\"09a78b7d-decd-4ee7-b9eb-c92c639751a3\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925783}}\n{\"type\":\"end\",\"metadata\":{\"nodeId\":\"09a78b7d-decd-4ee7-b9eb-c92c639751a3\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925783}}\n"
+}

@@ -124,7 +124,9 @@
             "not_chat_app": "This Dify API key belongs to a Workflow or Text Generator app. Use the key of a Chatbot, Agent, or Chatflow app.",
             "agent_not_published": "The Dify Agent has no published version yet. Publish it in Dify, then try again.",
             "unknown": "[%key:common::config_flow::error::unknown%]",
-            "assistant_not_found": "The deployment has no assistant or graph with this ID."
+            "assistant_not_found": "The deployment has no assistant or graph with this ID.",
+            "webhook_not_registered": "n8n has no active webhook at this URL. Activate the workflow in n8n (production URLs only answer while it is active) and check the URL, then try again.",
+            "webhook_test_url": "This is an n8n test URL (its path contains /webhook-test/), which only answers once after Execute workflow is clicked. Use the workflow's production URL instead."
         },
         "abort": {
             "already_configured": "[%key:common::config_flow::abort::already_configured_service%]",

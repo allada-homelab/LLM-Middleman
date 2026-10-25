@@ -31,14 +31,19 @@ A plain Webhook only answers `GET` with "not registered for GET".
 ## What works
 
 `keepalive` is listed in `_STRUCTURED_CHUNK_TYPES`, so a keepalive first line is sniffed as
-NDJSON and yields nothing[^s4]. The n8n adapter validates the webhook URL shape only and
-performs no network probe at config time[^s4].
+NDJSON and yields nothing[^s4]. The setup probe (LLMM-025) never sends `GET` or `POST`: it
+sends `OPTIONS` with an `Origin` header, which n8n answers from the registered methods
+(`Access-Control-Allow-Methods`) before executing anything. On 2.44.6 executions stayed
+unchanged across probes of a Webhook and a Chat Trigger. An inactive workflow lists only
+`OPTIONS`. Never add `Access-Control-Request-Method`: n8n answers 500 for an unknown path with
+it[^s4].
 
 ## Why
 
 The chunk envelope (`type`, `content?`, `metadata` with `nodeId`, `nodeName`, `runIndex`,
-`itemIndex`, `timestamp`) is not in n8n's public docs; the source is the reference[^s3]. The
-adapter's docstring already records that a probing request would fire the live workflow[^s4].
+`itemIndex`, `timestamp`) is not in n8n's public docs; the source is the reference[^s3]. In
+n8n's `webhook-request-handler`, `OPTIONS` returns 204 right after the CORS lookup, before
+`executeWebhook`, so it is the one method that cannot start a run[^s4].
 
 ## Verify
 

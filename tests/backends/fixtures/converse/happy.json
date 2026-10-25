@@ -1,0 +1,8 @@
+{
+  "description": "STUB-DERIVED (scripts/e2e/converse_sse_stub.py): plain reply",
+  "server": "scripts/e2e/converse_sse_stub.py (LLMM-025), captured 2026-10-25",
+  "request": "POST /v1/converse body={\"conversation_id\": \"k\", \"text\": \"[2026-10-25 05:00:00 UTC] hello\", \"language\": \"en\"}",
+  "status": 200,
+  "content_type": "text/event-stream",
+  "body": "event: text_delta\ndata: {\"delta\": \"Hello \"}\n\nevent: text_delta\ndata: {\"delta\": \"from \"}\n\nevent: text_delta\ndata: {\"delta\": \"the \"}\n\nevent: text_delta\ndata: {\"delta\": \"converse \"}\n\nevent: text_delta\ndata: {\"delta\": \"stub, \"}\n\nevent: text_delta\ndata: {\"delta\": \"streaming \"}\n\nevent: text_delta\ndata: {\"delta\": \"one \"}\n\nevent: text_delta\ndata: {\"delta\": \"word \"}\n\nevent: text_delta\ndata: {\"delta\": \"at \"}\n\nevent: text_delta\ndata: {\"delta\": \"a \"}\n\nevent: text_delta\ndata: {\"delta\": \"time. \"}\n\nevent: done\ndata: {\"text\": \"Hello from the converse stub, streaming one word at a time.\"}\n\n"
+}

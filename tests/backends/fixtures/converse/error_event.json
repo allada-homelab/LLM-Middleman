@@ -1,0 +1,8 @@
+{
+  "description": "STUB-DERIVED (scripts/e2e/converse_sse_stub.py): error event with code after one delta",
+  "server": "scripts/e2e/converse_sse_stub.py (LLMM-025), captured 2026-10-25",
+  "request": "POST /v1/converse body={\"conversation_id\": \"k\", \"text\": \"[2026-10-25 05:00:00 UTC] boom\", \"language\": \"en\"}",
+  "status": 200,
+  "content_type": "text/event-stream",
+  "body": "event: text_delta\ndata: {\"delta\": \"Something is about to \"}\n\nevent: error\ndata: {\"code\": \"stub_error\", \"message\": \"stub-injected backend error\"}\n\n"
+}

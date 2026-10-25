@@ -1,0 +1,8 @@
+{
+  "description": "Webhook (When Last Node Finishes, All Entries) -> Code returning 1 item",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/last-all-one body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "[{\"output\":\"array reply\"}]"
+}

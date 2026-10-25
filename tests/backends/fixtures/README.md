@@ -38,3 +38,14 @@ shapes. Their `spec` field names the source:
 | `openai_compat/openai_max_tokens_unsupported_400.json` | OpenAI reasoning model rejecting `max_tokens` |
 | `openai_compat/openai_insufficient_quota_429.json` | OpenAI out-of-quota 429 |
 | `ollama/midstream_error.json` | Ollama final `{"error": "…"}` NDJSON line, HTTP 200 |
+
+## `n8n/` and `converse/` (LLMM-025)
+
+These use the older `langgraph/`-style wrapper (provenance in a `server` field, no
+`source` field):
+
+- **n8n 2.44.6** (`n8nio/n8n:2.44.6`, Docker): 19 files captured from real workflows that
+  stream or reply without an LLM node (Respond to Webhook, Chat Trigger, Wait for the
+  keepalive). `agent_intermediate_steps.json` is written from n8n's source, since an AI
+  Agent's steps need a chat model to capture.
+- **converse**: captured from the repo's own stub, `scripts/e2e/converse_sse_stub.py`.

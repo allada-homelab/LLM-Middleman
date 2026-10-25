@@ -1,0 +1,8 @@
+{
+  "description": "STUB-DERIVED (scripts/e2e/converse_sse_stub.py): two tool_activity events (ok, error) before the reply text",
+  "server": "scripts/e2e/converse_sse_stub.py (LLMM-025), captured 2026-10-25",
+  "request": "POST /v1/converse body={\"conversation_id\": \"k\", \"text\": \"[2026-10-25 05:00:00 UTC] tool\", \"language\": \"en\"}",
+  "status": 200,
+  "content_type": "text/event-stream",
+  "body": "event: tool_activity\ndata: {\"tool\": \"HassTurnOff\", \"args\": {\"name\": \"kitchen\"}, \"status\": \"ok\"}\n\nevent: tool_activity\ndata: {\"tool\": \"GetWeather\", \"args\": {}, \"status\": \"error\"}\n\nevent: text_delta\ndata: {\"delta\": \"The \"}\n\nevent: text_delta\ndata: {\"delta\": \"kitchen \"}\n\nevent: text_delta\ndata: {\"delta\": \"lights \"}\n\nevent: text_delta\ndata: {\"delta\": \"are \"}\n\nevent: text_delta\ndata: {\"delta\": \"off \"}\n\nevent: text_delta\ndata: {\"delta\": \"now. \"}\n\nevent: done\ndata: {\"text\": \"The kitchen lights are off now.\"}\n\n"
+}

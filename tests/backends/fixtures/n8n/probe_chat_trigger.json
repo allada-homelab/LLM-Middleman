@@ -1,0 +1,9 @@
+{
+  "description": "OPTIONS + Origin on an active Chat Trigger",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "OPTIONS /webhook/31546836-94ae-49a2-898f-b6dea0b3feca/chat headers={\"Origin\": \"http://homeassistant.local:8123\"}",
+  "status": 204,
+  "content_type": null,
+  "access_control_allow_methods": "OPTIONS, GET, POST",
+  "body": ""
+}
