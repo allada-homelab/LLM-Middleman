@@ -1,21 +1,22 @@
 # Session handoff — maintenance mode, owner-run remainder
 
-> Re-entry point after a Claude Code window reload. v1 is released (latest tag `v1.1.4`);
-> `main` carries the unreleased post-1.1.4 work listed under `## [Unreleased]` in
+> Re-entry point after a Claude Code window reload. v1 is released (latest tag `v1.2.0`);
+> `main` carries the unreleased post-1.2.0 work listed under `## [Unreleased]` in
 > `CHANGELOG.md`. This file tracks only what still needs the owner's hands, plus the
 > standing orchestration rules that must survive a reload.
 
 ## Current state
 
-- **Released:** `v1.1.4` (`manifest.json` version is the source of truth). Minimum HA
+- **Released:** `v1.2.0` (`manifest.json` version is the source of truth). Minimum HA
   2026.7.0; CI runs the suite on the locked HA (2026.10.3, with the coverage gate) and on
   that floor.
-- **Merged since v1.1.4, unreleased:** HACS validation / coverage gate / release workflow
-  (#90), cross-preset contract + streaming gates (#91), adapter helpers (#96), robustness
-  and HA idioms incl. the setup probe (#97), token stats + reasoning (#98), LangGraph
-  tier-1 LLMM-022 (#99), reauth + repair issue (#100), Dify tier-1 LLMM-021 (#101), and
-  the cleanup PR (external tool calls not replayed, per-agent device memory, Store removal
+- **Shipped in v1.2.0:** HACS validation / coverage gate / release workflow (#90),
+  cross-preset contract + streaming gates (#91), adapter helpers (#96), robustness and HA
+  idioms incl. the setup probe (#97), token stats + reasoning (#98), LangGraph tier-1
+  LLMM-022 (#99), reauth + repair issue (#100), Dify tier-1 LLMM-021 (#101), and the
+  cleanup PR #102 (external tool calls not replayed, per-agent device memory, Store removal
   via `store_keys`, newly exposed agent options).
+- **Merged since v1.2.0, unreleased:** AI Task `generate_data` LLMM-023 (#106).
 - **Tickets in review, waiting on owner rows:** LLMM-021 (Dify), LLMM-022 (LangGraph),
   LLMM-023 (AI Task `generate_data`), LLMM-018 (live E2E matrix), LLMM-019 (release
   engineering).
@@ -41,7 +42,7 @@ named results file and flip the ticket.
 4. **Device-scope upgrade check** (cleanup PR): on an install with a v1.1.x Dify or
    LangGraph device-scope agent, confirm the first agent to talk on that device keeps its
    history after upgrading, and a second agent on the same connection starts fresh.
-5. **Live-HA HACS install of the next release** (tag after the unreleased work):
+5. **Live-HA HACS install of the latest release** (`v1.2.0`, or the next tag if newer):
    HACS → *Custom repositories* → `https://github.com/allada-homelab/LLM-Middleman`
    (Integration) → *Download* → restart. The release workflow (#90) builds the GitHub
    release from the tag and the `CHANGELOG.md` section.
@@ -68,7 +69,7 @@ The E2E regression rig lives in `scripts/e2e/` (re-run the matrix after an HA bu
   `gh pr checks` must show checks exist before watching (this bit twice).
 - Workflow worktree isolation may not provision — briefs must include worktree
   self-provisioning; the canonical checkout stays on `main`.
-- Repo hard rules apply (see `CLAUDE.md`): never commit to `main`, never force-push, never
+- Repo hard rules apply (see `AGENTS.md`): never commit to `main`, never force-push, never
   `--no-verify`, never merge red.
 - Session memory: `~/.claude/projects/-workspaces-LLM-Middleman/memory/` holds the full rule
   set (`gsd-orchestration-llmm.md`) and project state (`llmm-v1-implementation-state.md`).

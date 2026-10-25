@@ -14,7 +14,7 @@ turn to an external backend**, streaming the reply back into the pipeline (→ s
 and the Assist chat). It runs **no LLM of its own** — intelligence lives in the backend.
 
 **Current state (2026-10): v1 shipped — maintenance mode.** The v1 multi-backend
-re-architecture was released as `v1.0.0`; the latest release is **`v1.1.4`** (the
+re-architecture was released as `v1.0.0`; the latest release is **`v1.2.0`** (the
 `manifest.json` `version` is the source of truth; `pyproject.toml` mirrors it, enforced by
 `tests/test_versions.py`). Minimum Home Assistant is **2026.7.0** (`hacs.json`). What
 shipped:
@@ -32,10 +32,12 @@ shipped:
 - **Per-agent memory scopes** for the stateful presets, **v0→v1 config-entry migration**
   (`async_migrate_entry`, entry version 2), and **redacted diagnostics** (`diagnostics.py`).
 
-Unreleased on `main` (see `CHANGELOG.md` `[Unreleased]`): reauth + a backend-unreachable
-repair issue, a setup-time backend probe, token stats and reasoning passthrough, backend
-tool activity in the Assist chat, and the **tier-1 reworks of Dify (LLMM-021) and LangGraph
-(LLMM-022)** — both `in-review`, merged and unit-gated, waiting only on owner-run live rows.
+`v1.2.0` (2026-10-25) added reauth + a backend-unreachable repair issue, a setup-time
+backend probe, token stats and reasoning passthrough, backend tool activity in the Assist
+chat, and the **tier-1 reworks of Dify (LLMM-021) and LangGraph (LLMM-022)** — both
+`in-review`, waiting only on owner-run live rows. Unreleased on `main` (see `CHANGELOG.md`
+`[Unreleased]`): **AI Task `generate_data` (LLMM-023)** — merged and unit-gated, also
+waiting on owner-run live rows.
 
 Tickets LLMM-001…017 are done; LLMM-018 (live E2E matrix), LLMM-019 (release), LLMM-021 and
 LLMM-022 are `in-review` pending owner rows, and so is LLMM-023 (AI Task `generate_data`
@@ -43,11 +45,12 @@ subentries for openai_compat/ollama). The remaining work is **owner-run** (Dify/
 AI Task live rows, reauth on a real HA, HACS install of the next release, tool-call rows
 against a capable model, voice-hardware checks) — see `docs/implementation/HANDOFF.md`.
 
-**Quality-scale snapshot** (no `quality_scale.yaml` is declared): Bronze rules are met
-(config flow with a connection test, `already_configured` for duplicate connections,
-setup-time probe → `ConfigEntryNotReady`, `runtime_data`, `has_entity_name` + subentry
-unique ids, branding, README removal section). Silver-relevant: reauth flow, `PARALLEL_UPDATES = 0`, repair issue for an
-unreachable backend, coverage gate ≥ 94 %.
+**Quality scale:** `custom_components/llm_middleman/quality_scale.yaml` is the
+per-rule self-assessment (core's format, rule list pinned to HA 2026.10.3). Bronze is
+fully met; Silver is blocked by its `todo` rules (entity-unavailable,
+log-when-unavailable, per-module test-coverage, two docs rules). Nothing validates the file — hassfest skips it for
+custom integrations — so keep it honest by hand when a rule's status changes. The manifest
+sets no `quality_scale` (see the file's header).
 
 > **START HERE for background:** `docs/implementation/plan.md` — the architecture of record
 > that v1 was built to — and `docs/implementation/README.md`, whose ticket index (with a
@@ -99,8 +102,9 @@ This is a **HACS custom integration, not a pip package** — there is intentiona
 ## Workflow (post-v1 maintenance)
 
 v1 is released, so most work now is bug fixes, dependency bumps, and the **fast-follow**
-features listed at the bottom of `docs/implementation/README.md` (AI Task subentry =
-LLMM-023; token stats, tool-activity surfacing and reasoning passthrough already shipped).
+features listed at the bottom of `docs/implementation/README.md` (token stats,
+tool-activity surfacing and reasoning passthrough shipped in v1.2.0; the AI Task subentry,
+LLMM-023, is merged and unreleased).
 
 1. **Small fixes** (bug, dep bump, doc fix): branch (`fix/…` or a short slug) → PR → merge
    only on a green gate. No ticket required, but keep the change surgical.
