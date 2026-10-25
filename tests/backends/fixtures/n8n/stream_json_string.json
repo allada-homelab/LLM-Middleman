@@ -1,0 +1,8 @@
+{
+  "description": "Webhook (streaming) -> Respond to Webhook (JSON, enableStreaming): item content is a JSON string",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/stream-json body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\"type\":\"begin\",\"metadata\":{\"nodeId\":\"a74d9af5-26b1-4204-8033-51884af69e88\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925674}}\n{\"type\":\"item\",\"content\":\"{\\\"output\\\":\\\"json reply\\\"}\",\"metadata\":{\"nodeId\":\"a74d9af5-26b1-4204-8033-51884af69e88\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925674}}\n{\"type\":\"end\",\"metadata\":{\"nodeId\":\"a74d9af5-26b1-4204-8033-51884af69e88\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925674}}\n"
+}

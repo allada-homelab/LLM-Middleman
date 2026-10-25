@@ -7,10 +7,14 @@ Self-contained: no conftest fixtures, no aiohttp.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
+
+import pytest
 
 from custom_components.llm_middleman.backends._sse import (
     ServerSentEvent,
+    async_iter_lines,
     async_iter_sse,
 )
 
@@ -55,6 +59,32 @@ async def test_crlf_split_across_chunks() -> None:
     # phantom blank line / premature dispatch.
     events = await _collect(b"data: a\r", b"\ndata: b\r", b"\n\r", b"\n")
     assert events == [ServerSentEvent("message", "a\nb")]
+
+
+async def test_lone_cr_terminators() -> None:
+    events = await _collect(b"data: a\rdata: b\r\r")
+    assert events == [ServerSentEvent("message", "a\nb")]
+
+
+async def test_cr_ending_a_chunk_without_lf_still_ends_the_line() -> None:
+    # A CR closing a chunk is a full terminator when the next chunk doesn't start with LF.
+    events = await _collect(b"data: a\r", b"data: b\r", b"\r")
+    assert events == [ServerSentEvent("message", "a\nb")]
+
+
+async def test_empty_chunk_between_split_crlf() -> None:
+    events = await _collect(b"data: a\r", b"", b"\n\n")
+    assert events == [ServerSentEvent("message", "a")]
+
+
+_MIXED = b"event: x\r\ndata: 1\r\rdata:  2\n:c\r\ndata: \xc3\xa9\n\r\ndata: z\r\n\r\n"
+
+
+@pytest.mark.parametrize("cut", range(1, len(_MIXED)))
+async def test_any_two_chunk_split_frames_like_the_whole(cut: int) -> None:
+    whole = await _collect(_MIXED)
+    assert whole == [ServerSentEvent("x", "1"), ServerSentEvent("message", " 2\né"), ServerSentEvent("message", "z")]
+    assert await _collect(_MIXED[:cut], _MIXED[cut:]) == whole
 
 
 async def test_comment_line_ignored() -> None:
@@ -137,3 +167,40 @@ async def test_event_type_resets_between_frames() -> None:
         ServerSentEvent("text_delta", "one"),
         ServerSentEvent("message", "two"),
     ]
+
+
+# --- NDJSON line framer ------------------------------------------------------
+
+
+async def _lines(*parts: bytes, max_line_bytes: int = 65536) -> list[bytes]:
+    return [line async for line in async_iter_lines(_chunks(*parts), max_line_bytes=max_line_bytes)]
+
+
+async def test_lines_split_across_chunks_with_eof_tail() -> None:
+    lines = await _lines(b'{"a":', b"1}\n\n{", b'"b":2}')
+    assert lines == [b'{"a":1}', b"", b'{"b":2}']
+
+
+async def test_lines_one_byte_per_chunk() -> None:
+    blob = b"ab\ncd\n"
+    assert await _lines(*(blob[i : i + 1] for i in range(len(blob)))) == [b"ab", b"cd"]
+
+
+async def test_lines_oversize_line_across_chunks_skipped_next_delivered(caplog: pytest.LogCaptureFixture) -> None:
+    """An over-cap line is never buffered whole: drained to its LF, logged, skipped."""
+    with caplog.at_level(logging.WARNING):
+        lines = await _lines(b"ok\n" + b"x" * 6, b"x" * 6, b"xx\nnext\n", max_line_bytes=8)
+    assert lines == [b"ok", b"next"]
+    assert "exceeded 8 bytes" in caplog.text
+
+
+async def test_lines_oversize_line_within_one_chunk_skipped() -> None:
+    assert await _lines(b"x" * 20 + b"\nnext\n", max_line_bytes=8) == [b"next"]
+
+
+async def test_lines_oversize_unterminated_tail_not_flushed() -> None:
+    assert await _lines(b"ok\n", b"x" * 20, max_line_bytes=8) == [b"ok"]
+
+
+async def test_lines_line_at_cap_delivered() -> None:
+    assert await _lines(b"x" * 8 + b"\n", max_line_bytes=8) == [b"x" * 8]

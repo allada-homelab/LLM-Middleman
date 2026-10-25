@@ -47,8 +47,7 @@ Git over SSH works from both, through your host's SSH agent — see [SSH](#ssh).
    running `up` with the pinned CLI and committing the result. The base image tag
    (`3-3.14-trixie`) pins the image major and Debian release but still
    takes patch rebuilds. The uv feature's `version` option is pinned (its default
-   floats to `latest`) and nothing bumps it automatically;
-   keep it equal to the uv the `Dockerfile` copies in.
+   floats to `latest`) and nothing bumps it automatically.
 6. **The Docker socket comes from the `docker-outside-of-docker` feature's default
    mount** and nothing else. `.devcontainer/post-start.sh` reports which half is
    missing — socket not mounted, or daemon unreachable — and never claims the

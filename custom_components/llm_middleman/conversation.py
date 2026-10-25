@@ -16,9 +16,7 @@ HA tool loop (LLMM-014) — one iteration for text-only turns, up to
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Literal
-from zoneinfo import ZoneInfo
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
@@ -26,7 +24,9 @@ from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import intent, translation
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import LLMMiddlemanConfigEntry
 from .backends.base import BackendAdapter, DeltaStream, TurnContext
@@ -40,8 +40,17 @@ from .const import (
     MEMORY_SCOPE_DEVICE,
     SUBENTRY_TYPE_CONVERSATION,
 )
+from .helpers import (
+    async_record_backend_failure,
+    async_record_backend_reached,
+    async_run_tool_loop,
+    is_unreachable,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+# Turns are independent backend round-trips; never serialize them (core convention).
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
@@ -118,9 +127,10 @@ class LLMMiddlemanConversationEntity(
         # Prepend the current datetime with HA's configured timezone so the LLM has
         # temporal context from chat history — without it a repeated request (e.g.
         # "close the shades" the next day) looks identical and the model incorrectly
-        # reports no state change.
-        tz = ZoneInfo(self.hass.config.time_zone)
-        user_input.text = f"[{datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')}] {user_input.text}"
+        # reports no state change. Only for adapters that forward the bare turn text:
+        # the rendered system prompt already carries HA's date/time for the others.
+        if self.adapter.wants_time_prefix:
+            user_input.text = f"[{dt_util.now().strftime('%Y-%m-%d %H:%M:%S %Z')}] {user_input.text}"
         options = self.subentry.data
 
         try:
@@ -138,20 +148,9 @@ class LLMMiddlemanConversationEntity(
 
         # One TurnContext for the whole turn (stable memory_key across iterations),
         # reused by each adapter round-trip. Built here, never on the shared adapter.
-        ctx = TurnContext(
-            options=self.subentry.data,
-            memory_key=self._derive_memory_key(user_input, chat_log),
-        )
-        # Bounded tool loop (core openai/ollama shape): drive the adapter, let HA run
-        # any tool calls it emitted and append their results, and re-enter while the
-        # last content is an unresponded tool result. Text-only turns (no tools, or a
-        # backend that never calls one) break after exactly one iteration. The range()
-        # cap is the HA-side backstop against a runaway tool-calling backend.
-        for _ in range(MAX_TOOL_ITERATIONS):
-            await self._async_run_turn(user_input, chat_log, ctx)
-            if not chat_log.unresponded_tool_results:
-                break
-        else:
+        ctx = self._turn_context(user_input, chat_log)
+        # Bounded tool loop shared with the AI Task platform (helpers.async_run_tool_loop).
+        if not await async_run_tool_loop(chat_log, lambda: self._async_run_turn(user_input, chat_log, ctx)):
             # Exhausted the cap while the backend was still mid-tool-call (last content
             # is an unresponded tool result). Append a fallback assistant turn so the
             # pipeline gets a spoken reply instead of async_get_result_from_chat_log
@@ -160,11 +159,20 @@ class LLMMiddlemanConversationEntity(
                 "Tool loop hit MAX_TOOL_ITERATIONS (%d) without a final answer; returning fallback",
                 MAX_TOOL_ITERATIONS,
             )
+            ctx.fallback = True
             chat_log.async_add_assistant_content_without_tools(
-                conversation.AssistantContent(agent_id=self.entity_id, content=ERROR_MESSAGE)
+                conversation.AssistantContent(
+                    agent_id=self.entity_id, content=await self._async_fallback_message(user_input.language)
+                )
             )
 
         result = conversation.async_get_result_from_chat_log(user_input, chat_log)
+        if ctx.fallback:
+            # Mark the turn failed (keeping the spoken text, partial reply included) so
+            # pipelines/automations can tell a fallback from a real answer.
+            result.response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN, result.response.speech["plain"]["speech"]
+            )
         # Follow-up listening: HA already ORs in "reply ends with '?'"; the adapter
         # may explicitly request it via the per-turn TurnContext.
         result.continue_conversation = result.continue_conversation or ctx.continue_conversation
@@ -184,18 +192,16 @@ class LLMMiddlemanConversationEntity(
         context so the caller can read ``continue_conversation``.
         """
         if ctx is None:
-            ctx = TurnContext(
-                options=self.subentry.data,
-                memory_key=self._derive_memory_key(user_input, chat_log),
-            )
+            ctx = self._turn_context(user_input, chat_log)
+        ctx.fallback = False
         async for _content in chat_log.async_add_delta_content_stream(
             self.entity_id,
-            self._guarded(self.adapter.stream_turn(chat_log, user_input, ctx)),
+            self._guarded(self.adapter.stream_turn(chat_log, user_input, ctx), ctx, user_input.language),
         ):
             pass
         return ctx
 
-    async def _guarded(self, stream: DeltaStream) -> DeltaStream:
+    async def _guarded(self, stream: DeltaStream, ctx: TurnContext, language: str) -> DeltaStream:
         """Never-hangs wrapper around an adapter stream.
 
         Guarantees at least one ``AssistantContent`` on every exit path so
@@ -207,42 +213,83 @@ class LLMMiddlemanConversationEntity(
         * Deltas pass through untrimmed (empty-string ``content`` included).
         * ``except Exception`` broadly (the v0 holes were ``ValueError`` from aiohttp's
           64 KB readline limit and ``UnicodeDecodeError``, plus ``TimeoutError``);
-          logs with ``_LOGGER.exception`` and appends the fallback message, opening a
-          role first only if nothing was emitted yet.
+          logs via :meth:`_record_backend_failure` and appends the fallback message, opening a
+          role first only if nothing was emitted yet, and separating it from any
+          partial reply with a newline.
         * A silent end (stream yields nothing) emits role + fallback.
+
+        Either fallback path sets ``ctx.fallback`` so the result is marked an error.
         """
         started = False
+        has_text = False  # the current assistant block already carries reply text
         try:
             async for delta in stream:
                 if not started and "role" not in delta:
                     yield {"role": "assistant"}
                 started = True
+                if "role" in delta:
+                    has_text = False
+                if delta.get("content"):
+                    has_text = True
                 yield delta
-        except Exception:
-            _LOGGER.exception("Backend stream failed; returning fallback message")
+        except Exception as err:
+            self._record_backend_failure(err)
+            ctx.fallback = True
             if not started:
                 yield {"role": "assistant"}
-            yield {"content": ERROR_MESSAGE}
+            message = await self._async_fallback_message(language)
+            yield {"content": f"\n{message}" if has_text else message}
             return
 
+        async_record_backend_reached(self.hass, self.entry, self.adapter)
         if not started:
+            ctx.fallback = True
             yield {"role": "assistant"}
-            yield {"content": ERROR_MESSAGE}
+            yield {"content": await self._async_fallback_message(language)}
 
-    def _derive_memory_key(
+    def _record_backend_failure(self, err: Exception) -> None:
+        """Log the swallowed failure, then record it on the connection's reachability state.
+
+        A failure that reached the backend is unexpected, so it keeps an error with traceback.
+        An unreachable backend is the outage the one-time info line reports, so each such turn
+        logs only at debug (quality-scale log-when-unavailable).
+        """
+        if is_unreachable(err):
+            _LOGGER.debug("Backend unreachable; returning fallback message", exc_info=err)
+        else:
+            _LOGGER.exception("Backend stream failed; returning fallback message")
+        async_record_backend_failure(self.hass, self.entry, self.adapter, err)
+
+    async def _async_fallback_message(self, language: str) -> str:
+        """Return the translated fallback text (English constant when untranslated)."""
+        translations = await translation.async_get_translations(self.hass, language, "exceptions", {DOMAIN})
+        return translations.get(f"component.{DOMAIN}.exceptions.backend_unavailable.message", ERROR_MESSAGE)
+
+    def _turn_context(
         self,
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
-    ) -> str:
-        """Derive the session key stateful adapters use, per ``CONF_MEMORY_SCOPE``.
+    ) -> TurnContext:
+        """Build the turn's context with the session key stateful adapters use (``CONF_MEMORY_SCOPE``).
 
-        ``conversation`` (default) → ``conversation_id``; ``device`` → the device id
-        (falling back to ``conversation_id`` when the turn has no device); ``agent`` →
-        the subentry id (one global thread per agent). Stateless adapters ignore it.
+        ``conversation`` (default) → ``conversation_id``; ``device`` →
+        ``<subentry_id>:<device_id>`` (per agent, so sibling agents on one connection don't
+        share a session; falls back to ``conversation_id`` when the turn has no device), with
+        the old shared ``device_id`` key as ``legacy_memory_key``; ``agent`` → the subentry id
+        (one global thread per agent). Stateless adapters ignore it.
         """
         scope = self.subentry.data.get(CONF_MEMORY_SCOPE, MEMORY_SCOPE_CONVERSATION)
         if scope == MEMORY_SCOPE_AGENT:
-            return self.subentry.subentry_id
+            return TurnContext(
+                options=self.subentry.data, memory_key=self.subentry.subentry_id, subentry_id=self.subentry.subentry_id
+            )
         if scope == MEMORY_SCOPE_DEVICE and user_input.device_id:
-            return user_input.device_id
-        return chat_log.conversation_id
+            return TurnContext(
+                options=self.subentry.data,
+                memory_key=f"{self.subentry.subentry_id}:{user_input.device_id}",
+                legacy_memory_key=user_input.device_id,
+                subentry_id=self.subentry.subentry_id,
+            )
+        return TurnContext(
+            options=self.subentry.data, memory_key=chat_log.conversation_id, subentry_id=self.subentry.subentry_id
+        )

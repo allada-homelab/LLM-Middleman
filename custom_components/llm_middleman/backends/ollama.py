@@ -2,8 +2,8 @@
 
 Ollama's ``/api/chat`` streams **newline-delimited JSON** (``application/x-ndjson``),
 one JSON object per line, terminated by an object with ``done: true`` -- not SSE. So
-this adapter frames the stream itself (``_iter_ndjson`` below) instead of using
-``_sse.py``. It is a **stateless-replay** adapter: every turn it rebuilds the provider
+this adapter frames it with the shared, line-capped :func:`._sse.async_iter_lines`
+(``_iter_ndjson`` below adds the JSON decode). It is a **stateless-replay** adapter: every turn it rebuilds the provider
 ``messages[]`` from ``chat_log.content`` and trims old rounds via the shared
 ``_history.trim_history`` helper (core-ollama's ``_trim_history`` rule).
 
@@ -18,20 +18,26 @@ stream into ``llm.ToolInput`` deltas (repairing small-model malformed args via
 ``_parse_tool_args``), and replays prior tool calls/results back into ``messages[]`` on
 the next iteration. The entity's bounded tool loop drives the re-entry; this adapter
 stays stateless.
+
+Tier-1 (LLMM-024): tool calls keep Ollama's ``id`` and replay with ``function.index``, and
+tool results carry ``tool_name`` + ``tool_call_id`` (``api/types.go`` ``Message``). A
+mid-stream ``{"error": …}`` line (HTTP status already 200) raises
+:class:`BackendStreamError`; ``done_reason: "length"`` keeps the text and is logged +
+traced. ``think`` is a bool or a level.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterable, Callable, Mapping
+import logging
+from collections.abc import AsyncGenerator, AsyncIterable, Mapping, Sequence
 from typing import Any, ClassVar, cast
 
-import aiohttp
 from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util.ulid import ulid_now
 
 from custom_components.llm_middleman.const import (
     BACKEND_OLLAMA,
@@ -42,44 +48,31 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_NUM_CTX,
     CONF_THINK,
-    DEFAULT_TIMEOUT,
     KEEP_ALIVE_FOREVER,
+    THINK_OFF,
+    THINK_ON,
 )
 
-from ._compat import schema_to_openapi, tool_result_data
 from ._history import trim_history
+from ._sse import async_iter_lines
+from ._tools import EncodedImage, async_load_images, format_function_tool, replayable_content, tool_result_json
 from .base import (
     BackendAdapter,
-    BackendAuthError,
     BackendConnectionError,
     BackendStreamError,
     DeltaStream,
     TurnContext,
+    bearer_headers,
     build_client_timeout,
+    json_object,
+    probe_json,
+    record_truncation,
+    trace_token_stats,
 )
 
+_LOGGER = logging.getLogger(__name__)
 
-def _auth_headers(data: Mapping[str, Any]) -> dict[str, str]:
-    """Bearer header when an API key is configured; usually absent on a LAN Ollama."""
-    api_key = data.get(CONF_API_KEY)
-    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
-
-
-def _format_tool(tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None) -> dict[str, Any]:
-    """Format one HA tool as an Ollama ``/api/chat`` function-tool spec.
-
-    Ollama's wire shape nests ``name``/``parameters``/``description`` under ``function``
-    and, unlike OpenAI's, omits ``description`` when the tool has none (core
-    ``ollama/entity.py:_format_tool``). ``schema_to_openapi`` renders the
-    probatio/voluptuous schema to JSON Schema; ``custom_serializer`` handles HA selector types.
-    """
-    function: dict[str, Any] = {
-        "name": tool.name,
-        "parameters": schema_to_openapi(tool.parameters, custom_serializer),
-    }
-    if tool.description:
-        function["description"] = tool.description
-    return {"type": "function", "function": function}
+_LABEL = "Ollama"
 
 
 def _fix_invalid_arguments(value: Any) -> Any:
@@ -107,61 +100,72 @@ def _parse_tool_args(arguments: dict[str, Any]) -> dict[str, Any]:
     return {k: _fix_invalid_arguments(v) for k, v in arguments.items() if v is not None and v != ""}
 
 
-def _convert_content(content: conversation.Content) -> dict[str, Any]:
+def _think(value: object) -> bool | str:
+    """Map the stored ``think`` option to the wire value: a bool, or a level string.
+
+    Agents saved before levels existed store a bool; the selector stores ``on``/``off``.
+    """
+    if value is True or value == THINK_ON:
+        return True
+    if value is False or value == THINK_OFF:
+        return False
+    return str(value)
+
+
+def _convert_content(content: conversation.Content, images: Sequence[EncodedImage] = ()) -> dict[str, Any]:
     """Map one ChatLog item to an Ollama ``messages[]`` entry.
 
     Assistant turns carry any ``tool_calls`` (LLMM-015) so a re-entered tool loop
     replays them in Ollama's ``{"function": {"name", "arguments"}}`` wire shape; the
     closed ``Content`` union makes the final branch the tool-result case, serialized
     with ``default=str`` (a ``time``/``datetime`` tool result is not otherwise
-    JSON-serializable).
+    JSON-serializable). A user turn's ``images`` (AI Task attachments, already
+    encoded) go in the message's base64 ``images`` list.
     """
     if isinstance(content, conversation.SystemContent):
         return {"role": "system", "content": content.content}
     if isinstance(content, conversation.UserContent):
-        return {"role": "user", "content": content.content}
+        user: dict[str, Any] = {"role": "user", "content": content.content}
+        if images:
+            user["images"] = [data for _mime_type, data in images]
+        return user
     if isinstance(content, conversation.AssistantContent):
         message: dict[str, Any] = {"role": "assistant", "content": content.content or ""}
         if content.thinking_content:
             message["thinking"] = content.thinking_content
         if content.tool_calls:
             message["tool_calls"] = [
-                {"function": {"name": call.tool_name, "arguments": call.tool_args}} for call in content.tool_calls
+                {"id": call.id, "function": {"index": index, "name": call.tool_name, "arguments": call.tool_args}}
+                for index, call in enumerate(content.tool_calls)
             ]
         return message
     # Only ToolResultContent remains (Content is a closed union).
-    return {"role": "tool", "content": json.dumps(tool_result_data(content), default=str)}
+    return {
+        "role": "tool",
+        "content": tool_result_json(content),
+        "tool_name": content.tool_name,
+        "tool_call_id": content.tool_call_id,
+    }
 
 
 async def _iter_ndjson(stream: AsyncIterable[bytes]) -> AsyncGenerator[dict[str, Any]]:
-    """Frame a raw NDJSON byte stream into JSON objects, one per line.
+    """Decode a raw NDJSON byte stream into JSON objects, one per line.
 
-    Maintains a byte buffer, splits on ``\\n``, and ``json.loads`` each complete
-    line; the trailing partial fragment is carried to the next chunk, and a final
-    object with no trailing newline is flushed at EOF. Boundaries need not align
-    with lines. Blank lines are skipped. A line that is not valid JSON raises
-    ``BackendStreamError`` so the entity guard can map it to the fallback (never let
-    a raw ``JSONDecodeError`` escape).
+    Lines come from :func:`async_iter_lines` (chunk-boundary agnostic, EOF tail
+    flushed, oversize lines skipped). Blank lines are skipped. A line that is not
+    a valid JSON object raises ``BackendStreamError`` so the entity guard can map it to the
+    fallback (never let a raw ``JSONDecodeError`` escape).
     """
-    buffer = bytearray()
-
-    def _load(raw: bytes) -> dict[str, Any]:
+    async for line in async_iter_lines(stream):
+        if not line.strip():
+            continue
         try:
-            return cast("dict[str, Any]", json.loads(raw))
+            obj = json_object(json.loads(line))
         except json.JSONDecodeError as err:
-            raise BackendStreamError(f"Malformed NDJSON line: {raw!r}") from err
-
-    async for chunk in stream:
-        buffer.extend(chunk)
-        while (newline := buffer.find(b"\n")) != -1:
-            line = bytes(buffer[:newline])
-            del buffer[: newline + 1]
-            if line.strip():
-                yield _load(line)
-
-    tail = bytes(buffer).strip()
-    if tail:
-        yield _load(tail)
+            raise BackendStreamError(f"Malformed NDJSON line: {line!r}") from err
+        if obj is None:
+            raise BackendStreamError(f"NDJSON line is not an object: {line!r}")
+        yield obj
 
 
 class OllamaAdapter(BackendAdapter):
@@ -172,28 +176,24 @@ class OllamaAdapter(BackendAdapter):
     # repair (LLMM-015), so the subentry flow offers CONF_LLM_HASS_API and the entity
     # runs the tool loop.
     supports_ha_tools: ClassVar[bool] = True
+    # Replays chat_log (whose system prompt carries HA's date/time); never reads user_input.text.
+    wants_time_prefix: ClassVar[bool] = False
+    # Sends TurnContext.output_schema as ``format`` and images in ``images`` (LLMM-023).
+    supports_ai_task: ClassVar[bool] = True
 
     @classmethod
     async def _async_get_models(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Probe ``GET /api/tags`` and return the installed-model objects.
 
         Raises :class:`BackendAuthError` on 401/403 and :class:`BackendConnectionError`
-        on any other failure (bad status, timeout, transport error).
+        on any other failure (bad status, timeout, transport error, non-object body).
         """
-        session = async_get_clientsession(hass)
-        base_url = data[CONF_BASE_URL].rstrip("/")
-        try:
-            async with (
-                asyncio.timeout(DEFAULT_TIMEOUT),
-                session.get(f"{base_url}/api/tags", headers=_auth_headers(data)) as response,
-            ):
-                if response.status in (401, 403):
-                    raise BackendAuthError(f"Ollama rejected credentials (HTTP {response.status})")
-                if response.status != 200:
-                    raise BackendConnectionError(f"Ollama /api/tags returned HTTP {response.status}")
-                payload = await response.json()
-        except (TimeoutError, aiohttp.ClientError) as err:
-            raise BackendConnectionError(f"Could not reach Ollama at {base_url}: {err}") from err
+        payload = await probe_json(
+            async_get_clientsession(hass),
+            f"{data[CONF_BASE_URL].rstrip('/')}/api/tags",
+            label="Ollama",
+            headers=bearer_headers(data.get(CONF_API_KEY)),
+        )
         return cast("list[dict[str, Any]]", payload.get("models", []))
 
     @classmethod
@@ -207,29 +207,41 @@ class OllamaAdapter(BackendAdapter):
         models = await cls._async_get_models(hass, data)
         return [model["model"] for model in models]
 
-    def _build_request(self, chat_log: conversation.ChatLog, options: Mapping[str, Any]) -> dict[str, Any]:
+    async def _build_request(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> dict[str, Any]:
         """Rebuild the trimmed provider ``messages[]`` and assemble the request body.
 
-        Each option is included only when configured. ``base_url`` is the host root
-        (not ``/v1``); the caller strips the trailing slash before appending paths.
+        Each option is included only when configured, so the Ollama server's own
+        configuration (VRAM-sized context, ``OLLAMA_KEEP_ALIVE``) applies otherwise.
+        ``base_url`` is the host root (not ``/v1``); the caller strips the trailing slash
+        before appending paths.
         """
+        options = ctx.options
+        items = replayable_content(chat_log.content)
+        images = await async_load_images(self.hass, items)
         messages = trim_history(
-            [_convert_content(content) for content in chat_log.content],
+            [_convert_content(item, item_images) for item, item_images in zip(items, images, strict=True)],
             int(options.get(CONF_MAX_HISTORY, 0)),
         )
         body: dict[str, Any] = {"messages": messages, "stream": True}
         if CONF_MODEL in options:
             body["model"] = options[CONF_MODEL]
         if CONF_NUM_CTX in options:
-            body["options"] = {"num_ctx": options[CONF_NUM_CTX]}
+            # int(): HA's NumberSelector stores floats (core ollama sends int(num_ctx) too).
+            body["options"] = {"num_ctx": int(options[CONF_NUM_CTX])}
         if CONF_KEEP_ALIVE in options:
             keep_alive = int(options[CONF_KEEP_ALIVE])
             body["keep_alive"] = keep_alive if keep_alive == KEEP_ALIVE_FOREVER else f"{keep_alive}s"
         if CONF_THINK in options:
-            body["think"] = options[CONF_THINK]
+            body["think"] = _think(options[CONF_THINK])
         # HA tool schemas, only when an LLM API is configured for this agent.
         if chat_log.llm_api is not None and chat_log.llm_api.tools:
-            body["tools"] = [_format_tool(tool, chat_log.llm_api.custom_serializer) for tool in chat_log.llm_api.tools]
+            body["tools"] = [
+                format_function_tool(tool, chat_log.llm_api.custom_serializer, omit_empty_description=True)
+                for tool in chat_log.llm_api.tools
+            ]
+        # AI Task structured output (Ollama structured outputs: a JSON Schema in ``format``).
+        if ctx.output_schema is not None:
+            body["format"] = ctx.output_schema.schema
         return body
 
     async def stream_turn(
@@ -243,24 +255,28 @@ class OllamaAdapter(BackendAdapter):
         Stateless: rebuilds messages from ``chat_log.content`` each turn and ignores
         ``ctx.memory_key``. Emits ``{"role": "assistant"}`` once before the first
         non-empty content (or thinking) delta, then one delta per object. Whitespace
-        in content is preserved verbatim. Stops on ``done: true``; on a silent EOF
+        in content is preserved verbatim. An ``{"error": …}`` line raises after any text
+        already streamed. Stops on ``done: true`` (tracing its token counts as ``stats``
+        when present, and a ``length`` cut-off); on a silent EOF
         the generator simply ends and LLMM-005's entity guard supplies the final
         ``AssistantContent``.
         """
         base_url = self.connection_data[CONF_BASE_URL].rstrip("/")
-        body = self._build_request(chat_log, ctx.options)
+        body = await self._build_request(chat_log, ctx)
 
-        async with self.session.post(
+        async with self._post_checked(
             f"{base_url}/api/chat",
+            label="Ollama /api/chat",
             json=body,
-            headers=_auth_headers(self.connection_data),
+            headers=bearer_headers(self.connection_data.get(CONF_API_KEY)),
             timeout=build_client_timeout(ctx.options),
+            error_cls=BackendConnectionError,
         ) as response:
-            if response.status != 200:
-                raise BackendConnectionError(f"Ollama /api/chat returned HTTP {response.status}")
-
             role_emitted = False
             async for obj in _iter_ndjson(response.content.iter_any()):
+                if (error := obj.get("error")) is not None:
+                    _LOGGER.error("%s stream error: %s", _LABEL, error)
+                    raise BackendStreamError(f"{_LABEL} stream error: {error}")
                 message: dict[str, Any] = obj.get("message") or {}
                 tool_calls = message.get("tool_calls")
                 if tool_calls:
@@ -271,7 +287,10 @@ class OllamaAdapter(BackendAdapter):
                     # (not a JSON string) -> no json.loads, just the malformed-arg repair.
                     yield {
                         "tool_calls": [
+                            # Keep Ollama's id (newer servers send one) so the result replays
+                            # with a matching tool_call_id; else mint one as ToolInput would.
                             llm.ToolInput(
+                                id=tc.get("id") or ulid_now(),
                                 tool_name=tc["function"]["name"],
                                 tool_args=_parse_tool_args(tc["function"]["arguments"]),
                             )
@@ -291,4 +310,16 @@ class OllamaAdapter(BackendAdapter):
                         yield {"role": "assistant"}
                     yield {"content": content}
                 if obj.get("done"):
+                    if obj.get("done_reason") == "length":
+                        record_truncation(chat_log, _LABEL, "length")
+                    # The terminal frame carries the round-trip's token counts;
+                    # prompt_eval_count is omitted when the prompt was fully cached.
+                    if "prompt_eval_count" in obj or "eval_count" in obj:
+                        cached = obj.get("prompt_eval_cached_count")
+                        trace_token_stats(
+                            chat_log,
+                            input_tokens=int(obj.get("prompt_eval_count") or 0),
+                            cached_input_tokens=cached if isinstance(cached, int) else None,
+                            output_tokens=int(obj.get("eval_count") or 0),
+                        )
                     break

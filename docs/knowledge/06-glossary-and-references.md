@@ -121,7 +121,7 @@
 
 **Sibling repo (prior implementation + provider prior-art)**
 - Full HA research report — `LLM-Home-Controller/docs/research/ha-2026.7-rewrite-research.md`
-  (mirrored here as `01-home-assistant-reference.md`).
+  (mirrored here as `docs/archive/01-home-assistant-reference.md`).
 - Working provider adapters — `LLM-Home-Controller/custom_components/llm_home_controller/providers/`.
 
 ---

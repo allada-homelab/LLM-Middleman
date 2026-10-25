@@ -6,6 +6,179 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-25
+
+### Added
+
+- **n8n setup checks the webhook (LLMM-025, #112).** Saving an n8n connection now refuses an
+  inactive workflow's URL and `/webhook-test/` URLs with their own messages. The check
+  cannot start a workflow run, Chat Triggers included.
+- **The custom `/v1/converse` setup check rejects a wrong bearer token (LLMM-025, #112)** as
+  invalid authentication; before, any answer passed.
+- **Backend tool activity in the Assist chat for n8n and custom `/v1/converse`
+  (LLMM-025, #112):** an n8n AI Agent's intermediate steps (non-streaming replies with *Return
+  Intermediate Steps* on) and converse `tool_activity` events sent before the reply text.
+  The converse contract documents an optional `: keepalive` comment, the time prefix on
+  `text`, and the optional `tool_activity` `id`. Existing backends need no changes.
+- **OpenAI-compatible and Ollama tier-1 (LLMM-024, #113).**
+  - New **Reasoning effort** option for OpenAI-compatible agents and AI tasks
+    (`reasoning_effort`, sent only when set).
+  - Requests now carry `prompt_cache_key` set to the agent's id, so an agent's conversations
+    share the provider's prompt cache. A server that rejects the field gets the request again
+    without it.
+  - Ollama's **Think before responding** offers levels (low, medium, high, maximum) as well as
+    on/off. Existing agents keep their setting.
+  - Reasoning tokens (OpenAI) and cached prompt tokens (Ollama) are added to the conversation
+    trace.
+
+### Changed
+
+- **OpenAI-compatible rate limits are named.** HTTP 429 (rate limit or exhausted quota)
+  raises an error with the server's reason; AI tasks show it, conversations still speak the
+  fallback. (#113)
+
+### Fixed
+
+- **Mid-reply errors are no longer swallowed** (OpenAI-compatible, Ollama). An error the
+  server sends after the reply started (vLLM, OpenRouter, Ollama's final error line) ended
+  the turn as if it had finished. The text already spoken is kept, the fallback is added,
+  and the turn is marked failed. (#113)
+- **Cut-off replies are recorded.** A reply stopped by the token limit or a content filter
+  keeps its text and now logs a warning and writes `finish_reason` to the trace. (#113)
+- **OpenAI reasoning models work with Maximum tokens set.** They reject `max_tokens`; the
+  request is retried once with `max_completion_tokens`, and that model keeps using it. (#113)
+- **OpenAI-compatible refusals are spoken.** A refusal-only reply used to speak the fallback
+  message. (#113)
+- **Ollama tool calls keep their ids.** Tool results now go back with the tool name and call
+  id, so a model that calls several tools at once can match each result. (#113)
+- **The Timeout setting again bounds how long a backend may stay silent.** Since 1.1.4 any
+  backend that sent nothing for 30 seconds failed, whatever its Timeout said: a blocking
+  n8n reply, a slow model still processing the prompt, a reasoning model, or an Ollama model
+  load. Timeout now covers both reaching the backend and every silence before or during
+  the reply; a reply that keeps streaming is still never cut off. (#110)
+- **n8n keepalive frames no longer break streaming.** n8n 2.4x sends a keepalive line
+  every 30 seconds while a streamed reply is in progress; when one came first the reply
+  failed as "not a JSON object". Keepalives are now ignored. (#110)
+- **n8n replies in every shape n8n sends are spoken (LLMM-025, #112).** A *Respond to Webhook* →
+  Text reply was mistaken for a proxy error page and always fell back; *All Entries* /
+  *All Incoming Items* array replies were rejected; a JSON reply sent with streaming on was
+  read out as raw JSON; and several streamed segments ran together ("First part.Second
+  part."). Text replies and arrays are now spoken, streamed JSON is unwrapped to its reply
+  field, and segments are separated. A failing n8n node is now named in the log instead of
+  "None".
+- **The custom `/v1/converse` preset no longer passes off a cut-off reply as complete
+  (LLMM-025, #112).** A stream that ends without `done` keeps what was said, adds the fallback
+  message and marks the turn failed. An empty `done` now gives the translated fallback,
+  also marked failed.
+
+## [1.3.0] - 2026-10-25
+
+### Added
+
+- **AI Task `generate_data` (LLMM-023).** OpenAI-compatible and Ollama connections offer
+  **Add AI task**. The new entity serves `ai_task.generate_data` with free text or a
+  `structure`, sent as `response_format` `json_schema` (OpenAI-compatible) or Ollama's
+  `format`. It accepts image attachments and runs the Home Assistant tool loop when the
+  task passes an LLM API. Failures raise errors instead of returning fallback text; a
+  rejected API key starts reauthentication. (#106)
+- **README reference tables** for every preset's connection fields and every agent and
+  AI task option, with defaults. (#108)
+
+### Changed
+
+- **Quieter logs while a backend is down.** A connection now logs one info line when its
+  backend becomes unreachable and one when it answers again, shared by all of its agents
+  and AI tasks. AI tasks that cannot reach the backend now also count toward the
+  "Backend unreachable" repair issue.
+  Turns that cannot reach the backend log at debug instead of an error with a traceback
+  each time; failures after reaching the backend still log as errors. (#108)
+
+## [1.2.0] - 2026-10-25
+
+### Added
+
+- **Reauthentication.** Rejected credentials at setup, or a 401/403 during a turn, now
+  start Home Assistant's reauth flow, which asks only for the preset's credential
+  field(s). You no longer have to delete and re-add the connection. (#100)
+- **"Backend unreachable" repair issue.** Three turns in a row that cannot reach the
+  backend raise a warning repair issue; it clears when the backend answers again.
+  (#100)
+- **Token usage in the conversation trace** for `openai_compat` and `ollama` (#98),
+  LangGraph (#99) and Dify (#101). `openai_compat` asks for `stream_options.include_usage`
+  and retries once without it on servers that reject the field.
+- **Reasoning for `openai_compat`.** `reasoning_content` / `reasoning` deltas (DeepSeek,
+  vLLM, llama.cpp, OpenRouter) appear as thinking in the Assist chat; they are never
+  spoken. (#98)
+- **Backend tool activity in the Assist chat** for LangGraph (#99) and Dify Agent apps
+  and Chatflows (#101): tools the backend ran show up as tool calls and results.
+- **LangGraph (LLMM-022):** a graph's `interrupt()` question is spoken, the satellite
+  keeps listening, and the answer resumes the graph; new agent options *Double-texting*
+  (default: roll back the superseded run), *Spoken node*, *Input messages key* and
+  *Stateless runs*; a Bearer API-key header option on the connection; abandoned runs are
+  cancelled; HA turn metadata is sent in the run context; a wrong assistant id fails at
+  setup. (#99)
+- **Dify (LLMM-021):** new-style Agent apps are accepted; new agent options *Dify app
+  inputs*, *Send Home Assistant context* and *Use the Home Assistant user*; setup names
+  the problem for a workflow-app key or an unpublished Agent; moderation replacements,
+  reasoning and paused Chatflows are handled. (#101)
+- **More agent options in the form:** temperature, top P and maximum tokens
+  (`openai_compat`); context window, keep alive and think (`ollama`); message, reply and
+  session field names (`n8n`). The adapters already honoured these, but the form never
+  offered them. Left empty, the backend's default applies. (#102)
+
+### Changed
+
+- **Device memory scope is now per agent.** Two agents on one connection used to share a
+  device's session. For Dify and LangGraph, an existing device session is kept by the
+  first agent that talks on that device after the upgrade; others start fresh. n8n and
+  custom `/v1/converse` device sessions start fresh once (the session key the backend
+  sees changes). (#102)
+- **Setup probes the backend.** A backend that is down now makes HA retry setup instead
+  of loading and answering every turn with the fallback; adding an identical connection
+  aborts as already configured. (#97)
+- **Fallback replies are marked as errors** (intent error `unknown`, translated text set
+  apart from any partial reply), so automations can tell an unreachable backend from a
+  real answer. (#97)
+- **The turn-time prefix is only added for presets that forward bare text** (custom
+  `/v1/converse`, Dify). `openai_compat`, `ollama`, `n8n` and LangGraph get the time from
+  HA's system prompt. (#97, #99)
+- **Tool results carry an error flag** (`{"data", "error"}`, as HA's own integrations
+  send them); undescribed tools no longer send `"description": null`. (#97)
+- **LangGraph thread ids are deterministic** and created on first use; threads from
+  v1.1.x keep their history. (#99)
+- **Dify app inputs are redacted in diagnostics.** (#101)
+- **SSE parsing is several times faster** for long or chunky streams. (#97)
+- **Development:** HACS validation, a coverage gate and tag-driven GitHub releases in CI
+  (#90); cross-preset adapter-contract and streaming end-to-end gates (#91); copier
+  answers and the pyproject version now match the HACS layout and manifest (#92); shared
+  adapter helpers (#96).
+
+### Fixed
+
+- **n8n HTTP errors fall back cleanly.** A 401/500 used to be parsed as a reply (an error
+  body with an `output` field would have been spoken); it is now logged with its status.
+  Dify's turn-path 401 also names its status. (#91)
+- **Malformed backend responses no longer crash config forms.** A non-object probe body
+  is a connection error instead of a crash (#96); an unexpected probe exception shows as
+  an error on the form, and the model-list probe can no longer freeze the agent form for
+  60 s (#97).
+- **Unbounded memory use on misbehaving streams.** Ollama and n8n NDJSON lines are
+  capped and n8n blocking replies are limited to 1 MiB. (#96)
+- **One malformed tool call no longer fails an `openai_compat` turn**; the bad call is
+  dropped and the rest of the reply kept. (#97)
+- **Reconfiguring an entry whose setup failed now reloads it** (#100), and reconfigure
+  no longer reloads twice (#97).
+- **Dify:** a Chatflow cancelled before its first answer, or a timed-out turn, now stops
+  the Dify task; an ended conversation is recreated instead of wedging the agent; a
+  dropped stream is no longer passed off as a complete reply. (#101)
+- **LangGraph no longer speaks tool output.** (#99)
+- **Switching agents mid-conversation no longer confuses `openai_compat` / `ollama`.**
+  Tool calls a LangGraph or Dify backend ran itself were replayed to the next model as
+  if it had made them. (#102)
+- **Removing a connection deletes all of its stored data**, including LangGraph's
+  pending-interrupt state (previously only the session map). (#97, #102)
+- **The README now explains how to remove the integration.** (#102)
+
 ## [1.1.4] - 2026-10-24
 
 ### Changed

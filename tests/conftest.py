@@ -8,17 +8,21 @@ flows) import this harness instead of re-inventing scaffolding.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+import asyncio
+import json
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 import voluptuous as vol
+from aiohttp import web
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigSubentry, ConfigSubentryData
 from homeassistant.const import CONF_PROMPT
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import chat_session, llm
 from homeassistant.helpers import config_validation as cv
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -29,6 +33,7 @@ from custom_components.llm_middleman.const import (
     DOMAIN,
 )
 from custom_components.llm_middleman.conversation import LLMMiddlemanConversationEntity
+from tests.live_backend import PRESETS, ScriptedBackend
 
 TEST_URL = "http://middleman.local:8000"
 TEST_TOKEN = "test-token"
@@ -82,21 +87,27 @@ class MockChatLog(conversation.ChatLog):
 
 # HA 2026.10 wrapped tool payloads in ``llm.ToolResult`` (``ToolResultContent.result``,
 # returned by ``async_call_tool``); older HA used the bare JSON dict (``tool_result``).
-_HA_HAS_TOOL_RESULT_OBJ = "result" in {f.name for f in fields(conversation.ToolResultContent)}
+HA_HAS_TOOL_RESULT_OBJ = "result" in {f.name for f in fields(conversation.ToolResultContent)}
 
 
 def tool_call_result(data: Any) -> Any:
     """Return ``data`` in the shape ``llm.APIInstance.async_call_tool`` returns on this HA."""
-    return llm.ToolResult(data=data) if _HA_HAS_TOOL_RESULT_OBJ else data
+    return llm.ToolResult(data=data) if HA_HAS_TOOL_RESULT_OBJ else data
 
 
 def tool_result_content(
-    *, agent_id: str, tool_call_id: str, tool_name: str, data: Any
+    *, agent_id: str, tool_call_id: str, tool_name: str, data: Any, error: bool = False
 ) -> conversation.ToolResultContent:
-    """Build a ``ToolResultContent`` carrying ``data`` on both HA tool-result APIs."""
-    if _HA_HAS_TOOL_RESULT_OBJ:
+    """Build a ``ToolResultContent`` carrying ``data`` on both HA tool-result APIs.
+
+    ``error`` only exists on HA >= 2026.10 (``llm.ToolResult.error``); older HA drops it.
+    """
+    if HA_HAS_TOOL_RESULT_OBJ:
         return conversation.ToolResultContent(
-            agent_id=agent_id, tool_call_id=tool_call_id, tool_name=tool_name, result=llm.ToolResult(data=data)
+            agent_id=agent_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            result=llm.ToolResult(data=data, error=error),
         )
     # The pre-2026.10 signature; the type-checked (latest) HA no longer has it.
     return conversation.ToolResultContent(  # pyright: ignore[reportCallIssue]
@@ -105,6 +116,36 @@ def tool_result_content(
         tool_name=tool_name,
         tool_result=data,  # pyright: ignore[reportCallIssue]
     )
+
+
+def external_tool_history() -> list[conversation.Content]:
+    """A chat log mixing backend-run (``external``) tool calls with one HA-run call.
+
+    Mirrors switching from a LangGraph/Dify agent (which records its backend's tool
+    activity as external calls) to a stateless-replay agent mid-conversation. Only
+    ``call_1`` (HA-run) and its result may be replayed.
+    """
+    return [
+        conversation.SystemContent(content="sys"),
+        conversation.UserContent(content="weather?"),
+        conversation.AssistantContent(
+            agent_id="other",
+            tool_calls=[llm.ToolInput(id="ext_1", tool_name="web_search", tool_args={"q": "w"}, external=True)],
+        ),
+        tool_result_content(agent_id="other", tool_call_id="ext_1", tool_name="web_search", data={"r": "sunny"}),
+        conversation.AssistantContent(agent_id="other", content="It is sunny."),
+        conversation.UserContent(content="light on"),
+        conversation.AssistantContent(
+            agent_id="a",
+            content="Sure",
+            tool_calls=[
+                llm.ToolInput(id="ext_2", tool_name="lookup", tool_args={}, external=True),
+                llm.ToolInput(id="call_1", tool_name="HassTurnOn", tool_args={"name": "light"}),
+            ],
+        ),
+        tool_result_content(agent_id="a", tool_call_id="ext_2", tool_name="lookup", data={"r": "x"}),
+        tool_result_content(agent_id="a", tool_call_id="call_1", tool_name="HassTurnOn", data={"ok": True}),
+    ]
 
 
 # JSON Schema properties an HA-style tool schema (cv validator + coerce/range, as the
@@ -260,6 +301,20 @@ class FakeStreamResponse:
         return False
 
 
+_FIXTURES = Path(__file__).parent / "backends" / "fixtures"
+
+
+def capture_response(preset: str, name: str, *, chunk_size: int = 7) -> FakeStreamResponse:
+    """Replay ``fixtures/<preset>/<name>.json`` (status + exact body) as a fake response.
+
+    The body streams in ``chunk_size``-byte chunks so frame boundaries fall mid-line;
+    error statuses also expose it through ``text()``.
+    """
+    capture = json.loads((_FIXTURES / preset / f"{name}.json").read_text())
+    body: str = capture["body"]
+    return FakeStreamResponse(chunk_bytes(body.encode(), chunk_size), status=capture["status"], text=body)
+
+
 def fake_aiohttp_session(
     *,
     response: FakeStreamResponse | None = None,
@@ -272,6 +327,118 @@ def fake_aiohttp_session(
     else:
         session.post = MagicMock(return_value=response)
     return session
+
+
+class HangingStreamContent:
+    """Stream content that yields ``first`` and then stalls until cancelled (a run in flight)."""
+
+    def __init__(self, first: bytes) -> None:
+        self._first = first
+        self.reached = asyncio.Event()
+
+    async def iter_any(self) -> AsyncIterator[bytes]:
+        yield self._first
+        self.reached.set()
+        await asyncio.Event().wait()
+
+
+class FakeJsonResponse:
+    """Async-CM stand-in for a JSON ``GET``/``POST`` probe response: ``status``, ``json()``, ``text()``.
+
+    ``payload`` defaults to an empty object; an exception payload is raised from ``json()``
+    (an undecodable body). ``raw`` overrides ``text()`` (default: the JSON-encoded payload).
+    """
+
+    _EMPTY: Any = object()
+
+    def __init__(self, payload: object = _EMPTY, *, status: int = 200, raw: str | None = None) -> None:
+        self.status = status
+        self._payload: object = {} if payload is FakeJsonResponse._EMPTY else payload
+        self._raw = raw
+
+    async def json(self) -> Any:
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+    async def text(self) -> str:
+        return self._raw if self._raw is not None else json.dumps(self._payload)
+
+    async def __aenter__(self) -> FakeJsonResponse:
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+
+def fake_get_session(*, response: FakeJsonResponse | None = None, exc: Exception | None = None) -> MagicMock:
+    """Return a session mock whose ``.get`` yields ``response`` or raises ``exc``."""
+    session = MagicMock()
+    if exc is not None:
+        session.get = MagicMock(side_effect=exc)
+    else:
+        session.get = MagicMock(return_value=response)
+    return session
+
+
+def make_input(text: str = "hi", *, user_id: str | None = None, **fields: Any) -> conversation.ConversationInput:
+    """A ``ConversationInput`` for adapter tests; ``fields`` override any other constructor argument."""
+    values: dict[str, Any] = {
+        "context": Context(user_id=user_id),
+        "conversation_id": "conv-1",
+        "device_id": None,
+        "satellite_id": None,
+        "language": "en",
+        "agent_id": "agent-1",
+        **fields,
+    }
+    return conversation.ConversationInput(text=text, **values)
+
+
+async def collect(
+    stream: AsyncIterable[conversation.AssistantContentDeltaDict],
+) -> list[conversation.AssistantContentDeltaDict]:
+    """Drain an adapter's delta stream into a list."""
+    return [delta async for delta in stream]
+
+
+def text_of(deltas: list[conversation.AssistantContentDeltaDict]) -> str:
+    """Concatenate the ``content`` of a delta list (the text that would be spoken)."""
+    return "".join(delta.get("content") or "" for delta in deltas)
+
+
+class FakeTool:
+    """Minimal duck-typed ``llm.Tool`` (name/description/voluptuous parameters)."""
+
+    name = "get_time"
+    description: str | None = "Return the current time"
+    parameters: Any = vol.Schema({})
+
+
+class UndescribedTool(FakeTool):
+    """A tool with no description (``None``, not empty)."""
+
+    description = None
+
+
+class FakeLLMApi:
+    """Duck-typed ``llm.APIInstance`` exposing only what adapters and ``ChatLog`` read.
+
+    ``tools`` defaults to one :class:`FakeTool`; ``async_call_tool`` returns ``result``.
+    """
+
+    def __init__(
+        self,
+        tools: list[Any] | None = None,
+        result: Any = None,
+        custom_serializer: Callable[[Any], Any] | None = None,
+    ) -> None:
+        self.tools: list[Any] = tools if tools is not None else [FakeTool()]
+        self.custom_serializer = custom_serializer
+        self._result: Any = result if result is not None else {}
+
+    async def async_call_tool(self, tool_input: llm.ToolInput) -> Any:
+        return tool_call_result(self._result)
 
 
 def build_entity(
@@ -334,3 +501,22 @@ def build_config_entry(
 def mock_config_entry(hass: HomeAssistant) -> MockConfigEntry:
     """Return a parent entry with one conversation subentry, added to hass."""
     return build_config_entry(hass)
+
+
+@pytest.fixture(params=PRESETS)
+def preset(request: pytest.FixtureRequest) -> str:
+    """Parametrize a test over every backend preset registered in ``BACKEND_TO_CLS``."""
+    return str(request.param)
+
+
+@pytest.fixture
+async def live_backend(socket_enabled: None) -> AsyncGenerator[ScriptedBackend]:
+    """Yield a real scripted backend server listening on an ephemeral 127.0.0.1 port."""
+    backend = ScriptedBackend()
+    runner = web.AppRunner(backend.app())
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    backend.base_url = f"http://127.0.0.1:{site.port}"
+    yield backend
+    await runner.cleanup()

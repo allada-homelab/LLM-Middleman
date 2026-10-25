@@ -1,0 +1,8 @@
+{
+  "description": "Chat Trigger (public, webhook mode, streaming) -> Respond to Webhook (Text, enableStreaming)",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/31546836-94ae-49a2-898f-b6dea0b3feca/chat body={\"action\": \"sendMessage\", \"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\"type\":\"begin\",\"metadata\":{\"nodeId\":\"3172a7a6-c1f1-472c-833f-9f34d5508271\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903926695}}\n{\"type\":\"item\",\"content\":\"chat streamed reply\",\"metadata\":{\"nodeId\":\"3172a7a6-c1f1-472c-833f-9f34d5508271\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903926695}}\n{\"type\":\"end\",\"metadata\":{\"nodeId\":\"3172a7a6-c1f1-472c-833f-9f34d5508271\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903926695}}\n"
+}

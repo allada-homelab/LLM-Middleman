@@ -1,0 +1,8 @@
+{
+  "description": "Webhook (streaming) -> Respond (Text 'partial') -> Code that throws",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/stream-err body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\"type\":\"begin\",\"metadata\":{\"nodeId\":\"1b7b0cd4-a0a7-4368-921b-e6370d172258\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925953}}\n{\"type\":\"item\",\"content\":\"partial\",\"metadata\":{\"nodeId\":\"1b7b0cd4-a0a7-4368-921b-e6370d172258\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925953}}\n{\"type\":\"end\",\"metadata\":{\"nodeId\":\"1b7b0cd4-a0a7-4368-921b-e6370d172258\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925953}}\n{\"type\":\"error\",\"content\":null,\"metadata\":{\"nodeId\":\"503a9754-0ada-476b-b412-68a1f5e17eb9\",\"nodeName\":\"C\",\"runIndex\":0,\"itemIndex\":0}}\n"
+}

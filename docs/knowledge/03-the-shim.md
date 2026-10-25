@@ -115,9 +115,9 @@ were `ValueError` from aiohttp's 64 KB readline cap and `UnicodeDecodeError`, pl
 `TimeoutError`), logs with `_LOGGER.exception`, and appends the fallback message. A silent
 stream end also yields role + fallback.
 
-**Timeouts.** `aiohttp.ClientTimeout(total=CONF_TIMEOUT, sock_read=IDLE_TIMEOUT)` — a
-per-agent configurable total (default 60 s; n8n defaults lower) plus an idle-read timeout
-(~30 s) so a responsive-but-slow stream isn't killed. This replaces v0's single total
+**Timeouts.** `aiohttp.ClientTimeout(total=None, sock_connect=CONF_TIMEOUT,
+sock_read=CONF_TIMEOUT)` — one per-agent knob (default 60 s; n8n defaults lower) bounding
+the connect and every silence, with no total so a responsive-but-slow stream isn't killed. This replaces v0's single total
 deadline that killed slow-but-streaming backends.
 
 ---
@@ -182,6 +182,12 @@ Adapter handling (`converse.py`):
   streaming any delta). `done.continue_conversation` truthy → the adapter sets
   `ctx.continue_conversation`, which the entity ORs into the `ConversationResult` (§6).
 - `error` or non-200 → raise `BackendStreamError`; the guard turns it into the fallback.
+- EOF without `done` → raise too, even after deltas (a dropped stream is never a complete
+  reply; the guard appends the fallback after the partial text). A `done` with nothing to say
+  yields nothing, so the guard's translated fallback applies (LLMM-025).
+- Optional `tool_activity` → external tool calls in the Assist chat when sent before the first
+  spoken text; later (or text-less) activity goes to the conversation trace
+  (`converse_tool_activity`). `: keepalive` comments reset the silence timer (the agent Timeout).
 
 Untrusted stream content is treated as data, never parsed as instructions; bearer/x-api-key
 values are redacted from logs and diagnostics.

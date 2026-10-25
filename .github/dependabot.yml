@@ -92,19 +92,3 @@ updates:
     labels:
       - "deps"
       - "needs-review"
-
-  # Docker base images (FROM lines). Bumps the tag, and refreshes an
-  # `@sha256:` digest alongside it when a FROM line carries one.
-  - package-ecosystem: "docker"
-    directory: "/"
-    schedule:
-      interval: "monthly"
-    cooldown:  # gives a compromised release time to be yanked before we adopt it
-      default-days: 7
-    open-pull-requests-limit: 2
-    commit-message:
-      prefix: "chore"
-      include: "scope"
-    labels:
-      - "deps"
-      - "needs-review"
