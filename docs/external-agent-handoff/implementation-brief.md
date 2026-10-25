@@ -105,7 +105,7 @@ LangGraph deep-agent graph — kept separate from the voice path.
 ## 4. The contract: the `/v1/converse` preset  (the interface your service implements)
 
 `LLM-Middleman`'s `converse` adapter is the consumer of this contract — **one of the integration's
-five backend presets**, not the system-wide boundary it was in v0. Treat it as a stable preset
+six backend presets**, not the system-wide boundary it was in v0. Treat it as a stable preset
 interface: if you build against it, implement the endpoint, request shape, and SSE event names below
 exactly, or the adapter won't understand you.
 
@@ -118,11 +118,16 @@ idiom and is one-directional (request → streamed response), which is all a tur
 ```jsonc
 {
   "conversation_id": "01J...",      // session key (the adapter's memory_key); the backend keys state on it
-  "text": "turn off the kitchen lights",
+  "text": "[2026-10-25 07:30:00 CET] turn off the kitchen lights",  // see the time prefix note below
   "language": "en",
   "device_id": "…"                  // optional: included only when the turn originates from a device
 }
 ```
+> **Time prefix on `text`.** The integration prepends the local date/time in HA's timezone as
+> `[YYYY-MM-DD HH:MM:SS TZ] ` to the recognized text (`BackendAdapter.wants_time_prefix`, on for
+> this preset), so the backend has temporal context without a separate field. Strip or keep it
+> as your agent prefers. Don't match commands on the exact string.
+>
 > **No `context` field.** v0 documented an optional `context: {area: …}` object; the shipped adapter
 > **never sends it** (`custom_components/llm_middleman/backends/converse.py::stream_turn` builds a body
 > of exactly the four fields above). Do not design your service to expect it.
@@ -135,7 +140,7 @@ data: {"delta": "Turning off "}
 event: text_delta
 data: {"delta": "the kitchen lights."}
 
-event: tool_activity          # optional, for logging/observability only
+event: tool_activity          # optional, for observability (see below)
 data: {"tool": "HassTurnOff", "args": {"name": "kitchen lights"}, "status": "ok"}
 
 event: done
@@ -155,7 +160,27 @@ data: {"code": "backend_unavailable", "message": "…"}
   HA keeps the mic open for a follow-up (§2.1). Set it when you asked a clarifying question.
 - On `error` or timeout → falls back (canned message). So **fail fast with a clear `error` event**
   rather than hang.
+- **`done` is the only success terminal.** If the stream closes without `done` (a crash, a proxy
+  cut), the adapter treats it as dropped: it keeps any text already spoken, appends the fallback
+  message and marks the turn failed. A `done` with no `text` after no `text_delta` is also a
+  fallback. Always finish with `done`.
 - Sends `conversation_id` as the session key (derived from HA's per the agent's memory scope).
+
+**Optional additions (additive; backends that skip them keep working):**
+- **Keepalive.** The agent's *Timeout* option is the **maximum silence** the adapter tolerates,
+  both before the first event and between events. It is not a total deadline, so a long reply that
+  keeps streaming is never cut. If your agent can sit silent for a while (tool calls, a slow model
+  load), send an SSE comment line `: keepalive` (followed by a blank line), recommended at most
+  every 20 s. Comments carry no data and are ignored by the adapter apart from resetting the
+  silence timer.
+- **`tool_activity`** — `{"tool": str, "args": object, "status": "ok" | <anything else = error>}`,
+  plus an optional `id` (string; otherwise the adapter numbers calls per turn). Events sent
+  **before the first `text_delta`** are shown in the HA Assist chat as tool calls, ahead of the
+  reply. Events sent after text has started (as in the example above), or in a turn that speaks
+  no text, go to the conversation trace instead (`converse_tool_activity`), so they never split
+  the spoken reply. Send them before the answer if you want them shown.
+- **`error.code`** — a short machine-readable code (`backend_unavailable`, `llm_timeout`, …). It
+  is logged next to `message`. Omitting it is tolerated.
 
 ---
 

@@ -88,6 +88,7 @@ Phase milestones match `plan.md` §Implementation phases. `⇐` = depends on.
 | LLMM-021 | Dify tier-1 (spec-exact terminal states, stop/recreate hardening, usage/moderation/reasoning, inputs + HA context, per-user identity, tool activity) | LLMM-020 |
 | LLMM-022 | LangGraph tier-1 (AI-only speech, deterministic threads, run cancel, interrupts, external tool activity) | LLMM-011 |
 | LLMM-023 | AI Task `generate_data` subentry for openai_compat + ollama (structured output, image attachments) | LLMM-007, LLMM-008, LLMM-010 |
+| LLMM-025 | n8n + converse tier-1 (real n8n reply shapes, segment separators, run-free webhook probe, converse terminal states + probe auth, tool activity, captured fixtures) | LLMM-009, LLMM-012 |
 
 ### Fast-follow (roadmap, not v1 — file tickets when picked up)
 Shipped in v1.2.0 (no separate tickets):

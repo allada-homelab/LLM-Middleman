@@ -1,0 +1,8 @@
+{
+  "description": "Webhook (streaming) -> Respond to Webhook (Text, enableStreaming)",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/stream-text body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\"type\":\"begin\",\"metadata\":{\"nodeId\":\"a3a4dffc-905b-4c25-a729-1a58abc5b6c5\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925557}}\n{\"type\":\"item\",\"content\":\"Hello from n8n streaming\",\"metadata\":{\"nodeId\":\"a3a4dffc-905b-4c25-a729-1a58abc5b6c5\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925558}}\n{\"type\":\"end\",\"metadata\":{\"nodeId\":\"a3a4dffc-905b-4c25-a729-1a58abc5b6c5\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925558}}\n"
+}

@@ -48,6 +48,7 @@ from .backends import BACKEND_TO_CLS
 from .backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
 from .backends.dify import DifyAdapter, DifyAppError
 from .backends.langgraph import AssistantNotFoundError
+from .backends.n8n import N8nWebhookError
 from .const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
@@ -453,6 +454,8 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_auth"
             except DifyAppError as err:
                 errors["base"] = err.error_key  # not_chat_app / agent_not_published
+            except N8nWebhookError as err:
+                errors["base"] = err.error_key  # webhook_not_registered / webhook_test_url
             except AssistantNotFoundError:
                 errors[CONF_ASSISTANT_ID] = "assistant_not_found"
             except BackendConnectionError:
