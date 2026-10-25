@@ -14,7 +14,7 @@ turn to an external backend**, streaming the reply back into the pipeline (→ s
 and the Assist chat). It runs **no LLM of its own** — intelligence lives in the backend.
 
 **Current state (2026-10): v1 shipped — maintenance mode.** The v1 multi-backend
-re-architecture was released as `v1.0.0`; the latest release is **`v1.2.0`** (the
+re-architecture was released as `v1.0.0`; the latest release is **`v1.3.0`** (the
 `manifest.json` `version` is the source of truth; `pyproject.toml` mirrors it, enforced by
 `tests/test_versions.py`). Minimum Home Assistant is **2026.7.0** (`hacs.json`). What
 shipped:
@@ -35,9 +35,9 @@ shipped:
 `v1.2.0` (2026-10-25) added reauth + a backend-unreachable repair issue, a setup-time
 backend probe, token stats and reasoning passthrough, backend tool activity in the Assist
 chat, and the **tier-1 reworks of Dify (LLMM-021) and LangGraph (LLMM-022)** — both
-`in-review`, waiting only on owner-run live rows. Unreleased on `main` (see `CHANGELOG.md`
-`[Unreleased]`): **AI Task `generate_data` (LLMM-023)** — merged and unit-gated, also
-waiting on owner-run live rows.
+`in-review`, waiting only on owner-run live rows. `v1.3.0` (2026-10-25) added **AI Task
+`generate_data` (LLMM-023)** — unit-gated, also `in-review` pending owner-run live rows —
+plus info-level backend down/recovered logging and README reference tables.
 
 Tickets LLMM-001…017 are done; LLMM-018 (live E2E matrix), LLMM-019 (release), LLMM-021 and
 LLMM-022 are `in-review` pending owner rows, and so is LLMM-023 (AI Task `generate_data`
@@ -104,7 +104,7 @@ This is a **HACS custom integration, not a pip package** — there is intentiona
 v1 is released, so most work now is bug fixes, dependency bumps, and the **fast-follow**
 features listed at the bottom of `docs/implementation/README.md` (token stats,
 tool-activity surfacing and reasoning passthrough shipped in v1.2.0; the AI Task subentry,
-LLMM-023, is merged and unreleased).
+LLMM-023, in v1.3.0).
 
 1. **Small fixes** (bug, dep bump, doc fix): branch (`fix/…` or a short slug) → PR → merge
    only on a green gate. No ticket required, but keep the change surgical.

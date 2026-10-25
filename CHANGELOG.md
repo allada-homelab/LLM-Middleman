@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-25
+
 ### Added
 
 - **AI Task `generate_data` (LLMM-023).** OpenAI-compatible and Ollama connections offer
