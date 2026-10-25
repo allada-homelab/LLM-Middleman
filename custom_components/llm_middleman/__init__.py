@@ -3,7 +3,8 @@
 A backend-agnostic, text-only passthrough conversation agent: it forwards each
 Assist turn to an external LLM backend (selected via a preset) and streams the reply
 back into the pipeline. All intelligence (tools, memory, providers) lives in the
-external service; this integration owns only the HA plumbing.
+external service; this integration owns only the HA plumbing. Connections whose preset
+owns the model call (openai_compat, ollama) also serve AI Task ``generate_data``.
 
 Setup builds the backend adapter once — via the ``BACKEND_TO_CLS`` factory keyed on
 the parent entry's ``CONF_BACKEND_TYPE`` — and stores the shared instance in
@@ -12,17 +13,21 @@ the parent entry's ``CONF_BACKEND_TYPE`` — and stores the shared instance in
 
 from __future__ import annotations
 
+import asyncio
 from types import MappingProxyType
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_PROMPT, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.storage import Store
 
 from .backends import BackendAdapter, get_backend_cls
+from .backends.base import BackendAuthError, BackendConnectionError
 from .const import (
     BACKEND_CONVERSE,
     CONF_BACKEND_TYPE,
@@ -34,10 +39,13 @@ from .const import (
     CONF_URL,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    PROBE_TIMEOUT,
+    STORAGE_VERSION,
     SUBENTRY_TYPE_CONVERSATION,
 )
+from .helpers import async_delete_unreachable_issue, async_record_backend_reached
 
-PLATFORMS = (Platform.CONVERSATION,)
+PLATFORMS = (Platform.AI_TASK, Platform.CONVERSATION)
 
 # Default agent name when a v0 entry carries no ``name`` (v0's title fallback).
 _DEFAULT_AGENT_NAME = "LLM Middleman"
@@ -48,10 +56,28 @@ type LLMMiddlemanConfigEntry = ConfigEntry[BackendAdapter]
 async def async_setup_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> bool:
     """Build the backend adapter and forward the conversation platform."""
     adapter_cls = get_backend_cls(entry.data[CONF_BACKEND_TYPE])
+    # Probe the backend so a dead one surfaces as SETUP_RETRY (HA retries with backoff)
+    # rather than a loaded agent that only ever answers with the fallback.
+    try:
+        async with asyncio.timeout(PROBE_TIMEOUT):
+            await adapter_cls.async_validate_connection(hass, entry.data)
+    except BackendAuthError as err:
+        # HA starts the reauth flow (config_flow.async_step_reauth) on this exception.
+        raise ConfigEntryAuthFailed(
+            translation_domain=DOMAIN, translation_key="auth_failed", translation_placeholders={"error": str(err)}
+        ) from err
+    except (BackendConnectionError, TimeoutError) as err:
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="backend_not_ready",
+            translation_placeholders={"error": str(err) or type(err).__name__},
+        ) from err
     # entry_id rides along so adapters needing a per-entry discriminator (the
     # langgraph thread-map Store) never fall back to a shareable base_url slug.
     connection_data = {**entry.data, "entry_id": entry.entry_id}
     entry.runtime_data = adapter_cls(hass, async_create_clientsession(hass), connection_data)
+    # The probe reached the backend, so an outstanding unreachable issue is resolved (and logged).
+    async_record_backend_reached(hass, entry, entry.runtime_data)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload on any entry/subentry change so an agent added or reconfigured at runtime
     # takes effect live — without this listener the conversation platform's
@@ -71,6 +97,14 @@ async def async_update_options(hass: HomeAssistant, entry: LLMMiddlemanConfigEnt
 async def async_unload_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> None:
+    """Delete the entry's repair issue and every Store its preset declares (``store_keys``)."""
+    async_delete_unreachable_issue(hass, entry.entry_id)
+    for key in get_backend_cls(entry.data[CONF_BACKEND_TYPE]).store_keys(entry.entry_id):
+        store: Store[Any] = Store(hass, STORAGE_VERSION, key)
+        await store.async_remove()
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

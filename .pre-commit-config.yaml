@@ -14,8 +14,9 @@ repos:
     hooks:
       - id: codespell
         # hass = Home Assistant object/domain term (not "hash");
-        # hel = truncated streaming-delta token ("Hel"+"lo") in SSE test fixtures.
-        args: ["-L", "hass,hel"]
+        # hel = truncated streaming-delta token ("Hel"+"lo") in SSE test fixtures;
+        # thest = a model-output token kept verbatim in a captured Ollama fixture.
+        args: ["-L", "hass,hel,thest"]
         additional_dependencies: ["tomli"]
 
   # Secret scanning: a leaked token is caught before it reaches a commit.

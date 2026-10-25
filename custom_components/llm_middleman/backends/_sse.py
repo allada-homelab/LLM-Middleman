@@ -1,4 +1,4 @@
-"""Spec-compliant Server-Sent-Events reader.
+"""Spec-compliant Server-Sent-Events reader (plus the NDJSON line framer).
 
 Frames a raw byte stream (``AsyncIterable[bytes]`` of arbitrary chunks, e.g.
 ``response.content.iter_any()``) into ``ServerSentEvent`` objects following the
@@ -10,18 +10,27 @@ Owning raw-byte framing here turns the two v0 failure modes into a typed,
 catchable error: the oversized-line ``ValueError`` (aiohttp's readline cap) and
 ``UnicodeDecodeError`` (bad UTF-8) no longer escape. This module imports nothing
 from ``base.py`` to keep the dependency direction one-way.
+
+:func:`async_iter_lines` is the newline-delimited sibling for the NDJSON presets
+(ollama, n8n), sharing the same per-line byte cap and skip-oversize strategy.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncGenerator, AsyncIterable
 from dataclasses import dataclass
 
 _LOGGER = logging.getLogger(__name__)
 
-_CR = 0x0D
-_LF = 0x0A
+# One SSE line terminator: CRLF, a lone CR, or a lone LF (WHATWG). Matched in C so a
+# chunk is split without a per-byte Python loop blocking the event loop.
+_TERMINATOR = re.compile(rb"\r\n?|\n")
+
+# Per-line buffering cap shared by both framers: bounds memory against a peer that
+# never sends a terminator; an over-cap line is drained and skipped, never fatal.
+MAX_LINE_BYTES = 65536
 
 
 @dataclass(frozen=True)
@@ -46,7 +55,7 @@ class BackendStreamError(Exception):
 
 
 async def async_iter_sse(
-    stream: AsyncIterable[bytes], *, max_line_bytes: int = 65536
+    stream: AsyncIterable[bytes], *, max_line_bytes: int = MAX_LINE_BYTES
 ) -> AsyncGenerator[ServerSentEvent]:
     """Frame a raw byte stream into ``ServerSentEvent`` objects.
 
@@ -72,12 +81,12 @@ async def async_iter_sse(
     line_buf = bytearray()
     data_values: list[str] = []
     event_type = "message"
-    prev_was_cr = False
+    prev_was_cr = False  # the previous chunk ended in CR: a leading LF here completes that CRLF
     line_overflowed = False  # current line passed the cap: drain to its terminator, then skip it
 
-    def _handle_line() -> ServerSentEvent | None:
+    def _handle_line(raw: bytes) -> ServerSentEvent | None:
         nonlocal data_values, event_type
-        line = bytes(line_buf).decode("utf-8", errors="replace")
+        line = raw.decode("utf-8", errors="replace")
         if line == "":
             # Blank line -> dispatch. An empty data buffer dispatches nothing.
             event = ServerSentEvent(event=event_type, data="\n".join(data_values)) if data_values else None
@@ -97,47 +106,82 @@ async def async_iter_sse(
         # id, retry, no-colon, and unknown fields are ignored.
         return None
 
-    def _terminate_line() -> ServerSentEvent | None:
-        # Finish the current line on a CR/LF: dispatch it normally, or -- if it
-        # overflowed the cap and was drained -- skip it (no dispatch).
+    def _overflow() -> None:
+        # Stop buffering (bound memory) and drain the rest of this line to its
+        # terminator, then skip it -- an over-cap line is verbose node metadata,
+        # never a content delta, so this beats aborting the turn.
         nonlocal line_overflowed
-        if line_overflowed:
-            line_overflowed = False
-            line_buf.clear()
-            return None
-        event = _handle_line()
+        _LOGGER.debug("SSE line exceeded %d bytes without a terminator; draining and skipping it", max_line_bytes)
+        line_overflowed = True
         line_buf.clear()
-        return event
 
     async for chunk in stream:
-        for byte in chunk:
-            if prev_was_cr:
-                prev_was_cr = False
-                if byte == _LF:
-                    # Trailing LF of a CRLF; the CR already terminated the line.
-                    continue
-            if byte == _CR:
-                event = _terminate_line()
-                prev_was_cr = True
-                if event is not None:
-                    yield event
-                continue
-            if byte == _LF:
-                event = _terminate_line()
-                if event is not None:
-                    yield event
-                continue
-            if line_overflowed:
-                # Draining an oversized line: discard bytes until the terminator.
-                continue
-            line_buf.append(byte)
+        if not chunk:
+            continue
+        pos = 0
+        if prev_was_cr:
+            prev_was_cr = False
+            if chunk[0] == 0x0A:
+                pos = 1  # trailing LF of a CRLF split across chunks; the CR ended the line
+        for match in _TERMINATOR.finditer(chunk, pos):
+            event = None
+            if not line_overflowed:
+                if line_buf:
+                    line_buf += chunk[pos : match.start()]
+                    raw = bytes(line_buf)
+                else:
+                    raw = chunk[pos : match.start()]
+                if len(raw) > max_line_bytes:
+                    _overflow()
+                else:
+                    event = _handle_line(raw)
+            line_buf.clear()
+            line_overflowed = False
+            pos = match.end()
+            # A CR closing the chunk may be the first half of a CRLF split across chunks.
+            prev_was_cr = pos == len(chunk) and match.group() == b"\r"
+            if event is not None:
+                yield event
+        if not line_overflowed and pos < len(chunk):
+            line_buf += chunk[pos:]
             if len(line_buf) > max_line_bytes:
-                # Stop buffering (bound memory) and drain the rest of this line to
-                # its terminator, then skip it -- an over-cap line is verbose node
-                # metadata, never a content delta, so this beats aborting the turn.
-                _LOGGER.debug(
-                    "SSE line exceeded %d bytes without a terminator; draining and skipping it",
-                    max_line_bytes,
-                )
+                _overflow()
+
+
+async def async_iter_lines(
+    stream: AsyncIterable[bytes], *, max_line_bytes: int = MAX_LINE_BYTES
+) -> AsyncGenerator[bytes]:
+    """Frame a raw byte stream into LF-terminated lines (NDJSON), without the ``\\n``.
+
+    Chunk boundaries need not align with lines; a final unterminated line is flushed at
+    EOF. Lines are yielded raw (blank lines included) so each caller keeps its own
+    JSON/blank-line policy. A line longer than ``max_line_bytes`` is not buffered past
+    the cap: it is logged, drained to its terminator, and skipped, so one oversized
+    object cannot grow memory without bound or abort the stream.
+    """
+    line_buf = bytearray()
+    line_overflowed = False  # current line passed the cap: drain to its terminator, then skip it
+
+    def _skip_oversize() -> None:
+        _LOGGER.warning("NDJSON line exceeded %d bytes; skipping it", max_line_bytes)
+
+    async for chunk in stream:
+        start = 0
+        while (newline := chunk.find(b"\n", start)) != -1:
+            if not line_overflowed:
+                line_buf += chunk[start:newline]
+                if len(line_buf) > max_line_bytes:
+                    _skip_oversize()
+                else:
+                    yield bytes(line_buf)
+            line_buf.clear()
+            line_overflowed = False
+            start = newline + 1
+        if not line_overflowed:
+            line_buf += chunk[start:]
+            if len(line_buf) > max_line_bytes:
+                _skip_oversize()
                 line_overflowed = True
                 line_buf.clear()
+    if line_buf:
+        yield bytes(line_buf)

@@ -84,9 +84,29 @@ Phase milestones match `plan.md` §Implementation phases. `⇐` = depends on.
 ### Phase 5 — Fast-follow adapters
 | ID | Title | ⇐ |
 |---|---|---|
-| LLMM-020 | Dify adapter (chat/agent/chatflow apps, SSE streaming, server-side memory) | LLMM-003, LLMM-004 |
+| LLMM-020 | Dify adapter (chat/agent/chatflow apps, SSE streaming, server-side memory) — superseded by LLMM-021 | LLMM-003, LLMM-004 |
+| LLMM-021 | Dify tier-1 (spec-exact terminal states, stop/recreate hardening, usage/moderation/reasoning, inputs + HA context, per-user identity, tool activity) | LLMM-020 |
+| LLMM-022 | LangGraph tier-1 (AI-only speech, deterministic threads, run cancel, interrupts, external tool activity) | LLMM-011 |
+| LLMM-023 | AI Task `generate_data` subentry for openai_compat + ollama (structured output, image attachments) | LLMM-007, LLMM-008, LLMM-010 |
+| LLMM-024 | OpenAI-compatible + Ollama tier-1 (mid-stream errors, truncation, max_completion_tokens retry, refusal, tool ids, think levels, prompt cache key, quota error) | LLMM-008, LLMM-010, LLMM-014, LLMM-015 |
+| LLMM-025 | n8n + converse tier-1 (real n8n reply shapes, segment separators, run-free webhook probe, converse terminal states + probe auth, tool activity, captured fixtures) | LLMM-009, LLMM-012 |
 
 ### Fast-follow (roadmap, not v1 — file tickets when picked up)
-AI Task `generate_data` subentry type · token stats via `chat_log.async_trace` · external
-tool-activity surfacing (`ToolInput(external=True)`) · AG-UI / Anthropic /
-Responses-toggle presets.
+Shipped in v1.2.0 (no separate tickets):
+- Token stats via the conversation trace (`base.trace_token_stats`, core's `{"stats": …}`
+  shape) — openai_compat, ollama, LangGraph, Dify.
+- External tool-activity surfacing (`ToolInput(external=True)` via `backends/_compat.py`) —
+  LangGraph (LLMM-022), Dify (LLMM-021).
+- Reasoning passthrough as `thinking_content` — openai_compat (`reasoning_content` /
+  `reasoning`), ollama (`thinking`), Dify (`reasoning_chunk`).
+
+Shipped in v1.3.0:
+- AI Task `generate_data` subentry → LLMM-023 (#106; in review, waiting on owner-run live
+  rows).
+
+Open:
+- AG-UI preset — speculative; no ticket until there is a concrete backend to target.
+
+Dropped: Anthropic and OpenAI Responses-API presets — HA core ships `anthropic` (platinum
+quality scale) and `openai_conversation` (bronze, Responses API), so a passthrough preset
+would duplicate them.

@@ -11,15 +11,19 @@ The contract, and the regression class each clause gates:
 * a multi-piece reply is spoken as exactly that text (wrong-field dispatch, dropped frames);
 * an HTTP 401/500 on the turn request is logged and voiced as the fallback — never a
   silent empty reply (an adapter that ignores the status ends the stream silently);
+* an HTTP 401/403 on the turn request asks HA to reauthenticate the entry (a 500 does
+  not), so a revoked credential surfaces as a reauth prompt instead of silent fallbacks;
 * a stream that ends with no content is voiced as the fallback;
-* the streaming request has no ``total`` deadline but an idle ``sock_read`` one (a
-  ``total`` timeout kills a reply that is still streaming).
+* the streaming request has no ``total`` deadline (it kills a reply that is still
+  streaming) but a ``sock_read`` one equal to the agent's Timeout (how long the backend
+  may stay silent).
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any
+from unittest.mock import patch
 
 import aiohttp
 import pytest
@@ -27,8 +31,11 @@ from homeassistant.components import conversation
 from homeassistant.core import Context, HomeAssistant
 
 from custom_components.llm_middleman.backends.base import TurnContext
-from custom_components.llm_middleman.const import ERROR_MESSAGE, IDLE_TIMEOUT
-from tests.conftest import MockChatLog
+from custom_components.llm_middleman.const import CONF_TIMEOUT, ERROR_MESSAGE
+from tests.conftest import (
+    MockChatLog,
+    collect,
+)
 from tests.live_backend import ScriptedBackend, run_pipeline_turn, setup_agent, speech
 
 PIECES = ["Hello ", "contract ", "world."]
@@ -63,7 +70,7 @@ async def test_adapter_first_delta_carries_role(
     )
     ctx = TurnContext(options=next(iter(entry.subentries.values())).data, memory_key="session-1")
 
-    deltas = [delta async for delta in entry.runtime_data.stream_turn(mock_chat_log, user_input, ctx)]
+    deltas = await collect(entry.runtime_data.stream_turn(mock_chat_log, user_input, ctx))
 
     assert deltas[0] == {"role": "assistant"}
 
@@ -115,6 +122,21 @@ async def test_http_error_status_is_logged_with_its_status_code(
     assert any(f"HTTP {status}" in text for text in _integration_error_texts(caplog))
 
 
+@pytest.mark.parametrize(("status", "reauth"), [(401, True), (403, True), (500, False)])
+async def test_auth_error_status_requests_reauth(
+    hass: HomeAssistant, live_backend: ScriptedBackend, preset: str, status: int, reauth: bool
+) -> None:
+    """A credential rejection on the turn request starts reauth; other statuses don't."""
+    live_backend.serve(preset, PIECES, status=status)
+    entry, entity_id = await setup_agent(hass, preset, live_backend.base_url)
+
+    with patch.object(entry, "async_start_reauth") as start_reauth:
+        result = await run_pipeline_turn(hass, entity_id)
+
+    assert speech(result) == ERROR_MESSAGE
+    assert start_reauth.called is reauth
+
+
 async def test_reply_without_content_is_voiced_as_fallback(
     hass: HomeAssistant, live_backend: ScriptedBackend, preset: str
 ) -> None:
@@ -127,16 +149,16 @@ async def test_reply_without_content_is_voiced_as_fallback(
     assert speech(result) == ERROR_MESSAGE
 
 
-async def test_streaming_request_has_idle_timeout_but_no_total_deadline(
+async def test_streaming_request_bounds_silence_by_agent_timeout_but_no_total_deadline(
     hass: HomeAssistant, live_backend: ScriptedBackend, preset: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every request of a turn bounds idle reads, never the whole (streaming) body."""
+    """Every request of a turn bounds silence by the agent Timeout, never the whole body."""
     live_backend.serve(preset, PIECES)
-    entry, entity_id = await setup_agent(hass, preset, live_backend.base_url)
+    entry, entity_id = await setup_agent(hass, preset, live_backend.base_url, **{CONF_TIMEOUT: 45})
     spy = _TimeoutSpy(entry.runtime_data.session)
     monkeypatch.setattr(entry.runtime_data, "session", spy)
 
     await run_pipeline_turn(hass, entity_id)
 
     assert spy.timeouts
-    assert {(timeout.total, timeout.sock_read) for timeout in spy.timeouts} == {(None, IDLE_TIMEOUT)}
+    assert {(timeout.total, timeout.sock_read) for timeout in spy.timeouts} == {(None, 45)}

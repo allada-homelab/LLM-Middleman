@@ -1,0 +1,7 @@
+{
+  "description": "OpenAI refusal-only stream: delta.refusal fragments, content null",
+  "source": "spec-derived",
+  "spec": "https://platform.openai.com/docs/guides/structured-outputs#refusals",
+  "status": 200,
+  "body": "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null,\"refusal\":\"\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\"I'm sorry, I can't help\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\" with that.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+}
