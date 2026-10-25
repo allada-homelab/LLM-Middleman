@@ -16,7 +16,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **n8n keepalive frames no longer break streaming.** n8n 2.4x sends a keepalive line
   every 30 seconds while a streamed reply is in progress; when one came first the reply
   failed as "not a JSON object". Keepalives are now ignored. (#110)
-- **n8n replies in every shape n8n sends are spoken (LLMM-025).** A *Respond to Webhook* →
+- **n8n replies in every shape n8n sends are spoken (LLMM-025, #112).** A *Respond to Webhook* →
   Text reply was mistaken for a proxy error page and always fell back; *All Entries* /
   *All Incoming Items* array replies were rejected; a JSON reply sent with streaming on was
   read out as raw JSON; and several streamed segments ran together ("First part.Second
@@ -24,19 +24,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   field, and segments are separated. A failing n8n node is now named in the log instead of
   "None".
 - **The custom `/v1/converse` preset no longer passes off a cut-off reply as complete
-  (LLMM-025).** A stream that ends without `done` keeps what was said, adds the fallback
+  (LLMM-025, #112).** A stream that ends without `done` keeps what was said, adds the fallback
   message and marks the turn failed. An empty `done` now gives the translated fallback,
   also marked failed.
 
 ### Added
 
-- **n8n setup checks the webhook (LLMM-025).** Saving an n8n connection now refuses an
+- **n8n setup checks the webhook (LLMM-025, #112).** Saving an n8n connection now refuses an
   inactive workflow's URL and `/webhook-test/` URLs with their own messages. The check
   cannot start a workflow run, Chat Triggers included.
-- **The custom `/v1/converse` setup check rejects a wrong bearer token (LLMM-025)** as
+- **The custom `/v1/converse` setup check rejects a wrong bearer token (LLMM-025, #112)** as
   invalid authentication; before, any answer passed.
 - **Backend tool activity in the Assist chat for n8n and custom `/v1/converse`
-  (LLMM-025):** an n8n AI Agent's intermediate steps (non-streaming replies with *Return
+  (LLMM-025, #112):** an n8n AI Agent's intermediate steps (non-streaming replies with *Return
   Intermediate Steps* on) and converse `tool_activity` events sent before the reply text.
   The converse contract documents an optional `: keepalive` comment, the time prefix on
   `text`, and the optional `tool_activity` `id`. Existing backends need no changes.
