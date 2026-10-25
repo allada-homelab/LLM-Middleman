@@ -81,7 +81,12 @@ rules:
       info-level log when the backend becomes unreachable and another when it recovers.
   parallel-updates: done
   reauthentication-flow: done
-  test-coverage: done
+  test-coverage:
+    status: todo
+    comment: >-
+      The rule asks for over 95% in every module. Total is 98% (gate 94), but on the locked
+      leg __init__.py is about 91% (its pre-2026.10 device-registry branch runs only on the
+      floor leg) and backends/_compat.py about 80%.
 
   # Gold
   devices: done
