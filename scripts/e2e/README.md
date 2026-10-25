@@ -172,11 +172,16 @@ docker exec -d llmm-e2e-ha python3 /config/converse_sse_stub.py --port 8099
 ```
 
 - **Probe caveat:** the converse adapter probes with a plain `GET` on `base_url` and treats
-  **any** HTTP response as reachable (only connect/timeout → `cannot_connect`). The stub serves
-  only `POST /v1/converse`, so `GET /` returns 404 — entry creation still succeeds.
+  any HTTP response except 401/403 (→ `invalid_auth`) as reachable (connect/timeout →
+  `cannot_connect`). The stub serves only `POST /v1/converse`, so `GET /` returns 404 — entry
+  creation still succeeds.
 - **Preset-specific rows:** utterance containing `"follow"` → `done.continue_conversation=true`
   (mic stays open); `"boom"` → an `error` event mid-stream → graceful fallback, no raw error,
-  no hang. The stub logs each request body so `conversation_id` forwarding is observable.
+  no hang; `"cut"` → the stream closes without `done` → the partial text plus the fallback, turn
+  marked failed; `"tool"` → two tool calls (one failed) shown in the Assist chat before the
+  reply; `"late"` → tool activity after the text → not shown, recorded in the debug trace;
+  `"slow"` → `: keepalive` comments, then the reply; `"empty"` → `done` with no text → the
+  fallback. The stub logs each request body so `conversation_id` forwarding is observable.
 
 ### langgraph — local `langgraph dev`
 
@@ -268,6 +273,12 @@ cookie from setup/login):
   still answers cleanly — no crash, no raw JSON. A body missing `output`/`text` → fallback,
   never leaks the raw object.
 - Continuity is via `sessionId` = `conversation_id` (verify in `/rest/executions/{id}`).
+- **LLMM-025 rows (owner-run, need an AI Agent):** Agent with "Return Intermediate Steps" in a
+  blocking workflow → its tool calls appear in the Assist chat before the reply; an inactive
+  workflow's URL or a `/webhook-test/` URL is refused at setup with its own form error; the
+  setup probe adds no execution to `/rest/executions`. LLM-free shapes (Text reply, All Entries,
+  streamed JSON, multi-segment, keepalive) are pinned by captures in
+  `tests/backends/fixtures/n8n/` (recapture recipe: `.wiki/live-backend-capture.md`).
 - **Timing:** a slow local model in **blocking** mode can exceed the `N8N_DEFAULT_TIMEOUT=30`s;
   raise the subentry `timeout` (e.g. 180) for blocking rows. Streaming stays well under it.
 

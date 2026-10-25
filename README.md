@@ -27,9 +27,11 @@ Pick one preset per connection. Each streams the reply token-by-token
 | **Dify** | a Dify Chatbot / Agent / Legacy Agent / Chatflow app (`/chat-messages`) | SSE, `agent_message`/`message`/`message_end` | No¹ |
 
 ¹ These backends run their own tools server-side — the integration passes text through and
-does not expose Home Assistant's tools to them. LangGraph's and Dify's tool calls and results
-(Dify: Agent tool steps and Chatflow tool nodes) are shown in the Assist chat log as *external* tool activity (never executed by Home Assistant, never
-spoken).
+does not expose Home Assistant's tools to them. Tool calls and results the backend reports
+are shown in the Assist chat log as *external* tool activity (never executed by Home
+Assistant, never spoken): LangGraph's tool calls, Dify's Agent tool steps and Chatflow tool
+nodes, an n8n AI Agent's intermediate steps (non-streaming replies with *Return Intermediate
+Steps* on), and custom `/v1/converse` `tool_activity` events sent before the reply text.
 
 ## Configuration model
 
@@ -113,7 +115,7 @@ so one URL can back several connections (for example Dify apps that differ only 
 | | Assistant ID | Yes (default `agent`) | Graph name or assistant UUID. Checked against the deployment when you save. |
 | Custom `/v1/converse` | Base URL | Yes | Backend URL; `/v1/converse` is appended. A trailing slash is stripped. |
 | | Bearer token | No | Sent as `Authorization: Bearer <token>`. |
-| n8n | Webhook URL | Yes | The workflow's full production URL (a Chat Trigger's `…/webhook/<id>/chat`). Stored exactly as entered. |
+| n8n | Webhook URL | Yes | The workflow's full production URL (a Chat Trigger's `…/webhook/<id>/chat`). Stored exactly as entered. When you save, the URL is checked without starting a run: an inactive workflow is refused, and so is a `/webhook-test/` URL (it only answers once). |
 | | Target type | Yes (default Chat Trigger) | *Chat Trigger*, or *Webhook* for a plain Webhook node answered by a Respond to Webhook node. |
 | | Authentication | Yes (default None) | *None*, *Basic auth*, or *Custom header*, matching the trigger node's authentication. |
 | | Username, Password | With basic auth | The basic-auth credentials. |
@@ -146,7 +148,7 @@ the ones the connection's preset uses. "Default" is the value the form starts wi
 | Spoken node | LangGraph | empty (every node) | Speak only AI messages produced by this graph node. |
 | Stateless runs | LangGraph | off | Run each turn without a server-side thread, so the graph keeps no memory between turns. |
 | Message field | n8n | `chatInput` | Request body field holding the user's message. Must match the Chat Trigger's chat input key. |
-| Reply field | n8n | `output` | Field of a non-streaming reply holding the answer; `text` is tried when it is missing. |
+| Reply field | n8n | `output` | Field of a JSON reply holding the answer; `text` is tried when it is missing. An array reply (*All Entries*, *All Incoming Items*) speaks every item's answer in order, and a streamed item that is a JSON string (*Respond to Webhook* → JSON with streaming) is unwrapped the same way. A plain-text reply (*Respond to Webhook* → Text) is spoken as is. |
 | Session field | n8n | `sessionId` | Request body field holding the session key that n8n memory nodes partition on. |
 | Dify app inputs | Dify | none | Values for the app's input variables, as a mapping such as `city: Berlin`. Required variables must be set; the form lists the variables the app declares. |
 | Send Home Assistant context to Dify | Dify | off | Fill the app's `ha_language`, `ha_device_id`, `ha_area`, `ha_satellite_id`, and `ha_extra_system_prompt` input variables from each turn (only those the app declares). |
