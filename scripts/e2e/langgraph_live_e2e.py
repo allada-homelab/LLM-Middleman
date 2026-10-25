@@ -15,7 +15,8 @@ Not part of the unit suite (``testpaths = ["tests"]``) and skipped unless
 
 Each test prints one ``E2E <row>: {...}`` line with the observed facts; results are
 recorded in ``docs/implementation/e2e-results/langgraph-tier1.md``. The slow-step rows take
-~40 s each (the ``slow`` graph is silent for 40 s, past the 30 s idle timeout).
+~40 s each (the ``slow`` graph is silent for 40 s; the slow-step row sets a 30 s agent
+timeout, so only the server's heartbeats keep it alive).
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from homeassistant.core import Context, HomeAssistant
 
 from custom_components.llm_middleman.backends.base import TurnContext
 from custom_components.llm_middleman.backends.langgraph import AssistantNotFoundError, LangGraphAdapter
+from custom_components.llm_middleman.const import CONF_TIMEOUT
 
 # The suite's fixtures, registered for this module (python -m pytest puts the repo on sys.path).
 from tests.conftest import (  # noqa: F401
@@ -241,11 +243,12 @@ async def test_thread_is_recreated_after_delete(hass: HomeAssistant, http: aioht
 
 async def test_slow_silent_step_outlives_idle_timeout(hass: HomeAssistant, http: aiohttp.ClientSession) -> None:
     started = time.monotonic()
-    deltas, _ = await turn(make_adapter(hass, http, "slow"), "go")
+    # A 30 s agent timeout bounds each silence; the 40 s step outlives it only via heartbeats.
+    deltas, _ = await turn(make_adapter(hass, http, "slow"), "go", options={CONF_TIMEOUT: 30})
     elapsed = time.monotonic() - started
     report("slow-step", spoken=spoken(deltas), seconds=round(elapsed, 1))
     assert spoken(deltas) == SLOW_ANSWER
-    assert elapsed > 30  # longer than the sock_read idle timeout: heartbeats kept it alive
+    assert elapsed > 30  # longer than the agent timeout (sock_read): heartbeats kept it alive
 
 
 async def test_assistant_validation(hass: HomeAssistant, socket_enabled: None) -> None:

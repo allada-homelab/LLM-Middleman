@@ -48,7 +48,6 @@ from custom_components.llm_middleman.const import (
     DEFAULT_TIMEOUT,
     DOMAIN,
     ERROR_MESSAGE,
-    IDLE_TIMEOUT,
     MAX_TOOL_ITERATIONS,
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
@@ -315,20 +314,20 @@ async def test_empty_delta_passes_untrimmed(hass: HomeAssistant, mock_chat_log: 
 
 
 def test_build_client_timeout_defaults() -> None:
-    """No option → no total, sock_connect=DEFAULT_TIMEOUT, sock_read=IDLE_TIMEOUT."""
+    """No option → no total; connect and silence both bounded by DEFAULT_TIMEOUT."""
     timeout = build_client_timeout({})
     assert isinstance(timeout, aiohttp.ClientTimeout)
     assert timeout.total is None
     assert timeout.sock_connect == DEFAULT_TIMEOUT
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.sock_read == DEFAULT_TIMEOUT
 
 
 def test_build_client_timeout_per_agent() -> None:
-    """The per-agent CONF_TIMEOUT overrides the connect bound; no total, sock_read stays idle."""
+    """The per-agent CONF_TIMEOUT bounds both connecting and each silence; no total."""
     timeout = build_client_timeout({CONF_TIMEOUT: 120})
     assert timeout.total is None
     assert timeout.sock_connect == 120
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.sock_read == 120
 
 
 # --- follow-up listening -----------------------------------------------------

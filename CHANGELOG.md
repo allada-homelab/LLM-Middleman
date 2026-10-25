@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Timeout setting again bounds how long a backend may stay silent.** Since 1.1.4 any
+  backend that sent nothing for 30 seconds failed, whatever its Timeout said: a blocking
+  n8n reply, a slow model still processing the prompt, a reasoning model, or an Ollama model
+  load. Timeout now covers both reaching the backend and every silence before or during
+  the reply; a reply that keeps streaming is still never cut off. (#110)
+- **n8n keepalive frames no longer break streaming.** n8n 2.4x sends a keepalive line
+  every 30 seconds while a streamed reply is in progress; when one came first the reply
+  failed as "not a JSON object". Keepalives are now ignored. (#110)
+
 ## [1.3.0] - 2026-10-25
 
 ### Added

@@ -173,7 +173,7 @@
                         "prompt": "Instructions the agent is given (a template). Sent as the system prompt to backends that accept one.",
                         "model": "Model this agent uses. Pick one the backend offers, or type a name.",
                         "max_history": "How many past turns to replay to stateless backends. Higher costs more per turn; full-replay backends may ignore it.",
-                        "timeout": "How long to wait to reach the backend. A reply that keeps streaming is never cut off; a backend that goes silent for 30 seconds is dropped and the pipeline falls back.",
+                        "timeout": "How long to wait to reach the backend, and the longest it may stay silent before or while replying. A reply that keeps streaming is never cut off; a backend silent for longer is dropped and the pipeline falls back.",
                         "memory_scope": "Which conversations share memory on stateful backends: per conversation, per device, or one continuous thread for the agent.",
                         "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent.",
                         "dify_inputs": "Values for the app's input variables, as a mapping of variable name to value (for example city: Berlin). Required variables must be set here. Variables this app declares: {dify_app_inputs}.",
@@ -226,7 +226,7 @@
                     "data_description": {
                         "name": "Display name for this AI task entity.",
                         "model": "Model the AI tasks use. Pick one the backend offers, or type a name. Use a vision model for image attachments.",
-                        "timeout": "How long to wait to reach the backend. A reply that keeps streaming is never cut off; a backend that goes silent for 30 seconds fails the task.",
+                        "timeout": "How long to wait to reach the backend, and the longest it may stay silent before or while replying. A reply that keeps streaming is never cut off; a backend silent for longer fails the task.",
                         "temperature": "Sampling temperature: higher is more varied, lower is more focused. Leave empty to use the server's default.",
                         "top_p": "Nucleus sampling cutoff. Leave empty to use the server's default.",
                         "max_tokens": "Longest reply the model may generate, in tokens. Leave empty to use the server's default.",

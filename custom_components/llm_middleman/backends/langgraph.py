@@ -17,14 +17,14 @@ Wire behaviour (confirmed against a live ``langgraph-api`` 0.16.6 server, see
   ``__interrupt__`` (a graph waiting on ``interrupt()``).
 * A successful run ends at SSE EOF (no terminal event); ``event: error`` raises. The
   server sends a ``: heartbeat`` comment every 5 s, so a long silent tool step never
-  trips the 30 s idle (``sock_read``) timeout.
+  trips the agent timeout (``sock_read``).
 * Threads are deterministic: ``thread_id = uuid5(namespace, "<entry_id>:<memory_key>")``
   and every run sends ``if_not_exists: "create"``, so the server creates the thread on
   first use and re-creates one it has deleted — no client-side map, lock, or 404 retry.
   A ``session_key -> thread_id`` map persisted by the LLMM-011 adapter is still honoured
   so existing device/agent-scope threads keep their history (a device entry is adopted by
   the first agent that uses it, since device keys are now per agent).
-* ``on_disconnect: "cancel"`` stops a run HA abandoned (cancelled turn, idle timeout);
+* ``on_disconnect: "cancel"`` stops a run HA abandoned (cancelled turn, timeout);
   a best-effort ``POST /threads/{id}/runs/{run_id}/cancel`` backs it up for proxies
   that keep the upstream connection open. ``multitask_strategy`` (default ``rollback``)
   decides what a new turn does to a run still in flight on the same thread.

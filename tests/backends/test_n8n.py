@@ -39,7 +39,6 @@ from custom_components.llm_middleman.const import (
     CONF_TARGET_TYPE,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
-    IDLE_TIMEOUT,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_TARGET_CHAT_TRIGGER,
@@ -135,6 +134,36 @@ async def test_silent_stream_end_raises(hass: HomeAssistant) -> None:
     response = _response([blob], "application/json-lines")
     session = fake_aiohttp_session(response=response)
     with pytest.raises(BackendStreamError):
+        await _collect(_adapter(hass, session), _ctx())
+
+
+async def test_keepalive_first_line_still_streams(hass: HomeAssistant) -> None:
+    # n8n >= 2.4x heartbeats `{"type":"keepalive"}` every 30 s; when it is the first line the
+    # mode sniff must still pick streaming (plain application/json content-type, as n8n sends).
+    blob = b'{"type":"keepalive"}\n{"type":"begin"}\n{"type":"item","content":"Hi"}\n{"type":"end"}\n'
+    response = _response(chunk_bytes(blob, 5), "application/json; charset=utf-8")
+    session = fake_aiohttp_session(response=response)
+    deltas = await _collect(_adapter(hass, session), _ctx())
+    assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
+
+
+async def test_keepalive_between_items_ignored(hass: HomeAssistant) -> None:
+    blob = (
+        b'{"type":"begin"}\n{"type":"item","content":"A"}\n{"type":"keepalive"}\n'
+        b'{"type":"item","content":"B"}\n{"type":"end"}\n'
+    )
+    response = _response([blob], "application/json; charset=utf-8")
+    session = fake_aiohttp_session(response=response)
+    deltas = await _collect(_adapter(hass, session), _ctx())
+    assert deltas == [{"role": "assistant"}, {"content": "A"}, {"content": "B"}]
+
+
+async def test_keepalive_only_stream_is_empty(hass: HomeAssistant) -> None:
+    # Heartbeats carry no content: a stream of only keepalives + end is the same as an empty one.
+    blob = b'{"type":"keepalive"}\n{"type":"keepalive"}\n{"type":"end"}\n'
+    response = _response([blob], "application/json; charset=utf-8")
+    session = fake_aiohttp_session(response=response)
+    with pytest.raises(BackendStreamError, match="without producing any content"):
         await _collect(_adapter(hass, session), _ctx())
 
 
@@ -251,11 +280,11 @@ async def test_action_included_for_chat_trigger(hass: HomeAssistant) -> None:
     # Session key and turn text are sent under the default field names.
     assert body["sessionId"] == "conv-1"
     assert body["chatInput"] == "hi there"
-    # Default connect bound is the n8n-specific 30 s; no total deadline so a live stream isn't cut off.
+    # Default bound is the n8n-specific 30 s; no total deadline so a live stream isn't cut off.
     timeout = session.post.call_args.kwargs["timeout"]
     assert timeout.total is None
     assert timeout.sock_connect == 30
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.sock_read == 30
 
 
 async def test_action_omitted_for_plain_webhook(hass: HomeAssistant) -> None:

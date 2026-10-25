@@ -68,8 +68,10 @@ Per-agent options that appear only when the chosen backend supports them:
   satellite's announced question (`start_conversation` / `ask_question`) reaches the app on
   the follow-up "yes". *Use the Home Assistant user* sends the HA user id as the Dify end
   user (voice-satellite turns keep the shared `home-assistant` identity).
-- **Timeout** — how long to wait to reach the backend. There is no total deadline: a reply
-  that keeps streaming is never cut off, and a backend silent for 30 seconds is dropped. On
+- **Timeout** — how long to wait to reach the backend, and the longest it may stay silent:
+  before its reply starts (a blocking reply, a slow model, a model load) or between
+  streamed chunks. There is no total deadline: a reply that keeps streaming is never cut
+  off, however long it runs. Raise it for slow backends. On
   a timeout or backend error the agent speaks a graceful fallback rather than hanging the
   pipeline.
 
@@ -130,7 +132,7 @@ the ones the connection's preset uses. "Default" is the value the form starts wi
 | System prompt | All | Home Assistant's default instructions | Agent instructions, as a template. Forwarded as described in [How the agent prompt reaches each backend](#how-the-agent-prompt-reaches-each-backend); Custom `/v1/converse` and Dify ignore it. |
 | Model | OpenAI-compatible, Ollama | none | Model from the server's catalog, or a typed name (a text field when the catalog can't be loaded). When unset, no model is sent and the server's default applies. |
 | Max history | All (used by OpenAI-compatible and Ollama) | `20` | Past user turns replayed with each request. `0` replays the whole conversation. The other presets keep history on the backend and ignore it. |
-| Timeout (seconds) | All | `60` (10–300) | How long to wait to reach the backend. A streaming reply is never cut off; a backend silent for 30 seconds is dropped and the fallback is spoken. If the field is cleared, n8n waits 30 seconds and the other presets 60. |
+| Timeout (seconds) | All | `60` (10–300) | How long to wait to reach the backend, and the longest it may stay silent before or while replying; past that the fallback is spoken. A streaming reply is never cut off. If the field is cleared, n8n waits 30 seconds and the other presets 60. |
 | Memory scope | LangGraph, Custom `/v1/converse`, n8n, Dify | Per conversation | Which turns share backend memory: *Per conversation* (HA's conversation, which ends after about 5 idle minutes), *Per device* (one thread per satellite, separate for each agent), or *Per agent* (one continuous thread). |
 | Control Home Assistant | OpenAI-compatible, Ollama | none | HA LLM APIs whose tools the model may call (device control, MCP-client tools). Empty means no tools and no device control. |
 | Temperature | OpenAI-compatible | server default | Sampling temperature, 0–2. |
@@ -226,7 +228,7 @@ Graph-side contract and behaviour of the LangGraph preset, verified against a li
   Assistant abandons (cancelled, timed out) also sends a best-effort
   `POST /threads/{id}/runs/{run_id}/cancel`, so the graph stops working on it.
 - **Long tool steps.** The server sends an SSE heartbeat every 5 s, so a silent tool step
-  longer than the 30 s idle timeout does not cut the reply off.
+  longer than the agent's Timeout does not cut the reply off.
 - **Auth.** The API key goes in the `x-api-key` header (LangSmith cloud; the default) or,
   with *API key header* set to Bearer, as `Authorization: Bearer …` for custom auth
   handlers. Setup checks that the assistant/graph id exists on the deployment.

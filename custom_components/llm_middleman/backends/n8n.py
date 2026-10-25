@@ -66,8 +66,9 @@ _LOGGER = logging.getLogger(__name__)
 # The Chat Trigger node distinguishes turns by this action; plain Webhook omits it.
 _ACTION_SEND_MESSAGE = "sendMessage"
 # StructuredChunk envelope types (n8n 1.103.0). ``begin``/``end`` are segment markers,
-# not stream terminators — a single run may emit several begin/end cycles.
-_STRUCTURED_CHUNK_TYPES = frozenset({"begin", "item", "end", "error"})
+# not stream terminators — a single run may emit several begin/end cycles. n8n >= 2.4x
+# also heartbeats ``keepalive`` every 30 s, which may be the first line and carries no text.
+_STRUCTURED_CHUNK_TYPES = frozenset({"begin", "item", "end", "error", "keepalive"})
 # A blocking (non-streamed) reply is read whole before parsing, so it is capped: 1 MiB is
 # far beyond any spoken reply, and an over-cap body fails the turn instead of growing memory.
 _MAX_BLOCKING_BYTES = 1 << 20
@@ -266,7 +267,7 @@ def _line_contents(line: bytes) -> Iterator[str]:
     """Yield the ``item`` content of one NDJSON ``StructuredChunk`` line.
 
     Blank, malformed, and non-object lines are skipped (logged, tolerant). ``begin``,
-    ``end``, and unknown types yield nothing (``end`` is not terminal). An ``error``
+    ``end``, ``keepalive``, and unknown types yield nothing (``end`` is not terminal). An ``error``
     chunk raises :class:`BackendStreamError`. Content whitespace is never stripped.
     """
     if not line.strip():
