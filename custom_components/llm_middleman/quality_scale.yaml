@@ -8,7 +8,7 @@
 # custom-manifest schema would accept it, but tiers are awarded through core review,
 # and a self-declared tier on a custom integration would be an unreviewed claim.
 #
-# Highest tier fully met: Bronze. Silver is blocked by the four `todo` rules below.
+# Highest tier fully met: Bronze. Silver is blocked by the two `todo` rules below.
 rules:
   # Bronze
   action-setup:
@@ -57,16 +57,16 @@ rules:
       still raise a translated HomeAssistantError.
   config-entry-unloading: done
   docs-configuration-parameters:
-    status: todo
+    status: done
     comment: >-
-      The README covers most agent options. Missing: max history, the n8n field
-      mapping (message, reply, and session fields), and the LangGraph input messages
-      key. Every field has a data_description in the UI.
+      README "Agent and AI task options" tables every conversation-agent and AI-task
+      option with the presets that show it, its default, and its meaning.
   docs-installation-parameters:
-    status: todo
+    status: done
     comment: >-
-      The README does not document the per-preset connection fields (base URL rules,
-      the n8n webhook, target and auth types, the LangGraph assistant id).
+      README "Connection parameters" tables each preset's connection fields (URL
+      normalization, credentials and how they are sent, n8n target and auth types,
+      the LangGraph auth header and assistant id).
   entity-unavailable:
     status: todo
     comment: >-
@@ -75,10 +75,13 @@ rules:
       surfaces as SETUP_RETRY at setup and as a repair issue after repeated failed turns.
   integration-owner: done
   log-when-unavailable:
-    status: todo
+    status: done
     comment: >-
-      Every failed turn logs at error level with a traceback. There is no single
-      info-level log when the backend becomes unreachable and another when it recovers.
+      The first conversation turn or AI task that cannot reach a connection's backend logs
+      once at info, and the first that reaches it again (or a setup probe while the repair
+      issue is open) logs once at info. The state is per connection (the shared adapter,
+      helpers.py), so sibling entities don't repeat it. Unreachable turns in between log at
+      debug. A failed setup probe raises ConfigEntryNotReady, which HA core logs itself.
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:

@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import aiohttp
 import pytest
 from homeassistant.components import ai_task, conversation, media_source
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigSubentryData
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import llm
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
@@ -40,6 +42,7 @@ from custom_components.llm_middleman.const import (
     MAX_TOOL_ITERATIONS,
     SUBENTRY_TYPE_AI_TASK,
     SUBENTRY_TYPE_CONVERSATION,
+    UNREACHABLE_ISSUE_THRESHOLD,
 )
 from custom_components.llm_middleman.diagnostics import async_get_config_entry_diagnostics
 
@@ -338,6 +341,69 @@ async def test_server_error_does_not_start_reauth(
     await hass.async_block_till_done()
 
     assert reauth_flows(hass) == []
+
+
+_HELPERS_LOGGER = "custom_components.llm_middleman.helpers"
+
+
+def _availability_infos(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == _HELPERS_LOGGER and r.levelno == logging.INFO]
+
+
+def _serve_unreachable(aioclient_mock: AiohttpClientMocker, preset: str) -> None:
+    aioclient_mock.post(f"{BASE_URL}{TURN_PATH[preset]}", exc=aiohttp.ServerDisconnectedError())  # pyright: ignore[reportUnknownMemberType]
+
+
+async def _failed_tasks(hass: HomeAssistant, entity_id: str, count: int) -> None:
+    for _ in range(count):
+        with pytest.raises(HomeAssistantError):
+            await generate(hass, entity_id)
+
+
+async def test_unreachable_tasks_log_backend_down_once(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AI task failures alone mark the connection unreachable, with one info line for the run."""
+    entry = await setup_entry(hass, aioclient_mock, BACKEND_OPENAI_COMPAT)
+    _serve_unreachable(aioclient_mock, BACKEND_OPENAI_COMPAT)
+    caplog.set_level(logging.INFO, _HELPERS_LOGGER)
+
+    await _failed_tasks(hass, task_entity_id(hass, entry), UNREACHABLE_ISSUE_THRESHOLD)
+
+    assert [m.startswith("Backend of connection Mock Title is unreachable") for m in _availability_infos(caplog)] == [
+        True
+    ]
+
+
+async def test_unreachable_tasks_raise_the_repair_issue(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """Unreachable AI tasks count toward the connection's backend_unreachable repair issue."""
+    entry = await setup_entry(hass, aioclient_mock, BACKEND_OPENAI_COMPAT)
+    _serve_unreachable(aioclient_mock, BACKEND_OPENAI_COMPAT)
+
+    await _failed_tasks(hass, task_entity_id(hass, entry), UNREACHABLE_ISSUE_THRESHOLD)
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"backend_unreachable_{entry.entry_id}") is not None
+
+
+async def test_task_success_after_conversation_failures_logs_recovery(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Reachability is per connection: a task that reaches the backend ends an outage agents hit."""
+    entry = await setup_entry(hass, aioclient_mock, BACKEND_OPENAI_COMPAT, with_conversation=True)
+    agent_subentry = next(s for s in entry.subentries.values() if s.subentry_type == SUBENTRY_TYPE_CONVERSATION)
+    agent_id = er.async_get(hass).async_get_entity_id("conversation", DOMAIN, agent_subentry.subentry_id)
+    _serve_unreachable(aioclient_mock, BACKEND_OPENAI_COMPAT)
+    await conversation.async_converse(hass, "hi", None, Context(), agent_id=agent_id)
+    aioclient_mock.clear_requests()
+    queue_replies(aioclient_mock, BACKEND_OPENAI_COMPAT, [text_reply(BACKEND_OPENAI_COMPAT, "ok")])
+    caplog.set_level(logging.INFO, _HELPERS_LOGGER)
+    caplog.clear()
+
+    await generate(hass, task_entity_id(hass, entry))
+
+    assert _availability_infos(caplog) == ["Backend of connection Mock Title is reachable again"]
 
 
 async def test_empty_reply_raises_translated_error(

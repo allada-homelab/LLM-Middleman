@@ -68,9 +68,13 @@ Per-agent options that appear only when the chosen backend supports them:
   satellite's announced question (`start_conversation` / `ask_question`) reaches the app on
   the follow-up "yes". *Use the Home Assistant user* sends the HA user id as the Dify end
   user (voice-satellite turns keep the shared `home-assistant` identity).
-- **Timeout** — a per-agent total deadline (paired with an idle-read timeout so a slow but
-  live stream is not killed). On a timeout or backend error the agent speaks a graceful
-  fallback rather than hanging the pipeline.
+- **Timeout** — how long to wait to reach the backend. There is no total deadline: a reply
+  that keeps streaming is never cut off, and a backend silent for 30 seconds is dropped. On
+  a timeout or backend error the agent speaks a graceful fallback rather than hanging the
+  pipeline.
+
+Every connection field and agent option is listed in
+[Connection parameters](#connection-parameters) and [Agent and AI task options](#agent-and-ai-task-options).
 
 ### How the agent prompt reaches each backend
 
@@ -85,6 +89,76 @@ HA's date/time and any `extra_system_prompt`) and then forwarded:
   leading `system` message of the run input instead. See [LangGraph](#langgraph) for the
   rest of the run context.
 - **Custom `/v1/converse` / Dify** — not forwarded; the backend owns its prompt.
+
+## Connection parameters
+
+Adding the integration first asks for the **Backend type** (the presets above), then shows
+that preset's connection form. Saving probes the real endpoint, so a wrong URL or
+credential fails right there. **Reconfigure** reopens the same form (the backend type is
+fixed), and when the backend later rejects the credentials, **reauthentication** asks for
+the credential fields only. Two connections are duplicates only if every field matches,
+so one URL can back several connections (for example Dify apps that differ only by key).
+
+| Preset | Field | Required | Meaning |
+|--------|-------|----------|---------|
+| OpenAI-compatible | Base URL | Yes | Server root without a path. A trailing `/v1` or slash is stripped, since `/v1/...` is added for each request. |
+| | API key | No | Sent as `Authorization: Bearer <key>`. Many "OpenAI-compatible" servers need a non-empty dummy key. |
+| Ollama | Base URL | Yes | Ollama host root, for example `http://host:11434`. Not the `/v1` path. A trailing slash is stripped. |
+| | API key | No | Sent as `Authorization: Bearer <key>`. |
+| LangGraph | Deployment URL | Yes | The LangGraph deployment URL (`langgraph dev`, self-hosted, or cloud). A trailing slash is stripped. |
+| | API key | No | Needed for LangSmith cloud deployments and servers with custom auth. |
+| | API key header | Yes (default `x-api-key`) | How the key is sent: the `x-api-key` header (LangSmith cloud and the default for self-hosted servers) or `Authorization: Bearer` (custom auth handlers). |
+| | Assistant ID | Yes (default `agent`) | Graph name or assistant UUID. Checked against the deployment when you save. |
+| Custom `/v1/converse` | Base URL | Yes | Backend URL; `/v1/converse` is appended. A trailing slash is stripped. |
+| | Bearer token | No | Sent as `Authorization: Bearer <token>`. |
+| n8n | Webhook URL | Yes | The workflow's full production URL (a Chat Trigger's `…/webhook/<id>/chat`). Stored exactly as entered. |
+| | Target type | Yes (default Chat Trigger) | *Chat Trigger*, or *Webhook* for a plain Webhook node answered by a Respond to Webhook node. |
+| | Authentication | Yes (default None) | *None*, *Basic auth*, or *Custom header*, matching the trigger node's authentication. |
+| | Username, Password | With basic auth | The basic-auth credentials. |
+| | Header name, Header value | With a custom header | The header the workflow checks, sent on every request. |
+| Dify | Base URL | Yes | Dify API root including `/v1` (Dify Cloud: `https://api.dify.ai/v1`). `/v1` is appended if you leave it out. |
+| | API key | Yes | The app's API key (starts with `app-`). It must belong to a Chatbot, Agent, or Chatflow app; Workflow and Text Generator keys, and unpublished Agents, are rejected when you save. |
+
+## Agent and AI task options
+
+Each **conversation agent** (Add conversation agent) has these options. The form shows only
+the ones the connection's preset uses. "Default" is the value the form starts with.
+
+| Option | Presets | Default | Meaning |
+|--------|---------|---------|---------|
+| Name | All | `LLM Middleman` | Name of the agent's device and conversation entity. Asked when you add the agent only. |
+| System prompt | All | Home Assistant's default instructions | Agent instructions, as a template. Forwarded as described in [How the agent prompt reaches each backend](#how-the-agent-prompt-reaches-each-backend); Custom `/v1/converse` and Dify ignore it. |
+| Model | OpenAI-compatible, Ollama | none | Model from the server's catalog, or a typed name (a text field when the catalog can't be loaded). When unset, no model is sent and the server's default applies. |
+| Max history | All (used by OpenAI-compatible and Ollama) | `20` | Past user turns replayed with each request. `0` replays the whole conversation. The other presets keep history on the backend and ignore it. |
+| Timeout (seconds) | All | `60` (10–300) | How long to wait to reach the backend. A streaming reply is never cut off; a backend silent for 30 seconds is dropped and the fallback is spoken. If the field is cleared, n8n waits 30 seconds and the other presets 60. |
+| Memory scope | LangGraph, Custom `/v1/converse`, n8n, Dify | Per conversation | Which turns share backend memory: *Per conversation* (HA's conversation, which ends after about 5 idle minutes), *Per device* (one thread per satellite, separate for each agent), or *Per agent* (one continuous thread). |
+| Control Home Assistant | OpenAI-compatible, Ollama | none | HA LLM APIs whose tools the model may call (device control, MCP-client tools). Empty means no tools and no device control. |
+| Temperature | OpenAI-compatible | server default | Sampling temperature, 0–2. |
+| Top P | OpenAI-compatible | server default | Nucleus sampling cutoff, 0–1. |
+| Maximum tokens | OpenAI-compatible | server default | Longest reply, in tokens. |
+| Context window | Ollama | model default | `num_ctx`, at least 2048 tokens. Lower it to save RAM, raise it for long conversations or many exposed entities. |
+| Keep alive | Ollama | Ollama default | Seconds the model stays loaded after a request; `-1` keeps it loaded, `0` unloads it at once. |
+| Think before responding | Ollama | model default | Ask a thinking-capable model to reason first. The reasoning appears in the chat log and is never spoken. |
+| Double-texting | LangGraph | Roll back | What a new turn does to a run still going on the same thread: *Roll back*, *Interrupt*, *Enqueue*, or *Reject* (see [LangGraph](#langgraph)). |
+| Input messages key | LangGraph | `messages` | Graph state key the new message list is sent under. |
+| Spoken node | LangGraph | empty (every node) | Speak only AI messages produced by this graph node. |
+| Stateless runs | LangGraph | off | Run each turn without a server-side thread, so the graph keeps no memory between turns. |
+| Message field | n8n | `chatInput` | Request body field holding the user's message. Must match the Chat Trigger's chat input key. |
+| Reply field | n8n | `output` | Field of a non-streaming reply holding the answer; `text` is tried when it is missing. |
+| Session field | n8n | `sessionId` | Request body field holding the session key that n8n memory nodes partition on. |
+| Dify app inputs | Dify | none | Values for the app's input variables, as a mapping such as `city: Berlin`. Required variables must be set; the form lists the variables the app declares. |
+| Send Home Assistant context to Dify | Dify | off | Fill the app's `ha_language`, `ha_device_id`, `ha_area`, `ha_satellite_id`, and `ha_extra_system_prompt` input variables from each turn (only those the app declares). |
+| Use the Home Assistant user as the Dify user | Dify | off | Send the HA user id as the Dify end user. Voice-satellite turns have no user and keep the shared `home-assistant` identity. |
+
+Each **AI task** (Add AI task, OpenAI-compatible and Ollama only) has a smaller set:
+
+| Option | Presets | Default | Meaning |
+|--------|---------|---------|---------|
+| Name | Both | `LLM Middleman AI Task` | Name of the AI task's device and entity. Asked when you add the task only. |
+| Model | Both | none | As for agents. Use a vision model for image attachments. |
+| Timeout (seconds) | Both | `60` (10–300) | As for agents, except that a silent backend fails the task instead of speaking a fallback. |
+| Temperature, Top P, Maximum tokens | OpenAI-compatible | server default | As for agents. |
+| Context window, Keep alive, Think before responding | Ollama | model / Ollama default | As for agents. |
 
 ## AI Task (`generate_data`)
 
