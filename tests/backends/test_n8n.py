@@ -137,6 +137,36 @@ async def test_silent_stream_end_raises(hass: HomeAssistant) -> None:
         await _collect(_adapter(hass, session), _ctx())
 
 
+async def test_keepalive_first_line_still_streams(hass: HomeAssistant) -> None:
+    # n8n >= 2.4x heartbeats `{"type":"keepalive"}` every 30 s; when it is the first line the
+    # mode sniff must still pick streaming (plain application/json content-type, as n8n sends).
+    blob = b'{"type":"keepalive"}\n{"type":"begin"}\n{"type":"item","content":"Hi"}\n{"type":"end"}\n'
+    response = _response(chunk_bytes(blob, 5), "application/json; charset=utf-8")
+    session = fake_aiohttp_session(response=response)
+    deltas = await _collect(_adapter(hass, session), _ctx())
+    assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
+
+
+async def test_keepalive_between_items_ignored(hass: HomeAssistant) -> None:
+    blob = (
+        b'{"type":"begin"}\n{"type":"item","content":"A"}\n{"type":"keepalive"}\n'
+        b'{"type":"item","content":"B"}\n{"type":"end"}\n'
+    )
+    response = _response([blob], "application/json; charset=utf-8")
+    session = fake_aiohttp_session(response=response)
+    deltas = await _collect(_adapter(hass, session), _ctx())
+    assert deltas == [{"role": "assistant"}, {"content": "A"}, {"content": "B"}]
+
+
+async def test_keepalive_only_stream_is_empty(hass: HomeAssistant) -> None:
+    # Heartbeats carry no content: a stream of only keepalives + end is the same as an empty one.
+    blob = b'{"type":"keepalive"}\n{"type":"keepalive"}\n{"type":"end"}\n'
+    response = _response([blob], "application/json; charset=utf-8")
+    session = fake_aiohttp_session(response=response)
+    with pytest.raises(BackendStreamError, match="without producing any content"):
+        await _collect(_adapter(hass, session), _ctx())
+
+
 async def test_error_chunk_raises(hass: HomeAssistant) -> None:
     blob = b'{"type":"begin"}\n{"type":"error","content":"boom"}\n'
     response = _response([blob], "application/json-lines")
