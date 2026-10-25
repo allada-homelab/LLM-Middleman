@@ -11,8 +11,14 @@ okf_version: "0.2"
 * [hassfest rejects URLs and angle brackets in strings.json descriptions](./hassfest-strings-no-urls-or-angle-brackets.md) - Config-flow description text must hold no dotted-domain URL and no angle-bracket token, or hassfest fails CI; edit strings.json and translations/en.json together.
 * [LangGraph assistant probe rejects graph ids](./langgraph-assistant-probe-graph-id.md) - LangGraph GET /assistants/{id} accepts only UUIDs and answers 422 for a graph id, so the config probe must POST /assistants/search with graph_id when the assistant is a graph name.
 * [LangGraph resume needs a pending interrupt, not thread status](./langgraph-resume-check-thread-interrupts.md) - Before resuming a LangGraph interrupt, check GET /threads/{id} has a non-empty interrupts field; status alone misfires because a cancelled run also reads interrupted.
+* [n8n keepalive frames and Chat Trigger probe hazard](./n8n-keepalive-and-chat-trigger-probe.md) - n8n 2.4x sends a keepalive line every 30 s, possibly first, so the NDJSON sniffer must accept it; a setup probe must never GET a Chat Trigger URL, which starts a run.
 * [Reconfigure/reauth abort must match whether the entry has an update listener](./config-entry-update-listener-aware-abort.md) - Reconfigure and reauth save via update_and_abort when the entry has an update listener, else update_reload_and_abort; reload+listener breaks in HA 2026.12.
+
+# Decision
+
+* [The agent Timeout is the maximum backend silence, not a total deadline](./agent-timeout-is-max-silence.md) - The per-agent Timeout bounds how long a backend may stay silent (aiohttp sock_read), never a total deadline or a fixed idle cap; both broke slow backends.
 
 # Runbook
 
+* [Capture real backend streams inside the devcontainer](./live-backend-capture.md) - Real backend byte streams can be captured in the devcontainer with small images, reached by bridge IP because published ports are unreachable.
 * [Updating from python-template in a HACS-integration repo](./copier-update-for-hacs-integration.md) - This repo renders from python-template as project_type library, so a same-version copier update changes only _commit; keep the HACS pyproject and hand-port template CI changes.
