@@ -6,6 +6,7 @@ tags: [config-flow, home-assistant]
 generated: {by: okf-wiki/haiku, at: 2026-10-24T23:51:56Z}
 verified:
   - {by: okf-wiki/haiku, at: 2026-10-24T23:51:56Z, commit: ad14312f1a7c}
+  - {by: okf-wiki/deepseek, at: 2026-10-25T07:10:57Z, commit: e2b31f41a3ed}
 sources:
   - {id: ha-blog-listener-reload, resource: https://contributors.home-assistant.io/blog/2026/05/07/config-entry-listener-together-with-reloading-methods/, note: "HA deprecation: a config flow using update_reload_and_abort with an update listener breaks in 2026.12"}
   - {id: ha-config-entries-log, resource: "HA core config_entries.py ~L3716-3722 (2026.10): logs breaks_in_ha_version=2026.12.0"}

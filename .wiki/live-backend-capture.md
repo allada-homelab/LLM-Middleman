@@ -6,6 +6,7 @@ tags: [adapters, maintenance]
 generated: {by: okf-wiki/haiku, at: 2026-10-25T04:42:28Z}
 verified:
   - {by: okf-wiki/haiku, at: 2026-10-25T04:42:28Z, commit: 16dde55938d9}
+  - {by: okf-wiki/deepseek, at: 2026-10-25T07:14:05Z, commit: e2b31f41a3ed}
 sources:
   - {id: pr110, resource: https://github.com/allada-homelab/LLM-Middleman/pull/110}
   - {id: audit, resource: 2026-10-25 Tier-D audits of openai_compat/ollama and n8n/converse}

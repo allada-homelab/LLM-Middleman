@@ -6,6 +6,7 @@ tags: [home-assistant, adapters, conversation]
 generated: {by: okf-wiki/haiku, at: 2026-10-24T21:55:50Z}
 verified:
   - {by: okf-wiki/haiku, at: 2026-10-24T21:55:50Z, commit: 30cf56853287}
+  - {by: okf-wiki/deepseek, at: 2026-10-25T07:10:57Z, commit: e2b31f41a3ed}
 sources:
   - {id: s1, resource: https://github.com/allada-homelab/LLM-Middleman/pull/88, title: Shim probatio tool schemas and ToolResultContent.result for HA 2026.9/2026.10}
   - {id: s2, resource: custom_components/llm_middleman/backends/_compat.py, title: schema_to_openapi and tool_result_data shims}

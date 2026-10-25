@@ -6,6 +6,7 @@ tags: [hassfest, config-flow, strings, ci]
 generated: {by: okf-wiki/opus, at: 2026-09-26T14:46:55Z}
 verified:
   - {by: okf-wiki/opus, at: 2026-09-26T14:46:55Z, commit: 0c763fbee1c0}
+  - {by: okf-wiki/deepseek, at: 2026-10-25T07:10:57Z, commit: e2b31f41a3ed}
 sources:
   - {id: s1, resource: https://github.com/allada-homelab/LLM-Middleman/pull/8, title: "LLMM-006 fix: hassfest-invalid angle brackets in n8n webhook_url description"}
   - {id: s2, resource: https://github.com/allada-homelab/LLM-Middleman/pull/40, title: "fix(strings): drop URL from dify base_url description"}
