@@ -14,7 +14,7 @@ turn to an external backend**, streaming the reply back into the pipeline (→ s
 and the Assist chat). It runs **no LLM of its own** — intelligence lives in the backend.
 
 **Current state (2026-10): v1 shipped — maintenance mode.** The v1 multi-backend
-re-architecture was released as `v1.0.0`; the latest release is **`v1.3.0`** (the
+re-architecture was released as `v1.0.0`; the latest release is **`v1.4.0`** (the
 `manifest.json` `version` is the source of truth; `pyproject.toml` mirrors it, enforced by
 `tests/test_versions.py`). Minimum Home Assistant is **2026.7.0** (`hacs.json`). What
 shipped:
@@ -37,12 +37,15 @@ backend probe, token stats and reasoning passthrough, backend tool activity in t
 chat, and the **tier-1 reworks of Dify (LLMM-021) and LangGraph (LLMM-022)** — both
 `in-review`, waiting only on owner-run live rows. `v1.3.0` (2026-10-25) added **AI Task
 `generate_data` (LLMM-023)** — unit-gated, also `in-review` pending owner-run live rows —
-plus info-level backend down/recovered logging and README reference tables.
+plus info-level backend down/recovered logging and README reference tables. `v1.4.0`
+(2026-10-25) fixed the Timeout regression (since 1.1.4 any backend silent for 30 s failed;
+Timeout is now the maximum silence) and shipped the **tier-1 reworks of OpenAI-compatible +
+Ollama (LLMM-024) and n8n + converse (LLMM-025)**, both `in-review` pending owner-run rows.
 
 Tickets LLMM-001…017 are done; LLMM-018 (live E2E matrix), LLMM-019 (release), LLMM-021 and
-LLMM-022 are `in-review` pending owner rows, and so is LLMM-023 (AI Task `generate_data`
-subentries for openai_compat/ollama). The remaining work is **owner-run** (Dify/LangGraph/
-AI Task live rows, reauth on a real HA, HACS install of the next release, tool-call rows
+LLMM-022 are `in-review` pending owner rows, and so are LLMM-023 (AI Task `generate_data`
+subentries for openai_compat/ollama), LLMM-024 and LLMM-025. The remaining work is
+**owner-run** (Dify/LangGraph/AI Task/LLMM-024/LLMM-025 live rows, reauth on a real HA, HACS install of the next release, tool-call rows
 against a capable model, voice-hardware checks) — see `docs/implementation/HANDOFF.md`.
 
 **Quality scale:** `custom_components/llm_middleman/quality_scale.yaml` is the
