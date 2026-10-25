@@ -770,10 +770,7 @@ def _add_openai_compat_fields(schema: dict[Any, Any], options: Mapping[str, Any]
 
 
 def _add_ollama_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
-    """Add the Ollama runtime options (core-ollama's set).
-
-    Empty ``num_ctx`` / ``keep_alive`` send core HA's defaults; empty ``think`` leaves it to the model.
-    """
+    """Add the Ollama runtime options (core-ollama's set); left empty, the model's default applies."""
     schema[vol.Optional(CONF_NUM_CTX, description={"suggested_value": options.get(CONF_NUM_CTX)})] = NumberSelector(
         NumberSelectorConfig(min=MIN_NUM_CTX, step=1, mode=NumberSelectorMode.BOX)
     )

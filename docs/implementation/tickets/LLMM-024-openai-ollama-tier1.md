@@ -42,8 +42,14 @@ CHANGELOG):
 5. Ollama tool calls keep the server's `id`; replay sends `id` + `function.index` and the tool
    result with `tool_name` + `tool_call_id`.
 6. Ollama `think` accepts off / on / low / medium / high / max; stored booleans keep working.
-7. Ollama defaults when the option is empty: `num_ctx` 8192, `keep_alive` -1 (core HA
-   2026.10.3 `DEFAULT_NUM_CTX` / `DEFAULT_KEEP_ALIVE`).
+7. Ollama `num_ctx` / `keep_alive`: **documented recommendation, no forced default.** An
+   empty option is still not sent. The README recommends Context window ≥ 8192 when an HA
+   LLM API is enabled (HA's tool prompt is large; Ollama's own default can be 4096 on smaller
+   GPUs) and setting Keep alive if model loads are slow. Why not core HA's 8192 / -1:
+   sending them overrides the user's server config. It would shrink the context on big-GPU
+   hosts where newer Ollama sizes `num_ctx` by VRAM, and pin models in VRAM against
+   `OLLAMA_KEEP_ALIVE`. The original reason (a model load tripping a 30 s idle timeout) went
+   away when #110 made the agent Timeout the longest allowed silence.
 8. openai_compat: `reasoning_effort` option (sent only when set); `prompt_cache_key` = the
    agent's subentry id (core openai's choice), dropped for the connection if a server rejects
    it; HTTP 429 → translated `backend_rate_limited` error naming rate limit / quota.
@@ -90,7 +96,7 @@ generic fallback for every adapter error; AI Task surfaces the translated messag
 - [x] 4 — refusal-only stream speaks the refusal.
 - [x] 5 — Ollama tool ids kept and replayed with index, `tool_name`, `tool_call_id`.
 - [x] 6 — think levels sent; stored booleans still sent as booleans; selector offers the levels.
-- [x] 7 — `num_ctx` 8192 / `keep_alive` -1 only when unset.
+- [x] 7 — unset `num_ctx` / `keep_alive` not sent (`test_options_absent_when_unset`); README recommendation added.
 - [x] 8 — `reasoning_effort` only when set; `prompt_cache_key` = subentry id, dropped once rejected; 429 → translated error.
 - [x] 9 — `reasoning_tokens` and Ollama cached prompt tokens traced when reported.
 - [x] Every captured fixture replays as a normal reply / tool call (no fallback).
@@ -100,9 +106,8 @@ generic fallback for every adapter error; AI Task surfaces the translated messag
 Agent-run (devcontainer, 2026-10-25, branch `feat/llmm-024-openai-ollama-tier1` off `d48e88a`):
 - Baseline `uv run pytest -q` on `d48e88a` → `801 passed`.
 - `uv lock --check` → rc 0.
-- `uv run pytest -q` → `855 passed` (+54; the only existing tests changed are those whose
-  contract this ticket changes on purpose: Ollama unset options now send defaults, the Ollama
-  tool replay shape, `think` submitted as a select value, `reasoning_effort` in the
+- `uv run pytest -q` → `854 passed` (+53; the only existing tests changed are those whose
+  contract this ticket changes on purpose: the Ollama tool replay shape, `think` submitted as a select value, `reasoning_effort` in the
   OpenAI-compatible agent and AI task forms).
 - `uv run coverage run -m pytest -q && uv run coverage report` → TOTAL 98 % (≥ 94);
   `openai_compat.py` 99 %, `ollama.py` 97 % (uncovered lines pre-date this ticket).
@@ -110,7 +115,7 @@ Agent-run (devcontainer, 2026-10-25, branch `feat/llmm-024-openai-ollama-tier1` 
   `0 errors, 0 warnings, 0 notes`; `uv run pre-commit run --all-files` → all hooks passed.
 - CI floor leg (throwaway detached worktree, HA 2026.7.0 overlay per
   `.github/workflows/lint.yml`, removed after): `uv run --no-sync pytest -q tests/` →
-  `849 passed, 6 skipped` (all six are HA-version gates that pre-date this ticket: probatio ×4,
+  `848 passed, 6 skipped` (all six are HA-version gates that pre-date this ticket: probatio ×4,
   tool-result `error` flag ×2).
 - Mutation checks (each reverted after): disabling the openai error-frame check turns 3
   tests red, `finish_reason: "error"` 1, refusal 1, the `max_tokens` swap 2, truncation
@@ -130,9 +135,8 @@ tool-capable Ollama model.
 - Stricter terminal handling could turn working replies into fallbacks — guarded by replaying
   every captured server shape (incl. Ollama `/v1` `content: ""` reasoning chunks and repeated
   usage) as a normal reply.
-- `keep_alive` -1 by default keeps the model loaded indefinitely and overrides the server's
-  `OLLAMA_KEEP_ALIVE`; `num_ctx` 8192 overrides Ollama's own default (which newer Ollama sizes
-  by VRAM — **inferred**, may be larger on big GPUs). Both match core HA; documented in the
-  CHANGELOG and README.
+- An Ollama agent with HA tools on a small-GPU host may still run with a 4096 context
+  (Ollama's own default) and truncate HA's tool prompt. This is mitigated by the README
+  recommendation, not by code (item 7).
 - `prompt_cache_key` sent to strict servers: the drop-on-rejection retry relies on the error
   body naming the field (Groq, Mistral, Gemini do per their docs — **inferred**, not live-tested).

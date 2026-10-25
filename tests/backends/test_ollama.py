@@ -241,12 +241,15 @@ async def test_num_ctx_from_number_selector_sent_as_int(
     assert repr(session.post.call_args.kwargs["json"]["options"]["num_ctx"]) == "4096"
 
 
-async def test_think_absent_when_unset(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
-    # num_ctx / keep_alive fall back to core's defaults (LLMM-024); think stays the model's.
+async def test_options_absent_when_unset(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    # Unset means not sent: the Ollama server's own config (VRAM-sized num_ctx,
+    # OLLAMA_KEEP_ALIVE) must apply, not a value forced by the integration.
     session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
     adapter = _adapter(hass, session)
     await _run(adapter, mock_chat_log, options={CONF_MODEL: "llama3"})
     body = session.post.call_args.kwargs["json"]
+    assert "options" not in body
+    assert "keep_alive" not in body
     assert "think" not in body
 
 
@@ -624,14 +627,6 @@ async def test_captured_error_bodies_raise(
 ) -> None:
     with pytest.raises(BackendConnectionError, match=f"HTTP {status}"):
         await _replay(hass, mock_chat_log, name)
-
-
-async def test_unset_num_ctx_and_keep_alive_use_core_defaults(
-    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
-) -> None:
-    body = await _post_with(hass, mock_chat_log, {CONF_MODEL: "llama3"})
-    assert body["options"] == {"num_ctx": 8192}
-    assert body["keep_alive"] == -1
 
 
 @pytest.mark.parametrize(

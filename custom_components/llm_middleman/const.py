@@ -99,10 +99,6 @@ CONF_KEEP_ALIVE = "keep_alive"
 CONF_THINK = "think"
 # Smallest context window the agent form accepts (core ollama's MIN_NUM_CTX).
 MIN_NUM_CTX = 2048
-# Sent when the agent leaves the option empty: core ollama's DEFAULT_NUM_CTX /
-# DEFAULT_KEEP_ALIVE (HA 2026.10.3), so both integrations load a model the same way.
-DEFAULT_NUM_CTX = 8192
-DEFAULT_KEEP_ALIVE = -1
 # think: off/on, or a level for models that support one (Ollama 0.40 also accepts "max").
 THINK_OFF = "off"
 THINK_ON = "on"

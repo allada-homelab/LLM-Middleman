@@ -21,9 +21,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **Ollama defaults match Home Assistant's Ollama integration.** An empty Context window now
-  sends 8192 and an empty Keep alive sends -1 (keep the model loaded). Before, the model's or
-  server's own defaults applied. Set them explicitly to keep other values.
 - **OpenAI-compatible rate limits are named.** HTTP 429 (rate limit or exhausted quota)
   raises an error with the server's reason; AI tasks show it, conversations still speak the
   fallback.

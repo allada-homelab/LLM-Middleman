@@ -23,8 +23,7 @@ Tier-1 (LLMM-024): tool calls keep Ollama's ``id`` and replay with ``function.in
 tool results carry ``tool_name`` + ``tool_call_id`` (``api/types.go`` ``Message``). A
 mid-stream ``{"error": …}`` line (HTTP status already 200) raises
 :class:`BackendStreamError`; ``done_reason: "length"`` keeps the text and is logged +
-traced. Empty ``num_ctx`` / ``keep_alive`` options send core HA's defaults; ``think`` is a
-bool or a level.
+traced. ``think`` is a bool or a level.
 """
 
 from __future__ import annotations
@@ -49,8 +48,6 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_NUM_CTX,
     CONF_THINK,
-    DEFAULT_KEEP_ALIVE,
-    DEFAULT_NUM_CTX,
     KEEP_ALIVE_FOREVER,
     THINK_OFF,
     THINK_ON,
@@ -213,9 +210,10 @@ class OllamaAdapter(BackendAdapter):
     async def _build_request(self, chat_log: conversation.ChatLog, ctx: TurnContext) -> dict[str, Any]:
         """Rebuild the trimmed provider ``messages[]`` and assemble the request body.
 
-        ``num_ctx`` / ``keep_alive`` fall back to core HA's defaults when unset; ``think``
-        is sent only when configured. ``base_url`` is the host root (not ``/v1``); the
-        caller strips the trailing slash before appending paths.
+        Each option is included only when configured, so the Ollama server's own
+        configuration (VRAM-sized context, ``OLLAMA_KEEP_ALIVE``) applies otherwise.
+        ``base_url`` is the host root (not ``/v1``); the caller strips the trailing slash
+        before appending paths.
         """
         options = ctx.options
         items = replayable_content(chat_log.content)
@@ -227,10 +225,12 @@ class OllamaAdapter(BackendAdapter):
         body: dict[str, Any] = {"messages": messages, "stream": True}
         if CONF_MODEL in options:
             body["model"] = options[CONF_MODEL]
-        # int(): HA's NumberSelector stores floats (core ollama sends int(num_ctx) too).
-        body["options"] = {"num_ctx": int(options.get(CONF_NUM_CTX, DEFAULT_NUM_CTX))}
-        keep_alive = int(options.get(CONF_KEEP_ALIVE, DEFAULT_KEEP_ALIVE))
-        body["keep_alive"] = keep_alive if keep_alive == KEEP_ALIVE_FOREVER else f"{keep_alive}s"
+        if CONF_NUM_CTX in options:
+            # int(): HA's NumberSelector stores floats (core ollama sends int(num_ctx) too).
+            body["options"] = {"num_ctx": int(options[CONF_NUM_CTX])}
+        if CONF_KEEP_ALIVE in options:
+            keep_alive = int(options[CONF_KEEP_ALIVE])
+            body["keep_alive"] = keep_alive if keep_alive == KEEP_ALIVE_FOREVER else f"{keep_alive}s"
         if CONF_THINK in options:
             body["think"] = _think(options[CONF_THINK])
         # HA tool schemas, only when an LLM API is configured for this agent.

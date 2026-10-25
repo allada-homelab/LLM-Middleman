@@ -139,8 +139,8 @@ the ones the connection's preset uses. "Default" is the value the form starts wi
 | Top P | OpenAI-compatible | server default | Nucleus sampling cutoff, 0–1. |
 | Maximum tokens | OpenAI-compatible | server default | Longest reply, in tokens. Sent as `max_tokens`; a model that rejects it (OpenAI reasoning models) gets `max_completion_tokens` instead. |
 | Reasoning effort | OpenAI-compatible | not sent | `reasoning_effort` for reasoning models: none, minimal, low, medium, high, extra high, maximum, or a typed value. Leave it empty for other models, which may reject it. |
-| Context window | Ollama | `8192` | `num_ctx`, at least 2048 tokens. Lower it to save RAM, raise it for long conversations or many exposed entities. Empty sends 8192, like Home Assistant's Ollama integration. |
-| Keep alive | Ollama | `-1` | Seconds the model stays loaded after a request; `-1` keeps it loaded, `0` unloads it at once. Empty sends `-1`, like Home Assistant's Ollama integration (this overrides the server's `OLLAMA_KEEP_ALIVE`). |
+| Context window | Ollama | model default | `num_ctx`, at least 2048 tokens. Lower it to save RAM, raise it for long conversations or many exposed entities. With *Control Home Assistant* set, use at least 8192: Home Assistant's tool prompt is large, and Ollama's own default can be 4096 on smaller GPUs. |
+| Keep alive | Ollama | Ollama default | Seconds the model stays loaded after a request; `-1` keeps it loaded, `0` unloads it at once. Set it if model loads make replies slow; empty leaves the server's `OLLAMA_KEEP_ALIVE` in charge. |
 | Think before responding | Ollama | model default | *On*, *Off*, or a level (*Low*, *Medium*, *High*, *Maximum*) for models that take one. The reasoning appears in the chat log and is never spoken. |
 | Double-texting | LangGraph | Roll back | What a new turn does to a run still going on the same thread: *Roll back*, *Interrupt*, *Enqueue*, or *Reject* (see [LangGraph](#langgraph)). |
 | Input messages key | LangGraph | `messages` | Graph state key the new message list is sent under. |
@@ -161,7 +161,7 @@ Each **AI task** (Add AI task, OpenAI-compatible and Ollama only) has a smaller 
 | Model | Both | none | As for agents. Use a vision model for image attachments. |
 | Timeout (seconds) | Both | `60` (10–300) | As for agents, except that a silent backend fails the task instead of speaking a fallback. |
 | Temperature, Top P, Maximum tokens, Reasoning effort | OpenAI-compatible | server default / not sent | As for agents. |
-| Context window, Keep alive, Think before responding | Ollama | `8192` / `-1` / model default | As for agents. |
+| Context window, Keep alive, Think before responding | Ollama | model / Ollama default | As for agents. |
 
 ## AI Task (`generate_data`)
 
