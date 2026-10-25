@@ -8,9 +8,7 @@
 # custom-manifest schema would accept it, but tiers are awarded through core review,
 # and a self-declared tier on a custom integration would be an unreviewed claim.
 #
-# Highest tier fully met: Bronze. Every Silver, Gold, and Platinum rule is done or exempt
-# except `entity-unavailable`, a deliberate todo (the never-hang guarantee); tiers stack,
-# so that one rule keeps the self-assessment at Bronze.
+# Highest tier fully met: Platinum. Every rule is done or exempt.
 rules:
   # Bronze
   action-setup:
@@ -70,11 +68,13 @@ rules:
       normalization, credentials and how they are sent, n8n target and auth types,
       the LangGraph auth header and assistant id).
   entity-unavailable:
-    status: todo
+    status: done
     comment: >-
-      The conversation entity stays available while its backend is down, so the
-      pipeline always gets a spoken fallback (the never-hang guarantee). Unreachability
-      surfaces as SETUP_RETRY at setup and as a repair issue after repeated failed turns.
+      A turn or task that cannot reach the backend marks every conversation and AI task
+      entity of the connection unavailable (shared per-connection state, helpers.py); the
+      first round-trip that reaches it restores them. HA still routes turns to an
+      unavailable agent (conversation.async_converse checks no availability), so the
+      never-hang fallback is still spoken and that turn is what detects recovery.
   integration-owner: done
   log-when-unavailable:
     status: done

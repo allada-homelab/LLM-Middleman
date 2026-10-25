@@ -21,6 +21,7 @@ import aiohttp
 import pytest
 from homeassistant.components import ai_task, conversation, media_source
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigSubentryData
+from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -39,6 +40,7 @@ from custom_components.llm_middleman.const import (
     CONF_MODEL,
     CONF_NAME,
     DOMAIN,
+    ERROR_MESSAGE,
     MAX_TOOL_ITERATIONS,
     SUBENTRY_TYPE_AI_TASK,
     SUBENTRY_TYPE_CONVERSATION,
@@ -417,6 +419,80 @@ async def test_task_success_after_conversation_failures_logs_recovery(
     await generate(hass, task_entity_id(hass, entry))
 
     assert _availability_infos(caplog) == ["Backend of connection Mock Title is reachable again"]
+
+
+def _agent_entity_id(hass: HomeAssistant, entry: MockConfigEntry) -> str:
+    subentry_id = next(
+        s.subentry_id for s in entry.subentries.values() if s.subentry_type == SUBENTRY_TYPE_CONVERSATION
+    )
+    entity_id = er.async_get(hass).async_get_entity_id("conversation", DOMAIN, subentry_id)
+    assert entity_id is not None
+    return entity_id
+
+
+def _states(hass: HomeAssistant, *entity_ids: str) -> list[str]:
+    return [state.state if (state := hass.states.get(e)) else "missing" for e in entity_ids]
+
+
+async def _converse(hass: HomeAssistant, agent_id: str) -> conversation.ConversationResult:
+    return await conversation.async_converse(hass, "hi", None, Context(), agent_id=agent_id)
+
+
+async def test_unreachable_turn_marks_every_connection_entity_unavailable(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """One unreachable round-trip makes the connection's agent and AI task entities unavailable."""
+    entry = await setup_entry(hass, aioclient_mock, BACKEND_OPENAI_COMPAT, with_conversation=True)
+    agent_id, task_id = _agent_entity_id(hass, entry), task_entity_id(hass, entry)
+    _serve_unreachable(aioclient_mock, BACKEND_OPENAI_COMPAT)
+
+    await _converse(hass, agent_id)
+
+    assert _states(hass, agent_id, task_id) == [STATE_UNAVAILABLE, STATE_UNAVAILABLE]
+
+
+async def test_unavailable_agent_still_speaks_the_fallback(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """HA still routes turns to an unavailable agent, so the never-hang fallback is still spoken."""
+    entry = await setup_entry(hass, aioclient_mock, BACKEND_OPENAI_COMPAT, with_conversation=True)
+    agent_id = _agent_entity_id(hass, entry)
+    _serve_unreachable(aioclient_mock, BACKEND_OPENAI_COMPAT)
+    await _converse(hass, agent_id)
+
+    result = await _converse(hass, agent_id)
+
+    assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+
+
+async def test_reaching_the_backend_makes_entities_available_again(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """The first round-trip that reaches the backend restores every entity of the connection."""
+    entry = await setup_entry(hass, aioclient_mock, BACKEND_OPENAI_COMPAT, with_conversation=True)
+    agent_id, task_id = _agent_entity_id(hass, entry), task_entity_id(hass, entry)
+    _serve_unreachable(aioclient_mock, BACKEND_OPENAI_COMPAT)
+    await _converse(hass, agent_id)
+    assert _states(hass, agent_id, task_id) == [STATE_UNAVAILABLE, STATE_UNAVAILABLE]
+    aioclient_mock.clear_requests()
+    queue_replies(aioclient_mock, BACKEND_OPENAI_COMPAT, [text_reply(BACKEND_OPENAI_COMPAT, "ok")])
+
+    await generate(hass, task_id)
+
+    assert STATE_UNAVAILABLE not in _states(hass, agent_id, task_id)
+
+
+async def test_reachable_backend_error_keeps_entities_available(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    """A backend that answers with an error is reachable, so nothing goes unavailable."""
+    entry = await setup_entry(hass, aioclient_mock, BACKEND_OPENAI_COMPAT, with_conversation=True)
+    agent_id, task_id = _agent_entity_id(hass, entry), task_entity_id(hass, entry)
+    aioclient_mock.post(f"{BASE_URL}{TURN_PATH[BACKEND_OPENAI_COMPAT]}", status=500, text="boom")  # pyright: ignore[reportUnknownMemberType]
+
+    await _converse(hass, agent_id)
+
+    assert STATE_UNAVAILABLE not in _states(hass, agent_id, task_id)
 
 
 async def test_empty_reply_raises_translated_error(

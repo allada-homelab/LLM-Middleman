@@ -357,6 +357,10 @@ message," check whether a local sentence/intent claimed the turn first.
   *Timeout*, or returned an error. The log has the reason (see *Debug logging* below). The
   first unreachable turn logs `Backend of connection … is unreachable` at info level, and
   the first turn that gets through again logs `… is reachable again`.
+- **An agent or AI task entity shows "Unavailable".** The last turn or task could not reach
+  the connection's backend; every entity of that connection shows it. Assist still sends
+  turns to the agent, so it keeps answering with the fallback, and the first turn or task
+  that reaches the backend makes the entities available again.
 - **A slow backend is cut off.** *Timeout* is the longest the backend may stay silent, not
   a limit on the whole reply. Raise it for blocking n8n workflows, large models that take
   long to process the prompt, reasoning models, or Ollama loading a model (or set

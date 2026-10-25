@@ -10,6 +10,7 @@ from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .backends.base import BackendAdapter, BackendAuthError
 from .const import DOMAIN, ISSUE_BACKEND_UNREACHABLE, MAX_TOOL_ITERATIONS, UNREACHABLE_ISSUE_THRESHOLD
@@ -23,6 +24,11 @@ def async_start_reauth_on_auth_error(hass: HomeAssistant, entry: ConfigEntry, er
     if isinstance(err, BackendAuthError):
         # HA dedupes: no second flow starts while a reauth/reconfigure one is active.
         entry.async_start_reauth(hass)
+
+
+def signal_reachability_changed(entry_id: str) -> str:
+    """Dispatcher signal sent when a connection's backend goes unreachable or answers again."""
+    return f"{DOMAIN}_{entry_id}_reachability_changed"
 
 
 def _unreachable_issue_id(entry_id: str) -> str:
@@ -68,7 +74,7 @@ def async_record_backend_failure(
     """Record a failed round-trip: start reauth on a rejected credential, count it if unreachable.
 
     The count lives on the shared adapter, so every entity of a connection agrees on one
-    reachability state (quality-scale log-when-unavailable).
+    reachability state (quality-scale log-when-unavailable and entity-unavailable).
     """
     async_start_reauth_on_auth_error(hass, entry, err)
     if not is_unreachable(err):
@@ -79,6 +85,7 @@ def async_record_backend_failure(
     # update; only the user-facing repair issue waits out transient blips.
     if adapter.unreachable_turns == 1:
         _LOGGER.info("Backend of connection %s is unreachable: %s", entry.title, err)
+        async_dispatcher_send(hass, signal_reachability_changed(entry.entry_id))
     if adapter.unreachable_turns >= UNREACHABLE_ISSUE_THRESHOLD:
         async_create_unreachable_issue(hass, entry)
 
@@ -91,10 +98,13 @@ def async_record_backend_reached(hass: HomeAssistant, entry: ConfigEntry, adapte
     count starts at 0 while the issue outlives it.
     """
     issue = ir.async_get(hass).async_get_issue(DOMAIN, _unreachable_issue_id(entry.entry_id))
-    if adapter.unreachable_turns or issue is not None:
+    was_down = adapter.unreachable_turns > 0
+    if was_down or issue is not None:
         _LOGGER.info("Backend of connection %s is reachable again", entry.title)
     adapter.unreachable_turns = 0
     async_delete_unreachable_issue(hass, entry.entry_id)
+    if was_down:
+        async_dispatcher_send(hass, signal_reachability_changed(entry.entry_id))
 
 
 async def async_run_tool_loop(chat_log: conversation.ChatLog, run_round: Callable[[], Awaitable[object]]) -> bool:
