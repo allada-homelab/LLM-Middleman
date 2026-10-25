@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-25
+
 ### Changed
 
 - **Conversation and AI task entities show unavailable while their backend is

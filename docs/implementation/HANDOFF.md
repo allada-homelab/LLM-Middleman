@@ -1,13 +1,13 @@
 # Session handoff — maintenance mode, owner-run remainder
 
-> Re-entry point after a Claude Code window reload. v1 is released (latest tag `v1.4.0`);
-> `main` carries any unreleased post-1.4.0 work listed under `## [Unreleased]` in
+> Re-entry point after a Claude Code window reload. v1 is released (latest tag `v1.5.0`);
+> `main` carries any unreleased post-1.5.0 work listed under `## [Unreleased]` in
 > `CHANGELOG.md`. This file tracks only what still needs the owner's hands, plus the
 > standing orchestration rules that must survive a reload.
 
 ## Current state
 
-- **Released:** `v1.4.0` (`manifest.json` version is the source of truth). Minimum HA
+- **Released:** `v1.5.0` (`manifest.json` version is the source of truth). Minimum HA
   2026.7.0; CI runs the suite on the locked HA (2026.10.3, with the coverage gate) and on
   that floor.
 - **Shipped in v1.2.0:** HACS validation / coverage gate / release workflow (#90),
@@ -21,6 +21,8 @@
 - **Shipped in v1.4.0:** Timeout = maximum backend silence, fixing the 30 s idle-timeout
   regression from 1.1.4, plus n8n keepalive frames (#110); n8n + converse tier-1 LLMM-025
   (#112); OpenAI-compatible + Ollama tier-1 LLMM-024 (#113).
+- **Shipped in v1.5.0:** conversation and AI task entities go unavailable while their
+  backend is unreachable and recover on the next turn that reaches it (#119).
 - **Tickets in review, waiting on owner rows:** LLMM-021 (Dify), LLMM-022 (LangGraph),
   LLMM-023 (AI Task `generate_data`), LLMM-024 (OpenAI-compatible + Ollama), LLMM-025
   (n8n + converse), LLMM-018 (live E2E matrix), LLMM-019 (release
@@ -43,11 +45,13 @@ named results file and flip the ticket.
 3. **Reauth on a real HA** (#100): revoke a backend key → the entry asks to reauthenticate,
    only the credential field is shown, the entry reloads after the new key. Also stop a
    backend and watch the "backend unreachable" repair appear after three turns and clear
-   on recovery.
+   on recovery. In the same run (v1.5.0, #119), confirm the agent and AI task entities show
+   *Unavailable* after the first failed turn, the agent still speaks the fallback and stays
+   selectable in the Assist pipeline, and both return to available on recovery.
 4. **Device-scope upgrade check** (cleanup PR): on an install with a v1.1.x Dify or
    LangGraph device-scope agent, confirm the first agent to talk on that device keeps its
    history after upgrading, and a second agent on the same connection starts fresh.
-5. **Live-HA HACS install of the latest release** (`v1.4.0`, or the next tag if newer):
+5. **Live-HA HACS install of the latest release** (`v1.5.0`, or the next tag if newer):
    HACS → *Custom repositories* → `https://github.com/allada-homelab/LLM-Middleman`
    (Integration) → *Download* → restart. The release workflow (#90) builds the GitHub
    release from the tag and the `CHANGELOG.md` section.
