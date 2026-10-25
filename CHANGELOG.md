@@ -15,7 +15,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   task passes an LLM API. Failures raise errors instead of returning fallback text; a
   rejected API key starts reauthentication. (#106)
 - **README reference tables** for every preset's connection fields and every agent and
-  AI task option, with defaults.
+  AI task option, with defaults. (#108)
 
 ### Changed
 
@@ -24,7 +24,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and AI tasks. AI tasks that cannot reach the backend now also count toward the
   "Backend unreachable" repair issue.
   Turns that cannot reach the backend log at debug instead of an error with a traceback
-  each time; failures after reaching the backend still log as errors.
+  each time; failures after reaching the backend still log as errors. (#108)
 
 ## [1.2.0] - 2026-10-25
 
