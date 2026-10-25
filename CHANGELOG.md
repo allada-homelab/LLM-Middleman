@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Conversation and AI task entities show unavailable while their backend is
+  unreachable.** One turn or task that cannot reach the backend marks every entity of that
+  connection unavailable, and the first one that reaches it restores them. Assist still
+  sends turns to an unavailable agent, so the spoken fallback is unchanged.
+
 ## [1.4.0] - 2026-10-25
 
 ### Added

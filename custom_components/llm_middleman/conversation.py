@@ -22,9 +22,10 @@ from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigSubentry
 from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import intent, translation
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
@@ -45,6 +46,7 @@ from .helpers import (
     async_record_backend_reached,
     async_run_tool_loop,
     is_unreachable,
+    signal_reachability_changed,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -112,6 +114,21 @@ class LLMMiddlemanConversationEntity(
         """Register as a conversation agent when added to HA."""
         await super().async_added_to_hass()
         conversation.async_set_agent(self.hass, self.entry, self)
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, signal_reachability_changed(self.entry.entry_id), self._async_reachability_changed
+            )
+        )
+
+    @callback
+    def _async_reachability_changed(self) -> None:
+        """Go unavailable while the connection's backend is unreachable.
+
+        HA still routes turns to an unavailable agent (async_converse never checks), so the
+        fallback is still spoken and the first turn that reaches the backend restores it.
+        """
+        self._attr_available = self.adapter.unreachable_turns == 0
+        self.async_write_ha_state()
 
     async def async_will_remove_from_hass(self) -> None:
         """Unregister as a conversation agent when removed from HA."""

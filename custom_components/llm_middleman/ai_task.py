@@ -19,10 +19,11 @@ from typing import Any
 
 from homeassistant.components import ai_task, conversation
 from homeassistant.config_entries import ConfigSubentry
-from homeassistant.core import Context, HomeAssistant
+from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import llm
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import slugify
 from homeassistant.util.json import json_loads
@@ -31,7 +32,12 @@ from . import LLMMiddlemanConfigEntry
 from .backends._compat import schema_to_openapi
 from .backends.base import BackendAdapter, OutputSchema, TurnContext
 from .const import DOMAIN, MAX_TOOL_ITERATIONS, SUBENTRY_TYPE_AI_TASK
-from .helpers import async_record_backend_failure, async_record_backend_reached, async_run_tool_loop
+from .helpers import (
+    async_record_backend_failure,
+    async_record_backend_reached,
+    async_run_tool_loop,
+    signal_reachability_changed,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -78,6 +84,21 @@ class LLMMiddlemanTaskEntity(ai_task.AITaskEntity):
             manufacturer="LLM Middleman",
             entry_type=dr.DeviceEntryType.SERVICE,
         )
+
+    async def async_added_to_hass(self) -> None:
+        """Follow the connection's reachability."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, signal_reachability_changed(self.entry.entry_id), self._async_reachability_changed
+            )
+        )
+
+    @callback
+    def _async_reachability_changed(self) -> None:
+        """Go unavailable while the connection's backend is unreachable; tasks still run and restore it."""
+        self._attr_available = self.adapter.unreachable_turns == 0
+        self.async_write_ha_state()
 
     async def _async_generate_data(
         self,
