@@ -1,7 +1,7 @@
 ---
 id: LLMM-024
 title: OpenAI-compatible + Ollama tier-1 (mid-stream errors, truncation, max_completion_tokens, refusal, tool ids, think levels, cache key, quota)
-status: in-progress
+status: in-review
 phase: 5
 depends_on: [LLMM-008, LLMM-010, LLMM-014, LLMM-015]
 ---
@@ -84,20 +84,47 @@ generic fallback for every adapter error; AI Task surfaces the translated messag
   on a local server (see `fixtures/README.md`).
 
 ## Acceptance criteria
-- [ ] 1 — error frames (vLLM, OpenRouter, Ollama) raise after partial text; captured replies unaffected.
-- [ ] 2 — length/content_filter keep the text, warn once, trace `finish_reason`.
-- [ ] 3 — 400 naming unsupported `max_tokens` retried once with `max_completion_tokens`, remembered per model; unrelated 400 not retried.
-- [ ] 4 — refusal-only stream speaks the refusal.
-- [ ] 5 — Ollama tool ids kept and replayed with index, `tool_name`, `tool_call_id`.
-- [ ] 6 — think levels sent; stored booleans still sent as booleans; selector offers the levels.
-- [ ] 7 — `num_ctx` 8192 / `keep_alive` -1 only when unset.
-- [ ] 8 — `reasoning_effort` only when set; `prompt_cache_key` = subentry id, dropped once rejected; 429 → translated error.
-- [ ] 9 — `reasoning_tokens` and Ollama cached prompt tokens traced when reported.
-- [ ] Every captured fixture replays as a normal reply / tool call (no fallback).
+- [x] 1 — error frames (vLLM, OpenRouter, Ollama) raise after partial text; captured replies unaffected.
+- [x] 2 — length/content_filter keep the text, warn once, trace `finish_reason`.
+- [x] 3 — 400 naming unsupported `max_tokens` retried once with `max_completion_tokens`, remembered per model; unrelated 400 not retried.
+- [x] 4 — refusal-only stream speaks the refusal.
+- [x] 5 — Ollama tool ids kept and replayed with index, `tool_name`, `tool_call_id`.
+- [x] 6 — think levels sent; stored booleans still sent as booleans; selector offers the levels.
+- [x] 7 — `num_ctx` 8192 / `keep_alive` -1 only when unset.
+- [x] 8 — `reasoning_effort` only when set; `prompt_cache_key` = subentry id, dropped once rejected; 429 → translated error.
+- [x] 9 — `reasoning_tokens` and Ollama cached prompt tokens traced when reported.
+- [x] Every captured fixture replays as a normal reply / tool call (no fallback).
 - [ ] Owner-run live rows against OpenAI (reasoning model, quota) and vLLM/OpenRouter (NOT RUN).
 
 ## Verification
-(filled in at in-review)
+Agent-run (devcontainer, 2026-10-25, branch `feat/llmm-024-openai-ollama-tier1` off `d48e88a`):
+- Baseline `uv run pytest -q` on `d48e88a` → `801 passed`.
+- `uv lock --check` → rc 0.
+- `uv run pytest -q` → `855 passed` (+54; the only existing tests changed are those whose
+  contract this ticket changes on purpose: Ollama unset options now send defaults, the Ollama
+  tool replay shape, `think` submitted as a select value, `reasoning_effort` in the
+  OpenAI-compatible agent and AI task forms).
+- `uv run coverage run -m pytest -q && uv run coverage report` → TOTAL 98 % (≥ 94);
+  `openai_compat.py` 99 %, `ollama.py` 97 % (uncovered lines pre-date this ticket).
+- `uv run ruff check .`, `uv run ruff format --check .` → clean; `uv run basedpyright` →
+  `0 errors, 0 warnings, 0 notes`; `uv run pre-commit run --all-files` → all hooks passed.
+- CI floor leg (throwaway detached worktree, HA 2026.7.0 overlay per
+  `.github/workflows/lint.yml`, removed after): `uv run --no-sync pytest -q tests/` →
+  `849 passed, 6 skipped` (all six are HA-version gates that pre-date this ticket: probatio ×4,
+  tool-result `error` flag ×2).
+- Mutation checks (each reverted after): disabling the openai error-frame check turns 3
+  tests red, `finish_reason: "error"` 1, refusal 1, the `max_tokens` swap 2, truncation
+  recording 3; Ollama error line 1, `done_reason` length 1, keeping the tool id 1.
+- Captures: Ollama 0.40.6 and llama.cpp b11854 (same qwen3 0.6b GGUF), see
+  `tests/backends/fixtures/README.md`. They also confirmed: Ollama `/v1` ignores
+  `max_completion_tokens` and accepts `prompt_cache_key` / `reasoning_effort`; llama.cpp
+  honours `max_completion_tokens` and accepts `prompt_cache_key`; Ollama native returns
+  `tool_calls[].id` + `function.index`, accepts replayed `tool_name` / `tool_call_id`, reports
+  `prompt_eval_cached_count`, and accepts `think` `"low"` on qwen3.
+
+Owner-run (NOT RUN): a reasoning model with Maximum tokens set and an out-of-quota key
+against api.openai.com; a vLLM / OpenRouter mid-stream error; parallel tool calls on a
+tool-capable Ollama model.
 
 ## Risks / open questions
 - Stricter terminal handling could turn working replies into fallbacks — guarded by replaying
