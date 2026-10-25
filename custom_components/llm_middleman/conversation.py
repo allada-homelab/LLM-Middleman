@@ -30,7 +30,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from . import LLMMiddlemanConfigEntry, async_create_unreachable_issue, async_delete_unreachable_issue
-from .backends.base import BackendAdapter, BackendAuthError, DeltaStream, TurnContext
+from .backends.base import BackendAdapter, DeltaStream, TurnContext
 from .const import (
     CONF_MEMORY_SCOPE,
     DOMAIN,
@@ -42,7 +42,7 @@ from .const import (
     SUBENTRY_TYPE_CONVERSATION,
     UNREACHABLE_ISSUE_THRESHOLD,
 )
-from .helpers import async_run_tool_loop
+from .helpers import async_run_tool_loop, async_start_reauth_on_auth_error
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -249,9 +249,7 @@ class LLMMiddlemanConversationEntity(
 
     def _record_backend_failure(self, err: Exception) -> None:
         """Start reauth on a credential rejection; count turns that never reached the backend."""
-        if isinstance(err, BackendAuthError):
-            # HA dedupes: no second flow starts while a reauth/reconfigure one is active.
-            self.entry.async_start_reauth(self.hass)
+        async_start_reauth_on_auth_error(self.hass, self.entry, err)
         if not _is_unreachable(err):
             self._record_backend_reached()
             return

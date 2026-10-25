@@ -31,7 +31,7 @@ from . import LLMMiddlemanConfigEntry
 from .backends._compat import schema_to_openapi
 from .backends.base import BackendAdapter, OutputSchema, TurnContext
 from .const import DOMAIN, MAX_TOOL_ITERATIONS, SUBENTRY_TYPE_AI_TASK
-from .helpers import async_run_tool_loop
+from .helpers import async_run_tool_loop, async_start_reauth_on_auth_error
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,11 +110,10 @@ class LLMMiddlemanTaskEntity(ai_task.AITaskEntity):
 
         try:
             completed = await async_run_tool_loop(chat_log, _run_round)
-        except HomeAssistantError as err:
-            if err.translation_domain == DOMAIN:  # already user-facing (e.g. a non-image attachment)
-                raise
-            raise _backend_error(err) from err
         except Exception as err:
+            if isinstance(err, HomeAssistantError) and err.translation_domain == DOMAIN:
+                raise  # already user-facing (e.g. a non-image attachment)
+            async_start_reauth_on_auth_error(self.hass, self.entry, err)
             raise _backend_error(err) from err
 
         if not completed:

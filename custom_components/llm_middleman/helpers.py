@@ -5,8 +5,19 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from homeassistant.components import conversation
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
 
+from .backends.base import BackendAuthError
 from .const import MAX_TOOL_ITERATIONS
+
+
+@callback
+def async_start_reauth_on_auth_error(hass: HomeAssistant, entry: ConfigEntry, err: BaseException) -> None:
+    """Start the entry's reauth flow when a round-trip failed on rejected credentials (401/403)."""
+    if isinstance(err, BackendAuthError):
+        # HA dedupes: no second flow starts while a reauth/reconfigure one is active.
+        entry.async_start_reauth(hass)
 
 
 async def async_run_tool_loop(chat_log: conversation.ChatLog, run_round: Callable[[], Awaitable[object]]) -> bool:

@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 from homeassistant.components import ai_task, conversation, media_source
-from homeassistant.config_entries import ConfigSubentryData
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigSubentryData
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -300,6 +300,44 @@ async def test_backend_error_raises_translated_error(
         await generate(hass, task_entity_id(hass, entry))
 
     assert raised.value.translation_key == "ai_task_backend_error"
+
+
+def reauth_flows(hass: HomeAssistant) -> list[Any]:
+    """The reauth flows in progress for this integration."""
+    return [
+        flow
+        for flow in hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+        if flow.get("context", {}).get("source") == SOURCE_REAUTH
+    ]
+
+
+async def test_auth_rejection_starts_reauth_and_raises(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, tool_preset: str
+) -> None:
+    """A 401 during a task opens exactly one reauth flow (as a conversation turn does) and still raises."""
+    entry = await setup_entry(hass, aioclient_mock, tool_preset)
+    aioclient_mock.post(f"{BASE_URL}{TURN_PATH[tool_preset]}", status=401, text="bad key")  # pyright: ignore[reportUnknownMemberType]
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await generate(hass, task_entity_id(hass, entry))
+    await hass.async_block_till_done()
+
+    assert raised.value.translation_key == "ai_task_backend_error"
+    assert len(reauth_flows(hass)) == 1
+
+
+async def test_server_error_does_not_start_reauth(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, tool_preset: str
+) -> None:
+    """A 500 is a backend failure, not a credential rejection: no reauth flow."""
+    entry = await setup_entry(hass, aioclient_mock, tool_preset)
+    aioclient_mock.post(f"{BASE_URL}{TURN_PATH[tool_preset]}", status=500, text="boom")  # pyright: ignore[reportUnknownMemberType]
+
+    with pytest.raises(HomeAssistantError):
+        await generate(hass, task_entity_id(hass, entry))
+    await hass.async_block_till_done()
+
+    assert reauth_flows(hass) == []
 
 
 async def test_empty_reply_raises_translated_error(
