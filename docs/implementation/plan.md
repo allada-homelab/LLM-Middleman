@@ -162,9 +162,11 @@ catches `Exception` broadly (not just `ClientError`/`TimeoutError`; the v0 holes
 `_LOGGER.exception`, and guarantees ≥1 `AssistantContent` (role-first delta, then a
 fallback message) on every exit path. Empty-string deltas pass through untrimmed.
 
-**Timeouts:** `aiohttp.ClientTimeout(total=CONF_TIMEOUT, sock_read=IDLE_TIMEOUT)` —
-per-agent configurable total (default 60 s, range 10–300, webhook-conversation precedent)
-plus a sock_read idle timeout (~30 s) so a responsive-but-slow stream isn't killed.
+**Timeouts:** `aiohttp.ClientTimeout(total=None, sock_connect=CONF_TIMEOUT, sock_read=CONF_TIMEOUT)`
+— one per-agent knob (default 60 s, n8n 30 s, range 10–300, webhook-conversation
+precedent) bounding the connect and every silence (before the reply and between frames);
+no total, so a responsive-but-slow stream isn't killed. (1.1.4–1.3.0 shipped a fixed 30 s
+`sock_read` that ignored the agent setting — reverted.)
 
 ### Streaming parsers
 
@@ -335,8 +337,9 @@ Full sweep of HA 2026.7.1's AI/LLM surface performed against the installed sourc
   Assist's "Show details" view without HA executing anything (wyoming is prior art).
 
 **Skip (with reasons, so it isn't re-litigated):**
-- AI Task attachments / `GENERATE_IMAGE`, STT/TTS platforms — contradict text-only scope;
-  attachments never appear on the conversation path anyway.
+- AI Task `GENERATE_IMAGE`, STT/TTS platforms — contradict text-only scope. (LLMM-023 did
+  add image *attachments* for AI Task `generate_data`. They never appear on the
+  conversation path.)
 - Registering our own `llm.API` — our tools live in the external backends.
 - Token-usage sensors — no core prior art; trace stats is the blessed channel.
 - Repairs flows — nothing to deprecate yet.

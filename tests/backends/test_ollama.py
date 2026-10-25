@@ -10,16 +10,14 @@ and the ``/api/tags`` probe.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import aiohttp
 import pytest
-import voluptuous as vol
 from homeassistant.components import conversation
-from homeassistant.core import Context, HomeAssistant
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
 
 from custom_components.llm_middleman.backends import BACKEND_TO_CLS, get_backend_cls
@@ -40,33 +38,30 @@ from custom_components.llm_middleman.const import (
     CONF_NUM_CTX,
     CONF_THINK,
     CONF_TIMEOUT,
-    IDLE_TIMEOUT,
 )
 from tests.conftest import (
     TEST_BASE_URL,
     TOOL_SCHEMA_PROPERTIES,
+    FakeJsonResponse,
+    FakeLLMApi,
     FakeStreamResponse,
+    FakeTool,
     MockChatLog,
+    UndescribedTool,
+    capture_response,
     chunk_bytes,
+    collect,
+    external_tool_history,
     fake_aiohttp_session,
+    fake_get_session,
+    make_input,
     probatio_tool_schema,
+    text_of,
     tool_result_content,
     vol_tool_schema,
 )
 
 Delta = conversation.AssistantContentDeltaDict
-
-
-def _make_input() -> conversation.ConversationInput:
-    return conversation.ConversationInput(
-        text="hi",
-        context=Context(),
-        conversation_id="conv-1",
-        device_id=None,
-        satellite_id=None,
-        language="en",
-        agent_id="agent-1",
-    )
 
 
 def _adapter(hass: HomeAssistant, session: MagicMock) -> OllamaAdapter:
@@ -80,7 +75,7 @@ async def _run(
     options: dict[str, Any] | None = None,
 ) -> list[Delta]:
     ctx = TurnContext(options=options or {CONF_MODEL: "llama3"}, memory_key="k")
-    return [delta async for delta in adapter.stream_turn(chat_log, _make_input(), ctx)]
+    return await collect(adapter.stream_turn(chat_log, make_input(), ctx))
 
 
 # --- NDJSON parser edge cases (raw bytes through the real parser) ---
@@ -154,6 +149,12 @@ async def test_malformed_json_raises(hass: HomeAssistant, mock_chat_log: convers
         await _run(adapter, mock_chat_log)
 
 
+async def test_non_object_ndjson_line_raises(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse([b'["not", "an object"]\n'])))
+    with pytest.raises(BackendStreamError, match="not an object"):
+        await _run(adapter, mock_chat_log)
+
+
 async def test_error_after_deltas_propagates(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
     # Transport raises mid-stream after >=1 delta has been emitted.
     chunks = [
@@ -166,9 +167,20 @@ async def test_error_after_deltas_propagates(hass: HomeAssistant, mock_chat_log:
 
     seen: list[Delta] = []
     with pytest.raises(aiohttp.ClientPayloadError):
-        async for delta in adapter.stream_turn(mock_chat_log, _make_input(), TurnContext(options={}, memory_key="k")):
+        async for delta in adapter.stream_turn(mock_chat_log, make_input(), TurnContext(options={}, memory_key="k")):
             seen.append(delta)
     assert seen == [{"role": "assistant"}, {"content": "Hi"}]
+
+
+async def test_oversize_ndjson_line_skipped_stream_continues(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    """An over-cap NDJSON line is dropped (bounded memory); later lines still stream."""
+    huge = b'{"message":{"content":"' + b"x" * 70000 + b'"}}\n'
+    blob = huge + b'{"message":{"content":"ok"}}\n{"message":{"content":""},"done":true}\n'
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse(chunk_bytes(blob, 4096))))
+    deltas = await _run(adapter, mock_chat_log)
+    assert deltas == [{"role": "assistant"}, {"content": "ok"}]
 
 
 async def test_non_200_status_raises(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
@@ -219,7 +231,19 @@ async def test_options_included_only_when_set(hass: HomeAssistant, mock_chat_log
     assert body["think"] is True
 
 
+async def test_num_ctx_from_number_selector_sent_as_int(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    # HA's NumberSelector stores floats; sent as an int like core ollama's int(num_ctx).
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), mock_chat_log, options={CONF_NUM_CTX: 4096.0})
+
+    assert repr(session.post.call_args.kwargs["json"]["options"]["num_ctx"]) == "4096"
+
+
 async def test_options_absent_when_unset(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    # Unset means not sent: the Ollama server's own config (VRAM-sized num_ctx,
+    # OLLAMA_KEEP_ALIVE) must apply, not a value forced by the integration.
     session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
     adapter = _adapter(hass, session)
     await _run(adapter, mock_chat_log, options={CONF_MODEL: "llama3"})
@@ -257,32 +281,8 @@ async def test_auth_header_sent_when_api_key_set(hass: HomeAssistant, mock_chat_
 # --- /api/tags probe ---
 
 
-class _FakeGetResponse:
-    def __init__(self, *, status: int = 200, payload: dict[str, Any] | None = None) -> None:
-        self.status = status
-        self._payload = payload if payload is not None else {}
-
-    async def json(self) -> dict[str, Any]:
-        return self._payload
-
-    async def __aenter__(self) -> _FakeGetResponse:
-        return self
-
-    async def __aexit__(self, *args: object) -> bool:
-        return False
-
-
-def _fake_get_session(*, response: _FakeGetResponse | None = None, exc: Exception | None = None) -> MagicMock:
-    session = MagicMock()
-    if exc is not None:
-        session.get = MagicMock(side_effect=exc)
-    else:
-        session.get = MagicMock(return_value=response)
-    return session
-
-
 async def test_validate_connection_ok(hass: HomeAssistant) -> None:
-    session = _fake_get_session(response=_FakeGetResponse(payload={"models": []}))
+    session = fake_get_session(response=FakeJsonResponse({"models": []}))
     with patch(
         "custom_components.llm_middleman.backends.ollama.async_get_clientsession",
         return_value=session,
@@ -292,7 +292,7 @@ async def test_validate_connection_ok(hass: HomeAssistant) -> None:
 
 
 async def test_validate_connection_error(hass: HomeAssistant) -> None:
-    session = _fake_get_session(exc=aiohttp.ClientConnectionError("refused"))
+    session = fake_get_session(exc=aiohttp.ClientConnectionError("refused"))
     with (
         patch(
             "custom_components.llm_middleman.backends.ollama.async_get_clientsession",
@@ -304,7 +304,7 @@ async def test_validate_connection_error(hass: HomeAssistant) -> None:
 
 
 async def test_validate_connection_auth_error(hass: HomeAssistant) -> None:
-    session = _fake_get_session(response=_FakeGetResponse(status=401))
+    session = fake_get_session(response=FakeJsonResponse(status=401))
     with (
         patch(
             "custom_components.llm_middleman.backends.ollama.async_get_clientsession",
@@ -317,7 +317,7 @@ async def test_validate_connection_auth_error(hass: HomeAssistant) -> None:
 
 async def test_list_models(hass: HomeAssistant) -> None:
     payload = {"models": [{"model": "llama3:latest"}, {"model": "qwen3:4b"}]}
-    session = _fake_get_session(response=_FakeGetResponse(payload=payload))
+    session = fake_get_session(response=FakeJsonResponse(payload))
     with patch(
         "custom_components.llm_middleman.backends.ollama.async_get_clientsession",
         return_value=session,
@@ -327,22 +327,6 @@ async def test_list_models(hass: HomeAssistant) -> None:
 
 
 # --- tools (LLMM-015) ---
-
-
-class _FakeTool:
-    """Minimal duck-typed ``llm.Tool`` (name/description/voluptuous parameters)."""
-
-    name = "get_time"
-    description = "Return the current time"
-    parameters = vol.Schema({})
-
-
-class _FakeLLMApi:
-    """Duck-typed ``llm.APIInstance`` exposing only what the adapter reads."""
-
-    def __init__(self, tools: list[Any], custom_serializer: Callable[[Any], Any] | None = None) -> None:
-        self.tools = tools
-        self.custom_serializer = custom_serializer
 
 
 async def test_native_tool_call_extraction(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
@@ -380,7 +364,7 @@ async def test_malformed_tool_args_repaired(hass: HomeAssistant, mock_chat_log: 
 
 
 async def test_tools_field_sent_when_llm_api_set(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
-    mock_chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([_FakeTool()]))
+    mock_chat_log.llm_api = cast(llm.APIInstance, FakeLLMApi([FakeTool()]))
     session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
     adapter = _adapter(hass, session)
     await _run(adapter, mock_chat_log)
@@ -392,12 +376,20 @@ async def test_tools_field_sent_when_llm_api_set(hass: HomeAssistant, mock_chat_
     assert isinstance(tools[0]["function"]["parameters"], dict)
 
 
+async def test_tool_without_description_omits_field(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    """Ollama's wire shape drops ``description`` when the tool has none (core ollama)."""
+    mock_chat_log.llm_api = cast(llm.APIInstance, FakeLLMApi([UndescribedTool()]))
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), mock_chat_log)
+    assert "description" not in session.post.call_args.kwargs["json"]["tools"][0]["function"]
+
+
 async def _posted_tool_parameters(hass: HomeAssistant, chat_log: conversation.ChatLog, parameters: Any) -> Any:
     """Send one turn offering a single tool with ``parameters``; return its rendered JSON Schema."""
-    tool = _FakeTool()
+    tool = FakeTool()
     tool.parameters = parameters
     # selector_serializer is what the real Assist API instance passes as custom_serializer.
-    chat_log.llm_api = cast(llm.APIInstance, _FakeLLMApi([tool], custom_serializer=llm.selector_serializer))
+    chat_log.llm_api = cast(llm.APIInstance, FakeLLMApi([tool], custom_serializer=llm.selector_serializer))
     session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
     await _run(_adapter(hass, session), chat_log)
     return session.post.call_args.kwargs["json"]["tools"][0]["function"]["parameters"]
@@ -453,10 +445,27 @@ async def test_history_replays_tool_calls_and_results_default_str(
     assert messages[2] == {
         "role": "assistant",
         "content": "",
-        "tool_calls": [{"function": {"name": "get_time", "arguments": {"tz": "utc"}}}],
+        "tool_calls": [{"id": "call_1", "function": {"index": 0, "name": "get_time", "arguments": {"tz": "utc"}}}],
     }
     assert messages[3]["role"] == "tool"
-    assert json.loads(messages[3]["content"]) == {"now": str(now)}
+    assert json.loads(messages[3]["content"]) == {"data": {"now": str(now)}, "error": False}
+
+
+async def test_history_skips_external_tool_calls_and_results(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    # Backend-run (external) calls from another agent must not be replayed as if this
+    # model made them; the HA-run call and its result still are.
+    mock_chat_log.content.clear()
+    mock_chat_log.content.extend(external_tool_history())
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), mock_chat_log)
+    messages = session.post.call_args.kwargs["json"]["messages"]
+
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user", "assistant", "tool"]
+    assert messages[2] == {"role": "assistant", "content": "It is sunny."}
+    assert [call["function"]["name"] for call in messages[4]["tool_calls"]] == ["HassTurnOn"]
+    assert json.loads(messages[5]["content"]) == {"data": {"ok": True}, "error": False}
 
 
 # --- Registration + classvars ---
@@ -496,7 +505,7 @@ def test_convert_content_maps_roles() -> None:
 
 
 async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
-    # The per-agent CONF_TIMEOUT plus the shared idle deadline reach the wire call.
+    # The per-agent CONF_TIMEOUT bounds both connect and silence on the wire call.
     response = FakeStreamResponse([b'{"message":{"role":"assistant","content":"x"},"done":true}\n'])
     session = fake_aiohttp_session(response=response)
     adapter = _adapter(hass, session)
@@ -504,4 +513,156 @@ async def test_streaming_post_honors_agent_timeout(hass: HomeAssistant, mock_cha
     timeout = session.post.call_args.kwargs["timeout"]
     assert timeout.total is None
     assert timeout.sock_connect == 45
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.sock_read == 45
+
+
+# --- token stats (trace) ----------------------------------------------------------
+
+
+async def test_done_frame_counts_traced_as_stats(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    blob = (
+        b'{"message":{"content":"Hi"},"done":false}\n'
+        b'{"message":{"content":""},"done":true,"prompt_eval_count":42,"eval_count":9}\n'
+    )
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse(chunk_bytes(blob, 4))))
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        deltas = await _run(adapter, mock_chat_log)
+    assert deltas == [{"role": "assistant"}, {"content": "Hi"}]
+    trace.assert_called_once_with({"stats": {"input_tokens": 42, "output_tokens": 9}})
+
+
+async def test_done_frame_missing_prompt_count_defaults_zero(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    # Ollama omits prompt_eval_count when the whole prompt was served from its cache.
+    blob = b'{"message":{"content":"Hi"},"done":true,"eval_count":3}\n'
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse([blob])))
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        await _run(adapter, mock_chat_log)
+    trace.assert_called_once_with({"stats": {"input_tokens": 0, "output_tokens": 3}})
+
+
+async def test_no_counts_no_trace(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    adapter = _adapter(hass, fake_aiohttp_session(response=FakeStreamResponse([_HAPPY])))
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        await _run(adapter, mock_chat_log)
+    trace.assert_not_called()
+
+
+# --- real-server captures + tier-1 (LLMM-024) ---------------------------------------
+
+
+async def _replay(
+    hass: HomeAssistant, chat_log: conversation.ChatLog, name: str, *, options: dict[str, Any] | None = None
+) -> list[Delta]:
+    adapter = _adapter(hass, fake_aiohttp_session(response=capture_response("ollama", name)))
+    return await _run(adapter, chat_log, options=options)
+
+
+def _posted(session: MagicMock) -> dict[str, Any]:
+    return session.post.call_args.kwargs["json"]
+
+
+async def _post_with(hass: HomeAssistant, chat_log: conversation.ChatLog, options: dict[str, Any]) -> dict[str, Any]:
+    session = fake_aiohttp_session(response=FakeStreamResponse([b'{"message":{"content":""},"done":true}\n']))
+    await _run(_adapter(hass, session), chat_log, options=options)
+    return _posted(session)
+
+
+@pytest.mark.parametrize("name", ["plain", "plain_repeat", "thinking", "think_low", "tool_followup"])
+async def test_captured_reply_streams_as_normal_reply(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, name: str
+) -> None:
+    deltas = await _replay(hass, mock_chat_log, name)
+    assert deltas[0] == {"role": "assistant"}
+    assert text_of(deltas).strip()
+
+
+async def test_captured_tool_call_keeps_the_server_id(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    deltas = await _replay(hass, mock_chat_log, "tool")
+    calls = deltas[1].get("tool_calls")
+    assert calls is not None
+    assert [(call.id, call.tool_name, call.tool_args) for call in calls] == [
+        ("call_fr5n9hrf", "HassTurnOn", {"domain": ["kitchen"], "name": "light"})
+    ]
+
+
+async def test_midstream_error_line_raises_after_partial_text(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    adapter = _adapter(hass, fake_aiohttp_session(response=capture_response("ollama", "midstream_error")))
+    deltas: list[Delta] = []
+    with caplog.at_level("ERROR"), pytest.raises(BackendStreamError, match="error was encountered"):
+        async for delta in adapter.stream_turn(mock_chat_log, make_input(), TurnContext(options={}, memory_key="k")):
+            deltas.append(delta)
+    assert text_of(deltas) == "The kitchen"
+    assert "Ollama stream error" in caplog.text
+
+
+async def test_length_truncation_keeps_text_warns_and_traces(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"), patch.object(mock_chat_log, "async_trace") as trace:
+        deltas = await _replay(hass, mock_chat_log, "length")
+    assert text_of(deltas)
+    trace.assert_any_call({"finish_reason": "length"})
+    assert "finish_reason=length" in caplog.text
+
+
+async def test_stop_done_reason_not_traced(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        await _replay(hass, mock_chat_log, "plain")
+    assert all("finish_reason" not in call.args[0] for call in trace.call_args_list)
+
+
+async def test_cached_prompt_tokens_traced(hass: HomeAssistant, mock_chat_log: conversation.ChatLog) -> None:
+    with patch.object(mock_chat_log, "async_trace") as trace:
+        await _replay(hass, mock_chat_log, "plain_repeat")
+    trace.assert_called_once_with({"stats": {"input_tokens": 39, "cached_input_tokens": 38, "output_tokens": 6}})
+
+
+@pytest.mark.parametrize(("name", "status"), [("error_404_model", 404), ("error_400_bad_think", 400)])
+async def test_captured_error_bodies_raise(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, name: str, status: int
+) -> None:
+    with pytest.raises(BackendConnectionError, match=f"HTTP {status}"):
+        await _replay(hass, mock_chat_log, name)
+
+
+@pytest.mark.parametrize(
+    ("stored", "sent"),
+    [(True, True), (False, False), ("on", True), ("off", False), ("low", "low"), ("high", "high"), ("max", "max")],
+)
+async def test_think_sent_as_bool_or_level(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog, stored: bool | str, sent: bool | str
+) -> None:
+    body = await _post_with(hass, mock_chat_log, {CONF_THINK: stored})
+    assert body["think"] == sent
+
+
+async def test_tool_replay_carries_ids_index_and_tool_name(
+    hass: HomeAssistant, mock_chat_log: conversation.ChatLog
+) -> None:
+    mock_chat_log.content.clear()
+    mock_chat_log.content.extend(
+        [
+            conversation.SystemContent(content="sys"),
+            conversation.UserContent(content="lights on"),
+            conversation.AssistantContent(
+                agent_id="a",
+                content=None,
+                tool_calls=[
+                    llm.ToolInput(id="call_a", tool_name="HassTurnOn", tool_args={"name": "kitchen"}),
+                    llm.ToolInput(id="call_b", tool_name="HassTurnOn", tool_args={"name": "hall"}),
+                ],
+            ),
+            tool_result_content(agent_id="a", tool_call_id="call_b", tool_name="HassTurnOn", data={"ok": True}),
+        ]
+    )
+    messages = (await _post_with(hass, mock_chat_log, {}))["messages"]
+    assert messages[2]["tool_calls"] == [
+        {"id": "call_a", "function": {"index": 0, "name": "HassTurnOn", "arguments": {"name": "kitchen"}}},
+        {"id": "call_b", "function": {"index": 1, "name": "HassTurnOn", "arguments": {"name": "hall"}}},
+    ]
+    assert messages[3]["tool_name"] == "HassTurnOn"
+    assert messages[3]["tool_call_id"] == "call_b"

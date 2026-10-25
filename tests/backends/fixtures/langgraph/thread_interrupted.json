@@ -1,0 +1,37 @@
+{
+    "thread_id": "ab5d6965-2d20-45c3-b60d-db4344889330",
+    "status": "interrupted",
+    "metadata": {
+        "graph_id": "interrupt",
+        "assistant_id": "2e6b29d1-4009-5fcc-9319-4cffb1865dfe"
+    },
+    "config": {
+        "configurable": {}
+    },
+    "created_at": "2026-10-24T22:32:15.154699+00:00",
+    "updated_at": "2026-10-24T22:32:16.095911+00:00",
+    "values": {
+        "messages": [
+            {
+                "content": "lights on",
+                "additional_kwargs": {},
+                "response_metadata": {},
+                "type": "human",
+                "name": null,
+                "id": "aa03d15b-8e61-4356-8363-9053992fcbc3"
+            }
+        ]
+    },
+    "state_updated_at": "2026-10-24T22:32:16.095911+00:00",
+    "error": null,
+    "interrupts": {
+        "4920e993-c766-8e98-67ea-a7265af01a0a": [
+            {
+                "id": "bc0dcc12833d3182a0c7635b20f77f5d",
+                "value": {
+                    "question": "Which room should I turn the lights on in?"
+                }
+            }
+        ]
+    }
+}

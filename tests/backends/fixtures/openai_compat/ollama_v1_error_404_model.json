@@ -1,0 +1,8 @@
+{
+  "description": "unknown model error body",
+  "source": "captured",
+  "server": "Ollama 0.40.6 (alpine/ollama:0.40.6), qwen3:0.6b Q4_K_M, captured 2026-10-25 (LLMM-024)",
+  "request": "POST /v1/chat/completions model=nope:latest",
+  "status": 404,
+  "body": "{\"error\":{\"message\":\"model 'nope:latest' not found\",\"type\":\"not_found_error\",\"param\":null,\"code\":null}}\n"
+}

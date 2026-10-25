@@ -11,14 +11,18 @@ releases its backend connection, turns run concurrently, and arbitrary TCP chunk
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 import time
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
+from aiohttp import web
 from homeassistant.core import HomeAssistant
 
+from custom_components.llm_middleman.backends import BACKEND_TO_CLS
 from custom_components.llm_middleman.const import CONF_STATELESS_RUNS, CONF_TIMEOUT, ERROR_MESSAGE
 from tests.conftest import FakeStreamResponse, chunk_bytes, fake_aiohttp_session
 from tests.live_backend import (
@@ -63,6 +67,75 @@ async def test_live_stream_outlasting_agent_timeout_delivers_every_frame(
     result = await run_pipeline_turn(hass, entity_id)
 
     assert speech(result) == "".join(pieces)
+
+
+# The agent Timeout is how long a backend may stay silent; tiny values keep these fast.
+# Before the fix any silence past a fixed 30 s failed, whatever the Timeout said.
+SHORT_TIMEOUT = 0.6
+
+
+async def test_silence_shorter_than_agent_timeout_still_answers(
+    hass: HomeAssistant, live_backend: ScriptedBackend, preset: str
+) -> None:
+    """A backend that thinks quietly (under the agent Timeout) before its first frame answers."""
+    live_backend.serve(preset, PIECES, delays=[0.4, 0.0, 0.0])
+    _, entity_id = await setup_agent(hass, preset, live_backend.base_url, **{CONF_TIMEOUT: SHORT_TIMEOUT})
+
+    result = await run_pipeline_turn(hass, entity_id)
+
+    assert speech(result) == "".join(PIECES)
+
+
+async def test_silence_longer_than_agent_timeout_falls_back(
+    hass: HomeAssistant, live_backend: ScriptedBackend, preset: str
+) -> None:
+    """A backend silent past the agent Timeout is dropped and the fallback is spoken."""
+    live_backend.serve(preset, PIECES, delays=[0.9, 0.0, 0.0])
+    _, entity_id = await setup_agent(hass, preset, live_backend.base_url, **{CONF_TIMEOUT: SHORT_TIMEOUT})
+    started = time.monotonic()
+
+    result = await run_pipeline_turn(hass, entity_id)
+
+    assert speech(result) == ERROR_MESSAGE
+    assert time.monotonic() - started < 0.9  # dropped at the Timeout, not after the frame arrived
+
+
+@contextlib.asynccontextmanager
+async def _blocking_n8n(reply_after: float) -> AsyncGenerator[str]:
+    """Serve an n8n webhook that answers with one blocking JSON body after ``reply_after`` s.
+
+    Unlike ``ScriptedBackend`` no headers go out until the reply is ready — how a
+    non-streaming n8n workflow (Respond to Webhook / last node) behaves.
+    """
+
+    async def webhook(request: web.Request) -> web.Response:
+        await asyncio.sleep(reply_after)
+        return web.json_response({"output": "Done thinking."})
+
+    app = web.Application()
+    app.router.add_post("/webhook", webhook)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    try:
+        yield f"http://127.0.0.1:{site.port}"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.parametrize(("reply_after", "expected"), [(0.4, "Done thinking."), (0.9, ERROR_MESSAGE)])
+@pytest.mark.usefixtures("socket_enabled")
+async def test_n8n_blocking_reply_bounded_by_agent_timeout(
+    hass: HomeAssistant, reply_after: float, expected: str
+) -> None:
+    """A blocking n8n reply waits as long as the agent Timeout allows, and no longer."""
+    async with _blocking_n8n(reply_after) as base_url:
+        _, entity_id = await setup_agent(hass, "n8n", base_url, **{CONF_TIMEOUT: SHORT_TIMEOUT})
+
+        result = await run_pipeline_turn(hass, entity_id)
+
+    assert speech(result) == expected
 
 
 async def _cancel_mid_stream(hass: HomeAssistant, backend: ScriptedBackend, preset: str) -> DeltaRecorder:
@@ -156,6 +229,8 @@ async def test_reply_survives_arbitrary_chunk_boundaries(
     """However the transport chunks the bytes, the spoken reply is exactly the streamed text."""
     blob = preset_wire(preset, TRICKY_PIECES, NEWLINES[newline]).blob()
     response = FakeStreamResponse(SPLITTERS[splitter](blob), headers={"Content-Type": content_type(preset)})
+    # No server sits behind backend.invalid (the session is swapped after setup): skip the setup probe.
+    monkeypatch.setattr(BACKEND_TO_CLS[preset], "async_validate_connection", AsyncMock())
     entry, entity_id = await setup_agent(hass, preset, "http://backend.invalid", **_CHUNK_OPTIONS.get(preset, {}))
     monkeypatch.setattr(entry.runtime_data, "session", fake_aiohttp_session(response=response))
 

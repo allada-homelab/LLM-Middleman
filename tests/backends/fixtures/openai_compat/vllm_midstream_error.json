@@ -1,0 +1,7 @@
+{
+  "description": "vLLM mid-stream error: an error frame then [DONE] (serving_chat.py create_streaming_error_response)",
+  "source": "spec-derived",
+  "spec": "https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/serving_chat.py",
+  "status": 200,
+  "body": "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"The kitchen\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"message\":\"CUDA out of memory\",\"type\":\"InternalServerError\",\"param\":null,\"code\":500}}\n\ndata: [DONE]\n\n"
+}

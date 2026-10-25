@@ -1,0 +1,7 @@
+{
+  "description": "OpenAI out-of-quota rejection",
+  "source": "spec-derived",
+  "spec": "https://platform.openai.com/docs/guides/error-codes/api-errors",
+  "status": 429,
+  "body": "{\"error\":{\"message\":\"You exceeded your current quota, please check your plan and billing details.\",\"type\":\"insufficient_quota\",\"param\":null,\"code\":\"insufficient_quota\"}}"
+}
