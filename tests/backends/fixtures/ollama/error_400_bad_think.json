@@ -1,0 +1,8 @@
+{
+  "description": "invalid think value error body (lists the accepted levels)",
+  "source": "captured",
+  "server": "Ollama 0.40.6 (alpine/ollama:0.40.6), qwen3:0.6b Q4_K_M, captured 2026-10-25 (LLMM-024)",
+  "request": "POST /api/chat think=\"extreme\"",
+  "status": 400,
+  "body": "{\"error\":\"invalid think value: \\\"extreme\\\" (must be \\\"high\\\", \\\"medium\\\", \\\"low\\\", \\\"max\\\", true, or false)\"}"
+}
