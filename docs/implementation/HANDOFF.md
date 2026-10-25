@@ -1,13 +1,13 @@
 # Session handoff — maintenance mode, owner-run remainder
 
-> Re-entry point after a Claude Code window reload. v1 is released (latest tag `v1.3.0`);
-> `main` carries any unreleased post-1.3.0 work listed under `## [Unreleased]` in
+> Re-entry point after a Claude Code window reload. v1 is released (latest tag `v1.4.0`);
+> `main` carries any unreleased post-1.4.0 work listed under `## [Unreleased]` in
 > `CHANGELOG.md`. This file tracks only what still needs the owner's hands, plus the
 > standing orchestration rules that must survive a reload.
 
 ## Current state
 
-- **Released:** `v1.2.0` (`manifest.json` version is the source of truth). Minimum HA
+- **Released:** `v1.4.0` (`manifest.json` version is the source of truth). Minimum HA
   2026.7.0; CI runs the suite on the locked HA (2026.10.3, with the coverage gate) and on
   that floor.
 - **Shipped in v1.2.0:** HACS validation / coverage gate / release workflow (#90),
@@ -18,8 +18,12 @@
   via `store_keys`, newly exposed agent options).
 - **Shipped in v1.3.0:** AI Task `generate_data` LLMM-023 (#106), backend down/recovered
   logging and README reference tables (#108), quality-scale self-assessment (#107).
+- **Shipped in v1.4.0:** Timeout = maximum backend silence, fixing the 30 s idle-timeout
+  regression from 1.1.4, plus n8n keepalive frames (#110); n8n + converse tier-1 LLMM-025
+  (#112); OpenAI-compatible + Ollama tier-1 LLMM-024 (#113).
 - **Tickets in review, waiting on owner rows:** LLMM-021 (Dify), LLMM-022 (LangGraph),
-  LLMM-023 (AI Task `generate_data`), LLMM-018 (live E2E matrix), LLMM-019 (release
+  LLMM-023 (AI Task `generate_data`), LLMM-024 (OpenAI-compatible + Ollama), LLMM-025
+  (n8n + converse), LLMM-018 (live E2E matrix), LLMM-019 (release
   engineering).
 - Live E2E evidence lives in `docs/implementation/e2e-results/` (`MATRIX.md` first).
 
@@ -43,7 +47,7 @@ named results file and flip the ticket.
 4. **Device-scope upgrade check** (cleanup PR): on an install with a v1.1.x Dify or
    LangGraph device-scope agent, confirm the first agent to talk on that device keeps its
    history after upgrading, and a second agent on the same connection starts fresh.
-5. **Live-HA HACS install of the latest release** (`v1.2.0`, or the next tag if newer):
+5. **Live-HA HACS install of the latest release** (`v1.4.0`, or the next tag if newer):
    HACS → *Custom repositories* → `https://github.com/allada-homelab/LLM-Middleman`
    (Integration) → *Download* → restart. The release workflow (#90) builds the GitHub
    release from the tag and the `CHANGELOG.md` section.
@@ -54,7 +58,15 @@ named results file and flip the ticket.
 7. **AI Task rows** (`e2e-results/ai-task.md`, all 7 NOT RUN): `ai_task.generate_data`
    with and without a `structure`, plus an image attachment against a vision model, on a
    real OpenAI-compatible server and a real Ollama. Then LLMM-023 → `done`.
-8. **Voice-hardware checks** (Tier 2, carried over): wake-word follow-up with the mic kept
+8. **OpenAI-compatible + Ollama tier-1 rows** (LLMM-024 § Verification): a reasoning model
+   with Maximum tokens set and an out-of-quota key against api.openai.com, a vLLM or
+   OpenRouter mid-stream error, and parallel tool calls on a tool-capable Ollama model.
+   Then LLMM-024 → `done`.
+9. **n8n + converse tier-1 rows** (LLMM-025 § Verification): an n8n AI Agent with Return
+   Intermediate Steps (tool calls in the Assist chat), setup against an inactive workflow
+   on a real HA, and the converse stub rows in `scripts/e2e/README.md`. Then LLMM-025 →
+   `done`.
+10. **Voice-hardware checks** (Tier 2, carried over): wake-word follow-up with the mic kept
    open and time-to-first-audio on a real satellite. Batch with items 2, 3 and 5 in one
    interactive session. Then LLMM-019 → `done` together with item 5.
 

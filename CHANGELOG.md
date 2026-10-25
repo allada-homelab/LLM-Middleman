@@ -6,8 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-25
+
 ### Added
 
+- **n8n setup checks the webhook (LLMM-025, #112).** Saving an n8n connection now refuses an
+  inactive workflow's URL and `/webhook-test/` URLs with their own messages. The check
+  cannot start a workflow run, Chat Triggers included.
+- **The custom `/v1/converse` setup check rejects a wrong bearer token (LLMM-025, #112)** as
+  invalid authentication; before, any answer passed.
+- **Backend tool activity in the Assist chat for n8n and custom `/v1/converse`
+  (LLMM-025, #112):** an n8n AI Agent's intermediate steps (non-streaming replies with *Return
+  Intermediate Steps* on) and converse `tool_activity` events sent before the reply text.
+  The converse contract documents an optional `: keepalive` comment, the time prefix on
+  `text`, and the optional `tool_activity` `id`. Existing backends need no changes.
 - **OpenAI-compatible and Ollama tier-1 (LLMM-024, #113).**
   - New **Reasoning effort** option for OpenAI-compatible agents and AI tasks
     (`reasoning_effort`, sent only when set).
@@ -58,19 +70,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (LLMM-025, #112).** A stream that ends without `done` keeps what was said, adds the fallback
   message and marks the turn failed. An empty `done` now gives the translated fallback,
   also marked failed.
-
-### Added
-
-- **n8n setup checks the webhook (LLMM-025, #112).** Saving an n8n connection now refuses an
-  inactive workflow's URL and `/webhook-test/` URLs with their own messages. The check
-  cannot start a workflow run, Chat Triggers included.
-- **The custom `/v1/converse` setup check rejects a wrong bearer token (LLMM-025, #112)** as
-  invalid authentication; before, any answer passed.
-- **Backend tool activity in the Assist chat for n8n and custom `/v1/converse`
-  (LLMM-025, #112):** an n8n AI Agent's intermediate steps (non-streaming replies with *Return
-  Intermediate Steps* on) and converse `tool_activity` events sent before the reply text.
-  The converse contract documents an optional `: keepalive` comment, the time prefix on
-  `text`, and the optional `tool_activity` `id`. Existing backends need no changes.
 
 ## [1.3.0] - 2026-10-25
 
