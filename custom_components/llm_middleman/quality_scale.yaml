@@ -8,8 +8,9 @@
 # custom-manifest schema would accept it, but tiers are awarded through core review,
 # and a self-declared tier on a custom integration would be an unreviewed claim.
 #
-# Highest tier fully met: Bronze. Silver is blocked only by the `entity-unavailable` todo
-# below, which is deliberate (the never-hang guarantee).
+# Highest tier fully met: Bronze. Every Silver, Gold, and Platinum rule is done or exempt
+# except `entity-unavailable`, a deliberate todo (the never-hang guarantee); tiers stack,
+# so that one rule keeps the self-assessment at Bronze.
 rules:
   # Bronze
   action-setup:
@@ -108,8 +109,10 @@ rules:
     status: exempt
     comment: No data is fetched or refreshed in the background. Backends are called per turn or task.
   docs-examples:
-    status: todo
-    comment: The README has no automation or ai_task.generate_data examples.
+    status: done
+    comment: >-
+      README "Examples": conversation.process from an automation, and ai_task.generate_data
+      with free text and with a structure plus a camera image.
   docs-known-limitations:
     status: done
     comment: >-
@@ -120,11 +123,13 @@ rules:
     comment: Service integration. It supports backends (README preset table), not devices.
   docs-supported-functions: done
   docs-troubleshooting:
-    status: todo
-    comment: The README has no troubleshooting section beyond the local-intents note.
+    status: done
+    comment: >-
+      README "Troubleshooting": the fallback reply, Timeout, the repair issue, reauth,
+      setup retry and every config-flow error, AI task failures, and debug logging.
   docs-use-cases:
-    status: todo
-    comment: The README describes what the integration does but not the use cases it serves.
+    status: done
+    comment: README "Use cases".
   dynamic-devices:
     status: exempt
     comment: >-
