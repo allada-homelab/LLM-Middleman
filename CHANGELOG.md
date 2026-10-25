@@ -12,7 +12,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **Add AI task**. The new entity serves `ai_task.generate_data` with free text or a
   `structure`, sent as `response_format` `json_schema` (OpenAI-compatible) or Ollama's
   `format`. It accepts image attachments and runs the Home Assistant tool loop when the
-  task passes an LLM API. Failures raise errors instead of returning fallback text.
+  task passes an LLM API. Failures raise errors instead of returning fallback text; a
+  rejected API key starts reauthentication. (#106)
 
 ## [1.2.0] - 2026-10-25
 
