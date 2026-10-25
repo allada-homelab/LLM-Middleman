@@ -8,7 +8,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **OpenAI-compatible and Ollama tier-1 (LLMM-024).**
+- **OpenAI-compatible and Ollama tier-1 (LLMM-024, #113).**
   - New **Reasoning effort** option for OpenAI-compatible agents and AI tasks
     (`reasoning_effort`, sent only when set).
   - Requests now carry `prompt_cache_key` set to the agent's id, so an agent's conversations
@@ -19,13 +19,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Reasoning tokens (OpenAI) and cached prompt tokens (Ollama) are added to the conversation
     trace.
 
-### Changed (#113)
+### Changed
 
 - **OpenAI-compatible rate limits are named.** HTTP 429 (rate limit or exhausted quota)
   raises an error with the server's reason; AI tasks show it, conversations still speak the
-  fallback.
+  fallback. (#113)
 
-### Fixed (#113)
+### Fixed
 
 - **Mid-reply errors are no longer swallowed** (OpenAI-compatible, Ollama). An error the
   server sends after the reply started (vLLM, OpenRouter, Ollama's final error line) ended
