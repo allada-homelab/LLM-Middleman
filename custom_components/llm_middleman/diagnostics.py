@@ -3,7 +3,7 @@
 HA auto-discovers ``async_get_config_entry_diagnostics`` by module presence — no
 platform registration in ``__init__.py`` is needed. The dump mirrors core's
 ``anthropic``/``openai_conversation`` diagnostics: parent metadata, redacted parent
-``data``/``options``, each conversation subentry's redacted ``data``, and the entry's
+``data``/``options``, each subentry's (conversation agent or AI task) redacted ``data``, and the entry's
 entities. Every credential, URL, and prompt is redacted (see ``TO_REDACT``).
 """
 
@@ -17,9 +17,11 @@ from homeassistant.components.diagnostics import async_redact_data  # pyright: i
 from homeassistant.const import CONF_API_KEY, CONF_PROMPT, CONF_URL
 from homeassistant.helpers import entity_registry as er
 
+from .backends.langgraph import LangGraphAdapter
 from .const import (
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_DIFY_INPUTS,
     CONF_HEADER_VALUE,
     CONF_PASSWORD,
     CONF_SYSTEM_PROMPT,
@@ -33,10 +35,10 @@ if TYPE_CHECKING:
 
     from . import LLMMiddlemanConfigEntry
 
-# Every secret/PII/topology field across all five backend presets' parent and
+# Every secret/PII/topology field across all six backend presets' parent and
 # subentry schemas. Over-redaction is safe; a leaked token/URL/prompt is not.
 TO_REDACT = {
-    # Auth credentials (openai_compat/langgraph/ollama key, converse bearer, n8n
+    # Auth credentials (openai_compat/langgraph/ollama/dify key, converse bearer, n8n
     # basic-auth user+password, n8n custom-header value).
     CONF_API_KEY,
     CONF_TOKEN,
@@ -47,16 +49,24 @@ TO_REDACT = {
     CONF_URL,
     CONF_BASE_URL,
     CONF_WEBHOOK_URL,
-    # Prompts may carry personal context. Both keys are live: config-flow/entity
-    # read ``CONF_PROMPT`` ("prompt"); langgraph/n8n adapters read
-    # ``CONF_SYSTEM_PROMPT`` ("system_prompt").
+    # Prompts may carry personal context. Agents store ``CONF_PROMPT`` ("prompt");
+    # ``CONF_SYSTEM_PROMPT`` ("system_prompt") is the v0 flat-entry key a
+    # not-yet-migrated entry may still carry.
     CONF_PROMPT,
     CONF_SYSTEM_PROMPT,
+    # Dify app inputs are free-form values (names, addresses, keys a workflow needs).
+    CONF_DIFY_INPUTS,
 }
 
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> dict[str, Any]:
     """Return redacted diagnostics for a config entry."""
+    # runtime_data is unset while the entry is not loaded.
+    adapter = getattr(entry, "runtime_data", None)
+    runtime: dict[str, Any] = {}
+    if isinstance(adapter, LangGraphAdapter):
+        # Run ids and counters only: no thread ids (derived from device/conversation ids).
+        runtime["langgraph"] = adapter.diagnostics()
 
     return {
         "title": entry.title,
@@ -79,4 +89,5 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: LLMMidd
             entity_entry.entity_id: entity_entry.extended_dict
             for entity_entry in er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
         },
+        **runtime,
     }

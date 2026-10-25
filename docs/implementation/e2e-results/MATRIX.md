@@ -15,6 +15,11 @@ were independently re-driven and confirmed exact — see Incidents).
 | n8n | real n8n, Chat Trigger→AI Agent (model = ollama /v1) | PASS (NDJSON StructuredChunk) | PASS (sessionId = conversation_id in n8n executions) | PASS (22.7 s) | **wrong-mode mismatch (load-bearing): blocking body content-sniffed and answered ✓** · missing output field → fallback, never raw JSON ✓ · wire protocol conforms to n8n.py (raw capture) | **PASS** |
 | HACS packaging | published GitHub main.zip → fresh consumer HA | — | — | — | zip layout/hacs.json/manifest all valid ✓ · zip-installed integration loads, 5-option flow ✓ · manifest 0.1.0 recorded for release bump | **PASS** |
 
+### Added after the rehearsal
+| Preset | Status | Where |
+|---|---|---|
+| dify (LLMM-021) | **NOT RUN — owner-run** (no Dify reachable from the devcontainer; wire-level coverage only) | [`dify.md`](dify.md) · recipe in `scripts/e2e/README.md` (dify section) |
+
 ## Bugs found by the rehearsal (the point of the exercise) — all fixed in Wave E2E-C
 1. **Subentry lifecycle (medium)**: new conversation subentry's entity only appeared after entry reload → fix PR (LLMM-007 amendment), live re-verified.
 2. **openai_compat `/v1` base_url trap**: `http://host/v1` input → `/v1/v1/...` → fix PR (flow normalization + hint, LLMM-008 amendment).

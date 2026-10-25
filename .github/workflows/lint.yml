@@ -13,24 +13,47 @@ permissions: {}
 
 jobs:
   uv:
-    name: uv (lockfile + ruff + basedpyright + pytest)
+    name: uv (lockfile + ruff + basedpyright + pytest) [HA ${{ matrix.ha }}]
     runs-on: ubuntu-latest
     permissions:
       contents: read  # actions/checkout
+    strategy:
+      fail-fast: false
+      matrix:
+        # locked = latest HA in uv.lock; floor = hacs.json "homeassistant" minimum.
+        ha: [locked, floor]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
       - name: Verify lockfile is current
         run: uv lock --check
       - run: uv sync --locked --dev
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run basedpyright
-      - run: uv run pytest tests/
+      - name: Downgrade to the floor HA (2026.7.0)
+        if: matrix.ha == 'floor'
+        # Overlay on the locked venv (a committed lock can't hold two HAs). hassil/intents
+        # pin that HA's conversation manifest; probatio goes because HA < 2026.9 lacks it.
+        run: |
+          uv pip install "pytest-homeassistant-custom-component==0.13.344" "hassil==3.8.0" "home-assistant-intents==2026.6.24"
+          uv pip uninstall probatio
+      - if: matrix.ha == 'locked'
+        run: uv run ruff check .
+      - if: matrix.ha == 'locked'
+        run: uv run ruff format --check .
+      # Type-check against the locked (latest) HA only; the floor leg is a runtime check.
+      - if: matrix.ha == 'locked'
+        run: uv run basedpyright
+      # --no-sync: a plain `uv run` would re-sync and undo the floor overlay.
+      # Coverage (with the pyproject fail_under gate) runs on the locked leg only.
+      - if: matrix.ha == 'floor'
+        run: uv run --no-sync pytest tests/
+      - if: matrix.ha == 'locked'
+        run: uv run --no-sync coverage run -m pytest tests/
+      - if: matrix.ha == 'locked'
+        run: uv run --no-sync coverage report
 
   pre-commit:
     name: pre-commit (all files)
@@ -42,7 +65,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0  # the history scan below reads every commit
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
       - run: uv sync --locked --dev

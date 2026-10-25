@@ -1,0 +1,171 @@
+# Self-assessment against Home Assistant's Integration Quality Scale, in core's
+# quality_scale.yaml format. Rule list pinned to home-assistant/core tag 2026.10.3
+# (script/hassfest/quality_scale.py ALL_RULES: 20 Bronze, 10 Silver, 21 Gold, 3 Platinum).
+#
+# Nothing validates this file: hassfest's quality_scale plugin returns early for
+# non-core integrations (`if not integration.core: return` in validate_iqs_file),
+# and HACS ignores it. The manifest deliberately sets no `quality_scale`: hassfest's
+# custom-manifest schema would accept it, but tiers are awarded through core review,
+# and a self-declared tier on a custom integration would be an unreviewed claim.
+#
+# Highest tier fully met: Bronze. Silver is blocked by the two `todo` rules below.
+rules:
+  # Bronze
+  action-setup:
+    status: exempt
+    comment: The integration registers no service actions.
+  appropriate-polling:
+    status: exempt
+    comment: >-
+      Nothing polls. The conversation and AI task entities set should_poll False
+      (HA base classes), and each backend call is made on demand for a turn or task.
+  brands: done
+  common-modules: done
+  config-flow: done
+  config-flow-test-coverage: done
+  dependency-transparency: done
+  docs-actions:
+    status: exempt
+    comment: The integration registers no service actions.
+  docs-conditions:
+    status: exempt
+    comment: The integration provides no conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: The integration provides no triggers.
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup: done
+  unique-config-entry:
+    status: done
+    comment: >-
+      _async_abort_entries_match on the full connection data. Only an identical
+      connection is a duplicate, because one URL can back distinct connections
+      (Dify apps that differ only by key, LangGraph assistants).
+
+  # Silver
+  action-exceptions:
+    status: exempt
+    comment: >-
+      The integration registers no service actions. AI Task generate_data failures
+      still raise a translated HomeAssistantError.
+  config-entry-unloading: done
+  docs-configuration-parameters:
+    status: done
+    comment: >-
+      README "Agent and AI task options" tables every conversation-agent and AI-task
+      option with the presets that show it, its default, and its meaning.
+  docs-installation-parameters:
+    status: done
+    comment: >-
+      README "Connection parameters" tables each preset's connection fields (URL
+      normalization, credentials and how they are sent, n8n target and auth types,
+      the LangGraph auth header and assistant id).
+  entity-unavailable:
+    status: todo
+    comment: >-
+      The conversation entity stays available while its backend is down, so the
+      pipeline always gets a spoken fallback (the never-hang guarantee). Unreachability
+      surfaces as SETUP_RETRY at setup and as a repair issue after repeated failed turns.
+  integration-owner: done
+  log-when-unavailable:
+    status: done
+    comment: >-
+      The first conversation turn or AI task that cannot reach a connection's backend logs
+      once at info, and the first that reaches it again (or a setup probe while the repair
+      issue is open) logs once at info. The state is per connection (the shared adapter,
+      helpers.py), so sibling entities don't repeat it. Unreachable turns in between log at
+      debug. A failed setup probe raises ConfigEntryNotReady, which HA core logs itself.
+  parallel-updates: done
+  reauthentication-flow: done
+  test-coverage:
+    status: todo
+    comment: >-
+      The rule asks for over 95% in every module. Total is 98% (gate 94), but on the locked
+      leg __init__.py is about 91% (its pre-2026.10 device-registry branch runs only on the
+      floor leg) and backends/_compat.py about 80%.
+
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery:
+    status: exempt
+    comment: >-
+      Backends are user-supplied URLs (self-hosted servers, cloud APIs, webhooks) with
+      no zeroconf, SSDP, or DHCP advertisement to discover.
+  discovery-update-info:
+    status: exempt
+    comment: No discovery (see discovery).
+  docs-data-update:
+    status: exempt
+    comment: No data is fetched or refreshed in the background. Backends are called per turn or task.
+  docs-examples:
+    status: todo
+    comment: The README has no automation or ai_task.generate_data examples.
+  docs-known-limitations:
+    status: done
+    comment: >-
+      README "A note on local intents", the backend-preset table footnote (no HA tools
+      on forwarding presets), and the AI Task section (presets, attachments, structured output).
+  docs-supported-devices:
+    status: exempt
+    comment: Service integration. It supports backends (README preset table), not devices.
+  docs-supported-functions: done
+  docs-troubleshooting:
+    status: todo
+    comment: The README has no troubleshooting section beyond the local-intents note.
+  docs-use-cases:
+    status: todo
+    comment: The README describes what the integration does but not the use cases it serves.
+  dynamic-devices:
+    status: exempt
+    comment: >-
+      Each device is a service device for a user-created subentry. Nothing is discovered
+      from the backend. Adding a subentry reloads the entry, which creates its device.
+  entity-category:
+    status: exempt
+    comment: The conversation and AI task entities are primary entities with no category.
+  entity-device-class:
+    status: exempt
+    comment: The conversation and AI task platforms have no device classes.
+  entity-disabled-by-default:
+    status: exempt
+    comment: Every entity is a user-created agent or task, so none should start disabled.
+  entity-translations:
+    status: exempt
+    comment: Entities set _attr_name to None and take the device (subentry) name.
+  exception-translations: done
+  icon-translations:
+    status: exempt
+    comment: Entities use their platform's default icon and have no translation_key.
+  reconfiguration-flow: done
+  repair-issues: done
+  stale-devices:
+    status: exempt
+    comment: >-
+      Devices map 1:1 to subentries, and HA removes a subentry's devices when the
+      subentry is deleted. Backends report no devices that could go stale.
+
+  # Platinum
+  async-dependency:
+    status: exempt
+    comment: >-
+      No I/O dependency. Adapters call the backends with aiohttp themselves.
+      voluptuous and voluptuous-openapi do no I/O.
+  inject-websession:
+    status: done
+    comment: >-
+      There is no client library. Adapters use HA's aiohttp sessions:
+      async_create_clientsession for the per-entry adapter, async_get_clientsession for probes.
+  strict-typing:
+    status: done
+    comment: >-
+      basedpyright strict (pyrightconfig.json) covers the integration in CI. Core's
+      .strict-typing list does not apply to custom integrations. Both requirements
+      ship py.typed.

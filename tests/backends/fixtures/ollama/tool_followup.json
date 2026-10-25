@@ -1,0 +1,8 @@
+{
+  "description": "follow-up reply after the tool result",
+  "source": "captured",
+  "server": "Ollama 0.40.6 (alpine/ollama:0.40.6), qwen3:0.6b Q4_K_M, captured 2026-10-25 (LLMM-024)",
+  "request": "POST /api/chat replaying the tool call (id, function.index) and a role=tool message with tool_name + tool_call_id",
+  "status": 200,
+  "body": "{\"model\":\"qwen3:0.6b\",\"created_at\":\"2026-10-25T04:52:01.208720394Z\",\"message\":{\"role\":\"assistant\",\"content\":\"The\"},\"done\":false}\n{\"model\":\"qwen3:0.6b\",\"created_at\":\"2026-10-25T04:52:01.224749455Z\",\"message\":{\"role\":\"assistant\",\"content\":\" kitchen\"},\"done\":false}\n{\"model\":\"qwen3:0.6b\",\"created_at\":\"2026-10-25T04:52:01.240583858Z\",\"message\":{\"role\":\"assistant\",\"content\":\" light\"},\"done\":false}\n{\"model\":\"qwen3:0.6b\",\"created_at\":\"2026-10-25T04:52:01.256760699Z\",\"message\":{\"role\":\"assistant\",\"content\":\" is\"},\"done\":false}\n{\"model\":\"qwen3:0.6b\",\"created_at\":\"2026-10-25T04:52:01.272550932Z\",\"message\":{\"role\":\"assistant\",\"content\":\" now\"},\"done\":false}\n{\"model\":\"qwen3:0.6b\",\"created_at\":\"2026-10-25T04:52:01.300142623Z\",\"message\":{\"role\":\"assistant\",\"content\":\" on\"},\"done\":false}\n{\"model\":\"qwen3:0.6b\",\"created_at\":\"2026-10-25T04:52:01.315521439Z\",\"message\":{\"role\":\"assistant\",\"content\":\".\"},\"done\":false}\n{\"model\":\"qwen3:0.6b\",\"created_at\":\"2026-10-25T04:52:01.33171829Z\",\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",\"total_duration\":318308369,\"load_duration\":1082523,\"prompt_eval_count\":227,\"prompt_eval_cached_count\":166,\"prompt_eval_duration\":190533000,\"eval_count\":8,\"eval_duration\":122171000}\n"
+}

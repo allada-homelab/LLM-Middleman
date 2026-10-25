@@ -9,7 +9,7 @@ exercises the real HTTP download path to prove HA auto-discovers ``diagnostics.p
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigSubentryData
@@ -25,6 +25,7 @@ from pytest_homeassistant_custom_component.typing import (
     ClientSessionGenerator,  # pyright: ignore[reportUnknownVariableType]
 )
 
+from custom_components.llm_middleman.backends.langgraph import LangGraphAdapter
 from custom_components.llm_middleman.const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
@@ -36,6 +37,7 @@ from custom_components.llm_middleman.const import (
     CONF_AUTH_TYPE,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_DIFY_INPUTS,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
     CONF_MODEL,
@@ -201,6 +203,30 @@ async def test_diagnostics_redacts_every_secret_per_preset(hass: HomeAssistant, 
     assert subentry_dump["data"][CONF_MODEL] == _NON_SECRET_MODEL
 
 
+async def test_diagnostics_redacts_dify_inputs(hass: HomeAssistant) -> None:
+    """A Dify agent's ``inputs`` mapping can hold secrets: the whole value is redacted."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        data={CONF_BACKEND_TYPE: BACKEND_DIFY, **_PARENT_DATA[BACKEND_DIFY]},
+        subentries_data=[
+            ConfigSubentryData(
+                data={CONF_NAME: "Agent 0", CONF_DIFY_INPUTS: {"api_token": "dify-input-secret-value"}},
+                subentry_type="conversation",
+                title="Agent 0",
+                unique_id=None,
+            )
+        ],
+    )
+    entry.add_to_hass(hass)
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    (subentry_dump,) = result["subentries"].values()
+    assert subentry_dump["data"][CONF_DIFY_INPUTS] == REDACTED
+    assert "dify-input-secret-value" not in json.dumps(result)
+
+
 async def test_diagnostics_includes_entities(hass: HomeAssistant) -> None:
     """A loaded entry's conversation entity appears in the dump's ``entities`` map."""
     entry = build_config_entry(hass, backend_type="fake", subentry_count=1)
@@ -262,3 +288,28 @@ async def test_diagnostics_http_download_path(
     assert _SECRETS["api_key"] not in blob
     assert _SECRETS["base_url"] not in blob
     assert _SECRETS["prompt"] not in blob
+
+
+async def test_diagnostics_include_langgraph_runtime_state(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loaded LangGraph entry adds its last run id / counters — never thread ids or secrets."""
+    # No server behind the dummy URL: skip the setup reachability probe.
+    monkeypatch.setattr(LangGraphAdapter, "async_validate_connection", AsyncMock())
+    entry = _build_entry(hass, BACKEND_LANGGRAPH)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    entry.runtime_data.last_run_id = "run-123"
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["langgraph"] == {
+        "last_run_id": "run-123",
+        "threads_awaiting_resume": None,
+        "legacy_thread_map_entries": None,
+    }
+
+
+async def test_diagnostics_omit_runtime_state_when_not_loaded(hass: HomeAssistant) -> None:
+    result = await async_get_config_entry_diagnostics(hass, _build_entry(hass, BACKEND_LANGGRAPH))
+    assert "langgraph" not in result

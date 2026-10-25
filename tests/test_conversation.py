@@ -9,6 +9,7 @@ continue_conversation override, and memory-scope key derivation.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -16,16 +17,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-import voluptuous as vol
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
-from homeassistant.config_entries import ConfigSubentry
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigSubentry
 from homeassistant.const import CONF_LLM_HASS_API, CONF_PROMPT, MATCH_ALL
 from homeassistant.core import Context, HomeAssistant
-from homeassistant.helpers import llm
+from homeassistant.helpers import intent, llm
+from homeassistant.helpers import issue_registry as ir
 
+from custom_components.llm_middleman.backends import BACKEND_TO_CLS
 from custom_components.llm_middleman.backends.base import (
     BackendAdapter,
+    BackendAuthError,
+    BackendStreamError,
     DeltaStream,
     TurnContext,
     build_client_timeout,
@@ -33,6 +38,9 @@ from custom_components.llm_middleman.backends.base import (
 from custom_components.llm_middleman.backends.ollama import OllamaAdapter
 from custom_components.llm_middleman.backends.openai_compat import OpenAICompatAdapter
 from custom_components.llm_middleman.const import (
+    BACKEND_CONVERSE,
+    BACKEND_DIFY,
+    BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_MEMORY_SCOPE,
@@ -40,15 +48,16 @@ from custom_components.llm_middleman.const import (
     DEFAULT_TIMEOUT,
     DOMAIN,
     ERROR_MESSAGE,
-    IDLE_TIMEOUT,
     MAX_TOOL_ITERATIONS,
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
+    UNREACHABLE_ISSUE_THRESHOLD,
 )
 from custom_components.llm_middleman.conversation import LLMMiddlemanConversationEntity
 
-from .conftest import FakeStreamResponse, MockChatLog
+from .conftest import FakeLLMApi, FakeStreamResponse, MockChatLog, collect
+from .live_backend import ScriptedBackend, run_pipeline_turn, setup_agent, speech
 
 
 class FakeAdapter(BackendAdapter):
@@ -68,6 +77,7 @@ class FakeAdapter(BackendAdapter):
         self.raise_after: int = 0
         self.set_continue: bool = False
         self.received_ctx: TurnContext | None = None
+        self.received_text: str | None = None
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
@@ -80,6 +90,7 @@ class FakeAdapter(BackendAdapter):
         ctx: TurnContext,
     ) -> DeltaStream:
         self.received_ctx = ctx
+        self.received_text = user_input.text
         if self.set_continue:
             ctx.continue_conversation = True
         for index, delta in enumerate(self.deltas):
@@ -99,7 +110,7 @@ def _make_adapter(hass: HomeAssistant, **script: Any) -> FakeAdapter:
 
 def _make_entity(
     hass: HomeAssistant,
-    adapter: FakeAdapter,
+    adapter: BackendAdapter,
     *,
     subentry_data: Mapping[str, Any] | None = None,
     subentry_id: str = "sub-1",
@@ -129,10 +140,6 @@ def _user_input(
         agent_id="conversation.test",
         extra_system_prompt=extra_system_prompt,
     )
-
-
-async def _collect(stream: DeltaStream) -> list[dict[str, Any]]:
-    return [dict(delta) async for delta in stream]
 
 
 # --- static attributes -------------------------------------------------------
@@ -217,10 +224,66 @@ async def test_guard_exception_after_content(hass: HomeAssistant, mock_chat_log:
 
     last = mock_chat_log.content[-1]
     assert isinstance(last, conversation.AssistantContent)
-    assert last.content is not None
-    assert "partial" in last.content
-    assert ERROR_MESSAGE in last.content
+    assert last.content == f"partial\n{ERROR_MESSAGE}"
     logger.exception.assert_called_once()
+
+
+async def test_fallback_result_is_an_error_response(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A turn answered by the fallback reports an error, not a successful action."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[], exc=RuntimeError("down"), raise_after=0))
+
+    result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert result.response.response_type is intent.IntentResponseType.ERROR
+    assert result.response.error_code is intent.IntentResponseErrorCode.UNKNOWN
+    assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+
+
+async def test_successful_turn_is_not_an_error_response(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A normally streamed reply keeps HA's default (non-error) response type."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}]))
+
+    result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert result.response.response_type is intent.IntentResponseType.ACTION_DONE
+
+
+async def test_fallback_message_uses_the_turn_language(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """The fallback text comes from the integration's translated exception string."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[]))
+    translated = {f"component.{DOMAIN}.exceptions.backend_unavailable.message": "Backend nicht erreichbar."}
+
+    with patch(
+        "custom_components.llm_middleman.conversation.translation.async_get_translations",
+        AsyncMock(return_value=translated),
+    ) as lookup:
+        result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    assert result.response.speech["plain"]["speech"] == "Backend nicht erreichbar."
+    assert lookup.await_args is not None
+    assert lookup.await_args.args[1:] == ("en", "exceptions", {DOMAIN})
+
+
+@pytest.mark.parametrize("status", [401, 500])
+async def test_openai_compat_http_error_logs_and_falls_back(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture, status: int
+) -> None:
+    """A non-200 from openai_compat is logged with the body excerpt; the user gets the fallback."""
+    body = '{"error": {"message": "Incorrect API key provided"}}'
+    session = MagicMock()
+    session.post = MagicMock(return_value=FakeStreamResponse([], status=status, text=body))
+    adapter = OpenAICompatAdapter(hass, session, {CONF_BASE_URL: "http://backend.test", CONF_API_KEY: "sk-secret-key"})
+    entity = _make_entity(hass, adapter)
+
+    with caplog.at_level("ERROR"):
+        await entity._async_run_turn(_user_input(), mock_chat_log)
+
+    last = mock_chat_log.content[-1]
+    assert isinstance(last, conversation.AssistantContent)
+    assert last.content == ERROR_MESSAGE
+    assert f"HTTP {status}" in caplog.text
+    assert "Incorrect API key provided" in caplog.text
+    assert "sk-secret-key" not in caplog.text
 
 
 async def test_guard_injects_role_first(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
@@ -229,7 +292,7 @@ async def test_guard_injects_role_first(hass: HomeAssistant, mock_chat_log: Mock
     entity = _make_entity(hass, adapter)
     ctx = TurnContext(options={}, memory_key="k")
 
-    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx)))
+    collected = await collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
 
     assert collected[0] == {"role": "assistant"}
     assert collected[1] == {"content": "x"}
@@ -241,7 +304,7 @@ async def test_empty_delta_passes_untrimmed(hass: HomeAssistant, mock_chat_log: 
     entity = _make_entity(hass, adapter)
     ctx = TurnContext(options={}, memory_key="k")
 
-    collected = await _collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx)))
+    collected = await collect(entity._guarded(adapter.stream_turn(mock_chat_log, _user_input(), ctx), ctx, "en"))
 
     assert {"content": ""} in collected
     assert {"content": "a"} in collected
@@ -251,18 +314,20 @@ async def test_empty_delta_passes_untrimmed(hass: HomeAssistant, mock_chat_log: 
 
 
 def test_build_client_timeout_defaults() -> None:
-    """No option → total=DEFAULT_TIMEOUT, sock_read=IDLE_TIMEOUT."""
+    """No option → no total; connect and silence both bounded by DEFAULT_TIMEOUT."""
     timeout = build_client_timeout({})
     assert isinstance(timeout, aiohttp.ClientTimeout)
-    assert timeout.total == DEFAULT_TIMEOUT
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.total is None
+    assert timeout.sock_connect == DEFAULT_TIMEOUT
+    assert timeout.sock_read == DEFAULT_TIMEOUT
 
 
 def test_build_client_timeout_per_agent() -> None:
-    """The per-agent CONF_TIMEOUT overrides the total; sock_read stays idle."""
+    """The per-agent CONF_TIMEOUT bounds both connecting and each silence; no total."""
     timeout = build_client_timeout({CONF_TIMEOUT: 120})
-    assert timeout.total == 120
-    assert timeout.sock_read == IDLE_TIMEOUT
+    assert timeout.total is None
+    assert timeout.sock_connect == 120
+    assert timeout.sock_read == 120
 
 
 # --- follow-up listening -----------------------------------------------------
@@ -302,7 +367,7 @@ async def test_continue_conversation_default_false(hass: HomeAssistant, mock_cha
     [
         (MEMORY_SCOPE_CONVERSATION, "dev-9", "mock-conversation-id"),
         (None, None, "mock-conversation-id"),  # absent option defaults to conversation
-        (MEMORY_SCOPE_DEVICE, "dev-9", "dev-9"),
+        (MEMORY_SCOPE_DEVICE, "dev-9", "sub-1:dev-9"),  # per agent: siblings don't share
         (MEMORY_SCOPE_DEVICE, None, "mock-conversation-id"),  # no device → fall back
         (MEMORY_SCOPE_AGENT, "dev-9", "sub-1"),
     ],
@@ -323,6 +388,46 @@ async def test_memory_key_scopes(
 
     assert adapter.received_ctx is not None
     assert adapter.received_ctx.memory_key == expected
+
+
+@pytest.mark.parametrize(
+    ("scope", "device_id", "expected"),
+    [
+        (MEMORY_SCOPE_DEVICE, "dev-9", "dev-9"),
+        (MEMORY_SCOPE_DEVICE, None, None),
+        (MEMORY_SCOPE_CONVERSATION, "dev-9", None),
+        (MEMORY_SCOPE_AGENT, "dev-9", None),
+    ],
+)
+async def test_legacy_memory_key_is_the_pre_subentry_device_key(
+    hass: HomeAssistant,
+    mock_chat_log: MockChatLog,
+    scope: str,
+    device_id: str | None,
+    expected: str | None,
+) -> None:
+    """Device scope also hands adapters the old shared key so stored sessions can be adopted."""
+    adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}])
+    entity = _make_entity(hass, adapter, subentry_data={CONF_MEMORY_SCOPE: scope})
+
+    await entity._async_run_turn(_user_input(device_id=device_id), mock_chat_log)
+
+    assert adapter.received_ctx is not None
+    assert adapter.received_ctx.legacy_memory_key == expected
+
+
+@pytest.mark.parametrize("scope", [MEMORY_SCOPE_CONVERSATION, MEMORY_SCOPE_DEVICE, MEMORY_SCOPE_AGENT])
+async def test_turn_context_carries_the_agent_subentry_id(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, scope: str
+) -> None:
+    """Every scope hands adapters the agent's subentry id (the openai prompt-cache key)."""
+    adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}])
+    entity = _make_entity(hass, adapter, subentry_data={CONF_MEMORY_SCOPE: scope})
+
+    await entity._async_run_turn(_user_input(device_id="dev-9"), mock_chat_log)
+
+    assert adapter.received_ctx is not None
+    assert adapter.received_ctx.subentry_id == "sub-1"
 
 
 # --- provide_llm_data wiring -------------------------------------------------
@@ -362,6 +467,44 @@ async def test_converse_error_is_returned(hass: HomeAssistant) -> None:
     assert adapter.received_ctx is None
 
 
+# --- temporal context ---------------------------------------------------------
+
+
+class _NoTimePrefixAdapter(FakeAdapter):
+    wants_time_prefix = False
+
+
+async def test_time_prefix_added_for_adapters_that_want_it(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, freezer: FrozenDateTimeFactory
+) -> None:
+    """An adapter that forwards only the turn text gets it prefixed with HA's local time."""
+    await hass.config.async_update(time_zone="Europe/Berlin")
+    freezer.move_to("2026-07-04 10:00:00+00:00")
+    adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "ok"}])
+
+    await _make_entity(hass, adapter)._async_handle_message(_user_input(), mock_chat_log)
+
+    assert adapter.received_text == "[2026-07-04 12:00:00 CEST] hello"
+
+
+async def test_time_prefix_skipped_for_adapters_that_opt_out(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """An adapter whose system prompt already carries the time gets the user's text verbatim."""
+    adapter = _NoTimePrefixAdapter(hass, MagicMock(), {})
+    adapter.deltas = [{"role": "assistant"}, {"content": "ok"}]
+
+    await _make_entity(hass, adapter)._async_handle_message(_user_input(), mock_chat_log)
+
+    assert adapter.received_text == "hello"
+
+
+def test_time_prefix_opt_out_for_prompt_forwarding_and_replay_presets() -> None:
+    """Only presets that forward neither the rendered prompt nor the chat log keep the prefix."""
+    assert {cls.backend_type for cls in BACKEND_TO_CLS.values() if cls.wants_time_prefix} == {
+        BACKEND_CONVERSE,
+        BACKEND_DIFY,
+    }
+
+
 # --- CONTROL feature gating (LLMM-014) ---------------------------------------
 
 
@@ -378,26 +521,6 @@ def test_control_feature_present_with_llm_api(hass: HomeAssistant) -> None:
 
 
 # --- tool loop (LLMM-014) ----------------------------------------------------
-
-
-class _FakeTool:
-    """Minimal duck-typed ``llm.Tool`` for the round-trip through the real adapter."""
-
-    name = "get_time"
-    description = "Return the current time"
-    parameters = vol.Schema({})
-
-
-class _FakeLLMApi:
-    """Duck-typed ``llm.APIInstance`` exposing only what the adapter/chat_log read."""
-
-    def __init__(self, result: Any) -> None:
-        self.tools: list[Any] = [_FakeTool()]
-        self.custom_serializer = None
-        self._result = result
-
-    async def async_call_tool(self, tool_input: llm.ToolInput) -> Any:
-        return self._result
 
 
 class _AlwaysToolAdapter(BackendAdapter):
@@ -454,7 +577,7 @@ async def test_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: MockChat
     (a non-JSON-native ``datetime``) via ``default=str`` without raising.
     """
     now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
-    fake_api = _FakeLLMApi(result={"now": now})
+    fake_api = FakeLLMApi(result={"now": now})
 
     turn1 = FakeStreamResponse(
         [
@@ -485,7 +608,7 @@ async def test_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: MockChat
     tool_messages = [m for m in body2["messages"] if m.get("role") == "tool"]
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "call_1"
-    assert json.loads(tool_messages[0]["content"]) == {"now": str(now)}
+    assert json.loads(tool_messages[0]["content"]) == {"data": {"now": str(now)}, "error": False}
 
     # Final spoken answer is the turn-2 text.
     last = mock_chat_log.content[-1]
@@ -511,7 +634,7 @@ async def test_text_only_turn_runs_one_iteration(hass: HomeAssistant, mock_chat_
 
 async def test_tool_loop_iteration_cap(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
     """A backend that always calls a tool stops after MAX_TOOL_ITERATIONS with a result."""
-    fake_api = _FakeLLMApi(result={"ok": True})
+    fake_api = FakeLLMApi(result={"ok": True})
     adapter = _AlwaysToolAdapter(hass, MagicMock(), {})
     entity = _entity_with_adapter(hass, adapter, subentry_data={CONF_LLM_HASS_API: ["assist"]})
 
@@ -527,6 +650,7 @@ async def test_tool_loop_iteration_cap(hass: HomeAssistant, mock_chat_log: MockC
     assert adapter.calls == MAX_TOOL_ITERATIONS  # bounded, no hang
     assert isinstance(result, conversation.ConversationResult)
     assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+    assert result.response.response_type is intent.IntentResponseType.ERROR
     logger.warning.assert_called_once()
 
 
@@ -539,7 +663,7 @@ async def test_ollama_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: M
     ``default=str`` into a ``role: "tool"`` message without raising.
     """
     now = datetime(2026, 7, 4, 12, 0, tzinfo=UTC)
-    fake_api = _FakeLLMApi(result={"now": now})
+    fake_api = FakeLLMApi(result={"now": now})
 
     turn1 = FakeStreamResponse(
         [
@@ -567,10 +691,248 @@ async def test_ollama_tool_loop_round_trip(hass: HomeAssistant, mock_chat_log: M
     body2 = session.post.call_args_list[1].kwargs["json"]
     tool_messages = [m for m in body2["messages"] if m.get("role") == "tool"]
     assert len(tool_messages) == 1
-    assert json.loads(tool_messages[0]["content"]) == {"now": str(now)}
+    assert json.loads(tool_messages[0]["content"]) == {"data": {"now": str(now)}, "error": False}
 
     # Final spoken answer is the turn-2 text.
     last = mock_chat_log.content[-1]
     assert isinstance(last, conversation.AssistantContent)
     assert last.content == "It is noon."
     assert result.response.speech["plain"]["speech"] == "It is noon."
+
+
+# --- reauth + repair-issue signals from the never-hangs guard -----------------------
+
+_ISSUE_ID = "backend_unreachable_entry-1"
+
+
+def _failing_entity(hass: HomeAssistant, exc: Exception) -> LLMMiddlemanConversationEntity:
+    """An entity whose adapter raises ``exc`` before any delta, on a known parent entry."""
+    entity = _make_entity(hass, _make_adapter(hass, deltas=[], exc=exc, raise_after=0))
+    entity.entry.entry_id = "entry-1"
+    entity.entry.title = "Backend"
+    return entity
+
+
+async def _run_turns(entity: LLMMiddlemanConversationEntity, chat_log: MockChatLog, count: int) -> None:
+    for _ in range(count):
+        await entity._async_run_turn(_user_input(), chat_log)
+
+
+def _issue(hass: HomeAssistant) -> ir.IssueEntry | None:
+    return ir.async_get(hass).async_get_issue(DOMAIN, _ISSUE_ID)
+
+
+async def test_runtime_auth_error_starts_reauth_and_speaks_fallback(
+    hass: HomeAssistant, mock_chat_log: MockChatLog
+) -> None:
+    """A turn the backend rejects as unauthenticated asks HA to reauth, yet still answers."""
+    entity = _failing_entity(hass, BackendAuthError("HTTP 401"))
+
+    with patch.object(entity.entry, "async_start_reauth") as start_reauth:
+        result = await entity._async_handle_message(_user_input(), mock_chat_log)
+
+    start_reauth.assert_called_once_with(hass)
+    assert result.response.speech["plain"]["speech"] == ERROR_MESSAGE
+
+
+async def test_non_auth_error_does_not_start_reauth(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """Only a credential rejection triggers reauth, not an ordinary backend failure."""
+    entity = _failing_entity(hass, BackendStreamError("HTTP 500"))
+
+    with patch.object(entity.entry, "async_start_reauth") as start_reauth:
+        await entity._async_run_turn(_user_input(), mock_chat_log)
+
+    start_reauth.assert_not_called()
+
+
+async def test_repeated_connection_failures_raise_unreachable_issue(
+    hass: HomeAssistant, mock_chat_log: MockChatLog
+) -> None:
+    """The third consecutive unreachable turn raises a warning repair issue for the entry."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD)
+
+    issue = _issue(hass)
+    assert issue is not None
+    assert (issue.severity, issue.is_fixable, issue.translation_key) == (
+        ir.IssueSeverity.WARNING,
+        False,
+        "backend_unreachable",
+    )
+
+
+async def test_fewer_connection_failures_raise_no_issue(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A transient blip below the threshold is not worth a repair issue."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD - 1)
+
+    assert _issue(hass) is None
+
+
+async def test_wrapped_connection_failure_counts_as_unreachable(
+    hass: HomeAssistant, mock_chat_log: MockChatLog
+) -> None:
+    """An adapter that re-raises a transport error (n8n) still counts toward the issue."""
+    wrapped = BackendStreamError("n8n request failed")
+    wrapped.__cause__ = aiohttp.ServerDisconnectedError()
+    entity = _failing_entity(hass, wrapped)
+
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD)
+
+    assert _issue(hass) is not None
+
+
+async def test_reachable_failure_resets_the_unreachable_count(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """A turn that reached the backend (an HTTP error) breaks the consecutive-failure run."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD - 1)
+    entity.adapter = _make_adapter(hass, deltas=[], exc=BackendStreamError("HTTP 500"), raise_after=0)
+    await _run_turns(entity, mock_chat_log, 1)
+    entity.adapter = _make_adapter(hass, deltas=[], exc=aiohttp.ServerDisconnectedError(), raise_after=0)
+
+    await _run_turns(entity, mock_chat_log, 1)
+
+    assert _issue(hass) is None
+
+
+async def test_successful_turn_clears_the_unreachable_issue(hass: HomeAssistant, mock_chat_log: MockChatLog) -> None:
+    """The next turn that reaches the backend deletes the repair issue."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD)
+    entity.adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "back"}])
+
+    await _run_turns(entity, mock_chat_log, 1)
+
+    assert _issue(hass) is None
+
+
+_CONVERSATION_LOGGER = "custom_components.llm_middleman.conversation"
+_HELPERS_LOGGER = "custom_components.llm_middleman.helpers"
+
+
+def _info_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Every INFO message the reachability helpers logged."""
+    return [r.getMessage() for r in caplog.records if r.name == _HELPERS_LOGGER and r.levelno == logging.INFO]
+
+
+def _answer(adapter: FakeAdapter) -> None:
+    """Script ``adapter`` to reach the backend and reply."""
+    adapter.exc = None
+    adapter.deltas = [{"role": "assistant"}, {"content": "back"}]
+
+
+async def test_backend_going_unreachable_logs_one_info(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The first unreachable turn logs once at info; further failed turns add nothing."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    caplog.set_level(logging.INFO, _HELPERS_LOGGER)
+
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD + 1)
+
+    assert _info_messages(caplog) == ["Backend of connection Backend is unreachable: Server disconnected"]
+
+
+async def test_backend_recovering_logs_one_info(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The first turn that reaches the backend again logs once at info; later turns add nothing."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    await _run_turns(entity, mock_chat_log, 1)
+    _answer(cast(FakeAdapter, entity.adapter))
+    caplog.set_level(logging.INFO, _HELPERS_LOGGER)
+    caplog.clear()
+
+    await _run_turns(entity, mock_chat_log, 2)
+
+    assert _info_messages(caplog) == ["Backend of connection Backend is reachable again"]
+
+
+async def test_reachable_backend_logs_no_availability_info(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Turns against a backend that never went down log no availability change."""
+    entity = _failing_entity(hass, BackendStreamError("HTTP 500"))
+    caplog.set_level(logging.INFO, _HELPERS_LOGGER)
+
+    await _run_turns(entity, mock_chat_log, 1)
+    _answer(cast(FakeAdapter, entity.adapter))
+    await _run_turns(entity, mock_chat_log, 1)
+
+    assert _info_messages(caplog) == []
+
+
+async def test_first_turn_after_reload_with_open_issue_logs_recovery(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reloaded entry's fresh adapter (count 0) still treats an open repair issue as down."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    await _run_turns(entity, mock_chat_log, UNREACHABLE_ISSUE_THRESHOLD)
+    entity.adapter = _make_adapter(hass, deltas=[{"role": "assistant"}, {"content": "back"}])
+    caplog.set_level(logging.INFO, _HELPERS_LOGGER)
+    caplog.clear()
+
+    await _run_turns(entity, mock_chat_log, 1)
+
+    assert (_issue(hass), _info_messages(caplog)) == (None, ["Backend of connection Backend is reachable again"])
+
+
+async def test_agents_on_one_connection_share_availability(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Reachability is per connection: one agent's outage and a sibling's recovery log once each."""
+    first = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+    second = _make_entity(hass, first.adapter, subentry_id="sub-2")
+    second.entry = first.entry
+    caplog.set_level(logging.INFO, _HELPERS_LOGGER)
+
+    await _run_turns(first, mock_chat_log, 1)
+    await _run_turns(second, mock_chat_log, 1)
+    _answer(cast(FakeAdapter, first.adapter))
+    await _run_turns(second, mock_chat_log, 1)
+    await _run_turns(first, mock_chat_log, 1)
+
+    assert _info_messages(caplog) == [
+        "Backend of connection Backend is unreachable: Server disconnected",
+        "Backend of connection Backend is reachable again",
+    ]
+
+
+async def test_unreachable_turn_is_not_logged_as_error(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A transport failure is the expected outage the info line reports, so no per-turn error."""
+    entity = _failing_entity(hass, aiohttp.ServerDisconnectedError())
+
+    await _run_turns(entity, mock_chat_log, 2)
+
+    assert [r for r in caplog.records if r.name == _CONVERSATION_LOGGER and r.levelno >= logging.WARNING] == []
+
+
+async def test_reached_backend_failure_is_logged_as_error(
+    hass: HomeAssistant, mock_chat_log: MockChatLog, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failure after reaching the backend is unexpected and keeps its error with traceback."""
+    entity = _failing_entity(hass, BackendStreamError("HTTP 500"))
+
+    await _run_turns(entity, mock_chat_log, 1)
+
+    errors = [r for r in caplog.records if r.name == _CONVERSATION_LOGGER and r.levelno == logging.ERROR]
+    assert [(r.getMessage(), r.exc_info is not None) for r in errors] == [
+        ("Backend stream failed; returning fallback message", True)
+    ]
+
+
+async def test_runtime_401_starts_one_reauth_flow(hass: HomeAssistant, live_backend: ScriptedBackend) -> None:
+    """Repeated 401 turns against a live backend open exactly one reauth flow; each is voiced."""
+    live_backend.serve(BACKEND_OPENAI_COMPAT, ["unused"], status=401)
+    entry, entity_id = await setup_agent(hass, BACKEND_OPENAI_COMPAT, live_backend.base_url)
+
+    first = await run_pipeline_turn(hass, entity_id)
+    second = await run_pipeline_turn(hass, entity_id)
+    await hass.async_block_till_done()
+
+    assert (speech(first), speech(second)) == (ERROR_MESSAGE, ERROR_MESSAGE)
+    assert len(list(entry.async_get_active_flows(hass, {SOURCE_REAUTH}))) == 1

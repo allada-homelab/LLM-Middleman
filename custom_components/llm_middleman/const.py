@@ -47,6 +47,9 @@ DEFAULT_MAX_HISTORY = 20
 CONF_TEMPERATURE = "temperature"
 CONF_TOP_P = "top_p"
 CONF_MAX_TOKENS = "max_tokens"
+CONF_REASONING_EFFORT = "reasoning_effort"
+# Dropdown values (the union core openai offers across models); custom values are allowed.
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # The streaming converse endpoint appended to the configured base URL.
 CONVERSE_PATH = "/v1/converse"
@@ -54,6 +57,10 @@ CONVERSE_PATH = "/v1/converse"
 # Per-turn deadline for the whole SSE response. Voice UX is degraded past this,
 # so we fall back rather than hang the pipeline.
 DEFAULT_TIMEOUT = 60
+
+# Bound on a non-turn backend round-trip (setup reachability probe, subentry model
+# list): a dead backend must not stall HA startup or freeze a config form.
+PROBE_TIMEOUT = 10
 
 # --- v1 re-architecture (LLMM-005) ---
 
@@ -69,14 +76,18 @@ MEMORY_SCOPE_AGENT = "agent"  # one global thread per agent subentry
 
 # Subentry type for a conversation agent (one entity per such subentry).
 SUBENTRY_TYPE_CONVERSATION = "conversation"
+# Subentry type for an AI Task generate_data entity (LLMM-023; core's key for it).
+SUBENTRY_TYPE_AI_TASK = "ai_task_data"
 
 # Upper bound on assistant<->tool round-trips within a single turn (LLMM-014). The
 # HA-side backstop against a runaway tool-calling backend; matches core openai/ollama.
 MAX_TOOL_ITERATIONS = 10
 
-# sock_read idle timeout: kill only a truly stalled stream, not a slow-but-alive
-# one (the v0 single-total-deadline bug). Paired with CONF_TIMEOUT as the total.
-IDLE_TIMEOUT = 30
+# Consecutive turns that fail to reach the backend before a repair issue is raised; one
+# blip is noise, a run of them means the backend is down or moved.
+UNREACHABLE_ISSUE_THRESHOLD = 3
+# Repair-issue translation key; the issue id appends the parent entry_id.
+ISSUE_BACKEND_UNREACHABLE = "backend_unreachable"
 
 # Shown to the user (and spoken via TTS) when the external agent is unreachable
 # or errors mid-turn, so the Assist pipeline never hangs.
@@ -86,6 +97,12 @@ ERROR_MESSAGE = "Sorry, I could not reach the assistant right now. Please try ag
 CONF_NUM_CTX = "num_ctx"
 CONF_KEEP_ALIVE = "keep_alive"
 CONF_THINK = "think"
+# Smallest context window the agent form accepts (core ollama's MIN_NUM_CTX).
+MIN_NUM_CTX = 2048
+# think: off/on, or a level for models that support one (Ollama 0.40 also accepts "max").
+THINK_OFF = "off"
+THINK_ON = "on"
+THINK_OPTIONS = (THINK_OFF, THINK_ON, "low", "medium", "high", "max")
 
 # keep_alive sentinel: -1 means "keep the model loaded forever" and must be sent as
 # the integer -1, not a duration string ("-1s" is an invalid negative duration).
@@ -101,13 +118,21 @@ DEFAULT_INPUT_MESSAGES_KEY = "messages"
 CONF_RESPONSE_NODE_FILTER = "response_node_filter"
 # Agent option: run without a server-side thread (POST /runs/stream).
 CONF_STATELESS_RUNS = "stateless_runs"
+# Agent option: what the server does with a run still in flight on the thread when a
+# new turn arrives (double-texting). rollback drops the superseded run from the thread,
+# so its unanswered utterance never lingers in history (LLMM-022).
+CONF_MULTITASK_STRATEGY = "multitask_strategy"
+MULTITASK_STRATEGIES = ("rollback", "interrupt", "enqueue", "reject")
+DEFAULT_MULTITASK_STRATEGY = "rollback"
+# Connection option: header the API key is sent in. Entries created before LLMM-022
+# have no value and keep the x-api-key header.
+CONF_AUTH_SCHEME = "auth_scheme"
+LANGGRAPH_AUTH_X_API_KEY = "x_api_key"
+LANGGRAPH_AUTH_BEARER = "bearer"
 # helpers.storage.Store schema version for the session_key -> thread_id map.
 STORAGE_VERSION = 1
 
 # --- n8n agent-subentry options (LLMM-012; connection keys live above with LLMM-006) ---
-# ``CONF_STREAMING`` is a config-flow help-text toggle only: the adapter branches on
-# the actual response, never on this toggle.
-CONF_STREAMING = "streaming"
 CONF_INPUT_FIELD = "input_field"
 CONF_OUTPUT_FIELD = "output_field"
 CONF_SESSION_FIELD = "session_field"
@@ -120,3 +145,11 @@ N8N_OUTPUT_FIELD_FALLBACK = "text"
 N8N_DEFAULT_SESSION_FIELD = "sessionId"
 # n8n workflows can be slow; lower than the global default so voice UX fails soft sooner.
 N8N_DEFAULT_TIMEOUT = 30
+
+# --- Dify agent-subentry options (LLMM-021) ---
+# Static ``inputs`` mapping (variable -> value) for apps with required user_input_form fields.
+CONF_DIFY_INPUTS = "dify_inputs"
+# Fill the app's declared ``ha_*`` input variables from the HA turn context.
+CONF_DIFY_HA_CONTEXT = "dify_ha_context"
+# Send the HA user id as the Dify end-user (falls back to the shared default).
+CONF_DIFY_USER_FROM_HA = "dify_user_from_ha"

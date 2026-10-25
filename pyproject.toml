@@ -1,25 +1,28 @@
 [project]
 name = "llm-middleman"
-version = "0.1.0"
+version = "1.4.0"
 description = "Home Assistant passthrough conversation agent that forwards Assist turns to an external LLM agent"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.14.2"  # homeassistant >=2026.3 requires Python >=3.14.2; a looser floor forks the lock onto an old HA
 dependencies = [
     "homeassistant",
     "aiohttp",
     "voluptuous",
+    "voluptuous-openapi==0.4.1",  # mirrors manifest.json requirements; HA >=2026.9 no longer pulls it in transitively
 ]
 
 [dependency-groups]
 dev = [
     "basedpyright",
+    "coverage>=7.16.2",
+    "gazetteer-matcher>=1.1.0",  # HA conversation component requirement (HA >=2026.10); phcc does not install component requirements
     "hassil>=3.10.0",
     "home-assistant-intents>=2026.2.3",
     "pre-commit>=4.6.1",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-homeassistant-custom-component",
-    "pyturbojpeg==2.5.0",  # HA camera component dep (pinned to match HA); pulled in transitively by the HA test harness
+    "pyturbojpeg==1.8.3",  # ai_task imports camera, which imports turbojpeg; pinned to HA 2026.7–2026.10 package_constraints
     "ruff>=0.16.1",
 ]
 
@@ -31,8 +34,17 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config"]
 
+[tool.coverage.run]
+source = ["custom_components/llm_middleman"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 94
+show_missing = true
+skip_covered = true
+
 [tool.ruff]
-target-version = "py314"  # lint against the minimum supported Python (requires-python >=3.14), not the dev runtime
+target-version = "py314"  # lint against the minimum supported Python (requires-python >=3.14.2), not the dev runtime
 line-length = 120
 # ruff 0.16 formats Python blocks inside Markdown by default. Our .md snippets are
 # illustrative fragments (bare kwargs, side-by-side good/bad pairs), so formatting

@@ -23,4 +23,19 @@ jobs:
           persist-credentials: false
       # HA publishes no release tags for this action (only a stale 1.0.0), so pin
       # master's SHA; it runs the untagged hassfest image, which still tracks HA.
-      - uses: home-assistant/actions/hassfest@58bff37c8947f690ace498be413a9b78d6f30f93 # master
+      - uses: home-assistant/actions/hassfest@cd6f3635a740c84d8a14f6121a90068b8ece6bf6 # master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # actions/checkout
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # comment: "false" keeps the job read-only (the default posts a PR comment, which needs a write token).
+      - uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
+        with:
+          category: integration
+          comment: "false"

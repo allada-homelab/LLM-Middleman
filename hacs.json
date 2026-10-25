@@ -1,5 +1,5 @@
 {
     "name": "LLM Middleman",
     "render_readme": true,
-    "homeassistant": "2025.8.0"
+    "homeassistant": "2026.7.0"
 }

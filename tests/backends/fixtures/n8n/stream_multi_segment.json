@@ -1,0 +1,8 @@
+{
+  "description": "Webhook (streaming) -> Respond (Text 'First part.') -> Respond (Text 'Second part.'), both streaming",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/stream-two body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\"type\":\"begin\",\"metadata\":{\"nodeId\":\"f74ddfd3-ec48-4173-9cf2-f348ffd2612e\",\"nodeName\":\"R1\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925826}}\n{\"type\":\"item\",\"content\":\"First part.\",\"metadata\":{\"nodeId\":\"f74ddfd3-ec48-4173-9cf2-f348ffd2612e\",\"nodeName\":\"R1\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925826}}\n{\"type\":\"end\",\"metadata\":{\"nodeId\":\"f74ddfd3-ec48-4173-9cf2-f348ffd2612e\",\"nodeName\":\"R1\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925826}}\n{\"type\":\"begin\",\"metadata\":{\"nodeId\":\"98ea0b89-662e-4cfe-83d3-47e72b9ea030\",\"nodeName\":\"R2\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925827}}\n{\"type\":\"item\",\"content\":\"Second part.\",\"metadata\":{\"nodeId\":\"98ea0b89-662e-4cfe-83d3-47e72b9ea030\",\"nodeName\":\"R2\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925827}}\n{\"type\":\"end\",\"metadata\":{\"nodeId\":\"98ea0b89-662e-4cfe-83d3-47e72b9ea030\",\"nodeName\":\"R2\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792903925827}}\n"
+}

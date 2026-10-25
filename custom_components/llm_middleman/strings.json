@@ -29,12 +29,14 @@
                 "data": {
                     "base_url": "Deployment URL",
                     "api_key": "API key",
+                    "auth_scheme": "API key header",
                     "assistant_id": "Assistant ID"
                 },
                 "data_description": {
                     "base_url": "LangGraph deployment URL (a trailing slash is stripped automatically).",
-                    "api_key": "Optional; sent as the x-api-key header.",
-                    "assistant_id": "Graph name or UUID (default: agent)."
+                    "api_key": "Optional. Required by LangSmith cloud deployments and servers with custom auth.",
+                    "auth_scheme": "How the API key is sent: the x-api-key header (LangSmith cloud and the default for self-hosted servers), or an Authorization: Bearer token (for custom auth handlers that read Authorization).",
+                    "assistant_id": "Graph name or assistant UUID (default: agent). Checked against the deployment when you save."
                 }
             },
             "ollama": {
@@ -85,7 +87,7 @@
             },
             "dify": {
                 "title": "Dify connection",
-                "description": "Connect to a Dify chat, agent, or chatflow app. The app's prompt, model, and tools are configured inside Dify itself and are not set here.",
+                "description": "Connect to a Dify Chatbot, Agent, Legacy Agent, or Chatflow app. The app's prompt, model, and tools are configured inside Dify itself and are not set here.",
                 "data": {
                     "base_url": "Base URL",
                     "api_key": "API key"
@@ -94,14 +96,43 @@
                     "base_url": "Dify API root including /v1 (a trailing slash is stripped, and /v1 is appended if you omit it).",
                     "api_key": "The Dify app's API key (starts with app-). Required."
                 }
+            },
+            "reauth_confirm": {
+                "title": "Re-enter the backend credentials",
+                "description": "The backend rejected this connection's credentials. Enter the current ones; only the credential fields change, the rest of the connection is kept.",
+                "data": {
+                    "api_key": "API key",
+                    "token": "Bearer token",
+                    "username": "Username",
+                    "password": "Password",
+                    "header_name": "Header name",
+                    "header_value": "Header value"
+                },
+                "data_description": {
+                    "api_key": "The backend's current API key. Leave empty if it no longer needs one (Dify always does).",
+                    "token": "The current bearer token. Leave empty if the backend no longer needs one.",
+                    "username": "The n8n workflow's basic-auth username.",
+                    "password": "The n8n workflow's basic-auth password.",
+                    "header_name": "The n8n workflow's authentication header name.",
+                    "header_value": "The n8n workflow's authentication header value."
+                }
             }
         },
         "error": {
             "cannot_connect": "Failed to connect. Check the URL and that the backend is reachable.",
-            "invalid_auth": "Authentication failed. Check your credentials."
+            "invalid_auth": "Authentication failed. Check your credentials.",
+            "not_chat_app": "This Dify API key belongs to a Workflow or Text Generator app. Use the key of a Chatbot, Agent, or Chatflow app.",
+            "agent_not_published": "The Dify Agent has no published version yet. Publish it in Dify, then try again.",
+            "unknown": "[%key:common::config_flow::error::unknown%]",
+            "assistant_not_found": "The deployment has no assistant or graph with this ID.",
+            "webhook_not_registered": "n8n has no active webhook at this URL. Activate the workflow in n8n (production URLs only answer while it is active) and check the URL, then try again.",
+            "webhook_test_url": "This is an n8n test URL (its path contains /webhook-test/), which only answers once after Execute workflow is clicked. Use the workflow's production URL instead."
         },
         "abort": {
-            "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
+            "already_configured": "[%key:common::config_flow::abort::already_configured_service%]",
+            "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]",
+            "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]",
+            "reauth_not_supported": "This connection has no credentials to re-enter. Use Reconfigure to change how it authenticates."
         }
     },
     "config_subentries": {
@@ -121,22 +152,132 @@
                         "max_history": "Max history",
                         "timeout": "Timeout (seconds)",
                         "memory_scope": "Memory scope",
-                        "llm_hass_api": "Control Home Assistant"
+                        "llm_hass_api": "Control Home Assistant",
+                        "dify_inputs": "Dify app inputs",
+                        "dify_ha_context": "Send Home Assistant context to Dify",
+                        "dify_user_from_ha": "Use the Home Assistant user as the Dify user",
+                        "multitask_strategy": "Double-texting (LangGraph)",
+                        "input_messages_key": "Input messages key (LangGraph)",
+                        "response_node_filter": "Spoken node (LangGraph)",
+                        "stateless_runs": "Stateless runs (LangGraph)",
+                        "temperature": "Temperature (OpenAI-compatible)",
+                        "top_p": "Top P (OpenAI-compatible)",
+                        "max_tokens": "Maximum tokens (OpenAI-compatible)",
+                        "reasoning_effort": "Reasoning effort (OpenAI-compatible)",
+                        "num_ctx": "Context window (Ollama)",
+                        "keep_alive": "Keep alive (Ollama)",
+                        "think": "Think before responding (Ollama)",
+                        "input_field": "Message field (n8n)",
+                        "output_field": "Reply field (n8n)",
+                        "session_field": "Session field (n8n)"
                     },
                     "data_description": {
                         "name": "Display name for this agent's conversation entity.",
                         "prompt": "Instructions the agent is given (a template). Sent as the system prompt to backends that accept one.",
                         "model": "Model this agent uses. Pick one the backend offers, or type a name.",
                         "max_history": "How many past turns to replay to stateless backends. Higher costs more per turn; full-replay backends may ignore it.",
-                        "timeout": "Per-turn deadline. The pipeline falls back rather than hang past this.",
+                        "timeout": "How long to wait to reach the backend, and the longest it may stay silent before or while replying. A reply that keeps streaming is never cut off; a backend silent for longer is dropped and the pipeline falls back.",
                         "memory_scope": "Which conversations share memory on stateful backends: per conversation, per device, or one continuous thread for the agent.",
-                        "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent."
+                        "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent.",
+                        "dify_inputs": "Values for the app's input variables, as a mapping of variable name to value (for example city: Berlin). Required variables must be set here. Variables this app declares: {dify_app_inputs}.",
+                        "dify_ha_context": "Fill the app's input variables named ha_language, ha_device_id, ha_area, ha_satellite_id, and ha_extra_system_prompt from each turn. Only variables the app declares are sent; declare them as optional inputs in Dify (ha_extra_system_prompt as a paragraph) so a satellite's announced question reaches the follow-up turn.",
+                        "dify_user_from_ha": "Send the Home Assistant user ID as the Dify end user so conversations are attributed per person. Voice satellite turns have no user and keep the shared home-assistant identity.",
+                        "multitask_strategy": "What happens to a reply still running on this thread when a new turn arrives. Roll back (default) cancels it and removes it from the thread's history; Interrupt cancels it but keeps its partial progress; Enqueue waits for it to finish first; Reject refuses the new turn.",
+                        "input_messages_key": "The graph state key the new message list is sent under (default: messages).",
+                        "response_node_filter": "Only speak text produced by this graph node. Leave empty to speak every node's AI messages.",
+                        "stateless_runs": "Run each turn without a server-side thread. The graph then keeps no memory between turns.",
+                        "temperature": "Sampling temperature: higher is more varied, lower is more focused. Leave empty to use the server's default.",
+                        "top_p": "Nucleus sampling cutoff. Leave empty to use the server's default.",
+                        "max_tokens": "Longest reply the model may generate, in tokens. Leave empty to use the server's default.",
+                        "reasoning_effort": "How hard a reasoning model thinks before answering (for example OpenAI o-series or gpt-5). Leave empty to send nothing and use the server's default; other models may reject it.",
+                        "num_ctx": "Maximum number of text tokens the model can process. Lower it to reduce Ollama RAM use, raise it for long conversations or many exposed entities. Leave empty to use the model's default.",
+                        "keep_alive": "Seconds the model stays loaded in Ollama after a request. -1 keeps it loaded indefinitely, 0 unloads it right away. Leave empty to use Ollama's default.",
+                        "think": "Ask a thinking-capable model to reason before answering: on, off, or a level (low, medium, high, max) for models that support levels. The reasoning is shown in the chat log and never spoken. Leave unset to use the model's default.",
+                        "input_field": "Request body field the user's message is sent in. Must match the Chat Trigger's chat input key (default: chatInput).",
+                        "output_field": "Field of a non-streaming reply that holds the answer (default: output; text is also tried).",
+                        "session_field": "Request body field carrying the session key that n8n memory nodes partition on (default: sessionId)."
+                    }
+                }
+            },
+            "error": {
+                "invalid_dify_inputs": "Enter a mapping of variable names to text, number, or true/false values."
+            },
+            "abort": {
+                "entry_not_loaded": "The backend connection is not loaded. Fix or reload it before managing its agents.",
+                "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
+            }
+        },
+        "ai_task_data": {
+            "initiate_flow": {
+                "user": "Add AI task",
+                "reconfigure": "Reconfigure AI task"
+            },
+            "entry_type": "AI task",
+            "step": {
+                "set_options": {
+                    "title": "AI task options",
+                    "data": {
+                        "name": "Name",
+                        "model": "Model",
+                        "timeout": "Timeout (seconds)",
+                        "temperature": "Temperature (OpenAI-compatible)",
+                        "top_p": "Top P (OpenAI-compatible)",
+                        "max_tokens": "Maximum tokens (OpenAI-compatible)",
+                        "reasoning_effort": "Reasoning effort (OpenAI-compatible)",
+                        "num_ctx": "Context window (Ollama)",
+                        "keep_alive": "Keep alive (Ollama)",
+                        "think": "Think before responding (Ollama)"
+                    },
+                    "data_description": {
+                        "name": "Display name for this AI task entity.",
+                        "model": "Model the AI tasks use. Pick one the backend offers, or type a name. Use a vision model for image attachments.",
+                        "timeout": "How long to wait to reach the backend, and the longest it may stay silent before or while replying. A reply that keeps streaming is never cut off; a backend silent for longer fails the task.",
+                        "temperature": "Sampling temperature: higher is more varied, lower is more focused. Leave empty to use the server's default.",
+                        "top_p": "Nucleus sampling cutoff. Leave empty to use the server's default.",
+                        "max_tokens": "Longest reply the model may generate, in tokens. Leave empty to use the server's default.",
+                        "reasoning_effort": "How hard a reasoning model thinks before answering (for example OpenAI o-series or gpt-5). Leave empty to send nothing and use the server's default; other models may reject it.",
+                        "num_ctx": "Maximum number of text tokens the model can process. Leave empty to use the model's default.",
+                        "keep_alive": "Seconds the model stays loaded in Ollama after a request. -1 keeps it loaded indefinitely, 0 unloads it right away. Leave empty to use Ollama's default.",
+                        "think": "Ask a thinking-capable model to reason before answering: on, off, or a level (low, medium, high, max). Leave unset to use the model's default."
                     }
                 }
             },
             "abort": {
+                "entry_not_loaded": "The backend connection is not loaded. Fix or reload it before managing its AI tasks.",
                 "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
             }
+        }
+    },
+    "exceptions": {
+        "backend_unavailable": {
+            "message": "Sorry, I could not reach the assistant right now. Please try again."
+        },
+        "auth_failed": {
+            "message": "The backend rejected the credentials: {error}"
+        },
+        "backend_not_ready": {
+            "message": "The backend is not reachable: {error}"
+        },
+        "backend_rate_limited": {
+            "message": "The backend refused the request because of a rate limit or an exhausted quota: {error}"
+        },
+        "unsupported_attachment_type": {
+            "message": "Only image attachments are supported, not {mime_type}."
+        },
+        "ai_task_backend_error": {
+            "message": "The AI task failed: {error}"
+        },
+        "ai_task_no_response": {
+            "message": "The backend returned no answer for the AI task."
+        },
+        "ai_task_json_parse_error": {
+            "message": "The model's answer was not valid JSON for the requested structure."
+        }
+    },
+    "issues": {
+        "backend_unreachable": {
+            "title": "{title} backend is unreachable",
+            "description": "Several conversation turns in a row could not reach the {title} backend, so the assistant answered with its fallback message. Check that the backend is running and reachable from Home Assistant, or use Reconfigure on the connection if its address changed. This issue clears itself on the next turn that reaches the backend."
         }
     },
     "selector": {
@@ -168,6 +309,41 @@
                 "none": "None",
                 "basic": "Basic auth",
                 "custom_header": "Custom header"
+            }
+        },
+        "auth_scheme": {
+            "options": {
+                "x_api_key": "x-api-key header",
+                "bearer": "Authorization: Bearer"
+            }
+        },
+        "multitask_strategy": {
+            "options": {
+                "rollback": "Roll back",
+                "interrupt": "Interrupt",
+                "enqueue": "Enqueue",
+                "reject": "Reject"
+            }
+        },
+        "reasoning_effort": {
+            "options": {
+                "none": "None",
+                "minimal": "Minimal",
+                "low": "Low",
+                "medium": "Medium",
+                "high": "High",
+                "xhigh": "Extra high",
+                "max": "Maximum"
+            }
+        },
+        "think": {
+            "options": {
+                "off": "Off",
+                "on": "On",
+                "low": "Low",
+                "medium": "Medium",
+                "high": "High",
+                "max": "Maximum"
             }
         }
     }

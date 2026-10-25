@@ -70,30 +70,33 @@ Run the full pre-commit suite (the same hooks CI enforces):
 just pre-commit  # pre-commit run --all-files
 ```
 
+## Releasing
+
+1. In a PR, bump `version` in `custom_components/llm_middleman/manifest.json` and
+   `pyproject.toml` together (`tests/test_versions.py` fails if they differ), and add a
+   matching `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`; merge it.
+2. Tag the merge commit and push the tag:
+
+   ```bash
+   git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
+
+The `Release` workflow checks the tag against `manifest.json` and `CHANGELOG.md`, then
+creates the GitHub release with that changelog section as the notes (skipped if the
+release already exists).
+
 ## Tests
 
 Write tests test-first when fixing a bug (a failing test that reproduces it, then
 the fix). Keep new code fully type-annotated — `basedpyright` runs in strict mode
 and untyped defs will fail the gate.
 
-Integration tests live under `tests/integration/`, are marked
-`@pytest.mark.integration`, and are **deselected from the default run**. They need
-a Docker daemon — run them explicitly:
-
-```bash
-just test-int        # pytest tests/integration -m integration
-```
-
-Optional dependencies are exposed as extras (see `[project.optional-dependencies]`
-in `pyproject.toml`). Install all of them for development with
-`uv sync --all-extras --all-groups`.
-
 ## Pull requests
 
 - Branch off the default branch (`feat/…`, `fix/…`, `chore/…`); never push to it
   directly.
 - PR titles follow [Conventional Commits](https://www.conventionalcommits.org/)
-  (`type(scope): summary`) — a CI check enforces this.
+  (`type(scope): summary`).
 - The full gate (lint, format, typecheck, test) must pass before merge.
 
 ## Release process
@@ -102,7 +105,7 @@ This is a HACS custom integration — there is no build backend and no PyPI
 publish. Releases are SemVer and tag-based (HACS surfaces GitHub tags/releases
 as installable versions). To cut a release:
 
-1. Bump `"version"` in `custom_components/llm_middleman/manifest.json`.
+1. Bump `"version"` in `custom_components/llm_middleman/manifest.json` and `pyproject.toml`.
 2. Update `CHANGELOG.md`.
 3. Land both on the default branch.
 4. Tag the release commit with a matching `vX.Y.Z` tag and push it:

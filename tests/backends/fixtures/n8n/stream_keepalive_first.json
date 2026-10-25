@@ -1,0 +1,8 @@
+{
+  "description": "Webhook (streaming) -> Wait 45 s -> Respond to Webhook (Text, enableStreaming)",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/stream-45 body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 200,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\"type\":\"keepalive\"}\n{\"type\":\"begin\",\"metadata\":{\"nodeId\":\"2c24e247-1c45-4d3a-9219-ec3cd74d9f91\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792904020788}}\n{\"type\":\"item\",\"content\":\"after wait\",\"metadata\":{\"nodeId\":\"2c24e247-1c45-4d3a-9219-ec3cd74d9f91\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792904020788}}\n{\"type\":\"end\",\"metadata\":{\"nodeId\":\"2c24e247-1c45-4d3a-9219-ec3cd74d9f91\",\"nodeName\":\"R\",\"itemIndex\":0,\"runIndex\":0,\"timestamp\":1792904020788}}\n"
+}

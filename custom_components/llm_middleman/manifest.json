@@ -1,6 +1,7 @@
 {
     "domain": "llm_middleman",
     "name": "LLM Middleman",
+    "after_dependencies": ["assist_pipeline", "intent"],
     "codeowners": ["@allada-homelab"],
     "config_flow": true,
     "dependencies": ["conversation"],
@@ -8,6 +9,6 @@
     "integration_type": "service",
     "iot_class": "local_polling",
     "issue_tracker": "https://github.com/allada-homelab/LLM-Middleman/issues",
-    "requirements": ["aiohttp", "voluptuous", "voluptuous-openapi==0.4.1"],
-    "version": "1.1.4"
+    "requirements": ["voluptuous","voluptuous-openapi==0.4.1"],
+    "version": "1.4.0"
 }

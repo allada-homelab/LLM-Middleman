@@ -1,0 +1,6 @@
+{
+  "description": "Graph calling interrupt({'question': ...}) — ends on an `__interrupt__` update",
+  "server": "langgraph-api 0.16.6 (langgraph 1.2.17) via `langgraph dev`, captured 2026-10-24 (LLMM-022)",
+  "request": "POST /threads/{id}/runs/stream stream_mode=[messages-tuple, updates], if_not_exists=create, on_disconnect=cancel",
+  "body": "event: metadata\r\ndata: {\"run_id\":\"01a1700a-40ad-73a7-9be6-d5cffb43c0b9\",\"attempt\":1}\r\n\r\nevent: updates\r\ndata: {\"__interrupt__\":[{\"value\":{\"question\":\"Which room should I turn the lights on in?\"},\"id\":\"ad0dc8db6f8f67620fb52941bba50db6\",\"response_schema\":null}]}\r\n\r\n"
+}

@@ -10,15 +10,16 @@ nothing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-import voluptuous as vol
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     SOURCE_USER,
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     ConfigSubentryFlow,
@@ -28,9 +29,11 @@ from homeassistant.const import CONF_LLM_HASS_API, CONF_NAME, CONF_PROMPT
 from homeassistant.core import callback
 from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
+    BooleanSelector,  # pyright: ignore[reportUnknownVariableType]
     NumberSelector,  # pyright: ignore[reportUnknownVariableType]
     NumberSelectorConfig,
     NumberSelectorMode,
+    ObjectSelector,  # pyright: ignore[reportUnknownVariableType]
     SelectOptionDict,
     SelectSelector,  # pyright: ignore[reportUnknownVariableType]
     SelectSelectorConfig,
@@ -43,6 +46,9 @@ from homeassistant.helpers.selector import (
 
 from .backends import BACKEND_TO_CLS
 from .backends.base import BackendAdapter, BackendAuthError, BackendConnectionError
+from .backends.dify import DifyAdapter, DifyAppError
+from .backends.langgraph import AssistantNotFoundError
+from .backends.n8n import N8nWebhookError
 from .const import (
     BACKEND_CONVERSE,
     BACKEND_DIFY,
@@ -52,38 +58,81 @@ from .const import (
     BACKEND_OPENAI_COMPAT,
     CONF_API_KEY,
     CONF_ASSISTANT_ID,
+    CONF_AUTH_SCHEME,
     CONF_AUTH_TYPE,
     CONF_BACKEND_TYPE,
     CONF_BASE_URL,
+    CONF_DIFY_HA_CONTEXT,
+    CONF_DIFY_INPUTS,
+    CONF_DIFY_USER_FROM_HA,
     CONF_HEADER_NAME,
     CONF_HEADER_VALUE,
+    CONF_INPUT_FIELD,
+    CONF_INPUT_MESSAGES_KEY,
+    CONF_KEEP_ALIVE,
     CONF_MAX_HISTORY,
+    CONF_MAX_TOKENS,
     CONF_MEMORY_SCOPE,
     CONF_MODEL,
+    CONF_MULTITASK_STRATEGY,
+    CONF_NUM_CTX,
+    CONF_OUTPUT_FIELD,
     CONF_PASSWORD,
+    CONF_REASONING_EFFORT,
+    CONF_RESPONSE_NODE_FILTER,
+    CONF_SESSION_FIELD,
+    CONF_STATELESS_RUNS,
     CONF_TARGET_TYPE,
+    CONF_TEMPERATURE,
+    CONF_THINK,
     CONF_TIMEOUT,
     CONF_TOKEN,
+    CONF_TOP_P,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
+    DEFAULT_INPUT_MESSAGES_KEY,
     DEFAULT_MAX_HISTORY,
+    DEFAULT_MULTITASK_STRATEGY,
     DEFAULT_TIMEOUT,
     DOMAIN,
+    KEEP_ALIVE_FOREVER,
+    LANGGRAPH_AUTH_BEARER,
+    LANGGRAPH_AUTH_X_API_KEY,
     MEMORY_SCOPE_AGENT,
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
+    MIN_NUM_CTX,
+    MULTITASK_STRATEGIES,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_AUTH_NONE,
+    N8N_DEFAULT_INPUT_FIELD,
+    N8N_DEFAULT_OUTPUT_FIELD,
+    N8N_DEFAULT_SESSION_FIELD,
     N8N_TARGET_CHAT_TRIGGER,
     N8N_TARGET_WEBHOOK,
+    PROBE_TIMEOUT,
+    REASONING_EFFORTS,
+    SUBENTRY_TYPE_AI_TASK,
     SUBENTRY_TYPE_CONVERSATION,
+    THINK_OFF,
+    THINK_ON,
+    THINK_OPTIONS,
 )
+
+if TYPE_CHECKING:
+    # HA >= 2026.9 aliases `voluptuous` to probatio at runtime and types flow schemas as
+    # probatio's; type-check against that. Older HA (no probatio) gets real voluptuous.
+    import probatio as vol
+else:
+    import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 
 # Default display name for a newly added conversation agent.
 _DEFAULT_AGENT_NAME = "LLM Middleman"
+# Default display name for a newly added AI task entity.
+_DEFAULT_AI_TASK_NAME = "LLM Middleman AI Task"
 
 # Fixed per-backend entry title. The human-facing agent name lives on the
 # conversation subentry (LLMM-007), so the parent title is a stable backend label.
@@ -121,6 +170,14 @@ def _langgraph_schema() -> vol.Schema:
         {
             vol.Required(CONF_BASE_URL): _url_field(),
             vol.Optional(CONF_API_KEY): _password_field(),
+            # Entries created before this field existed have no value -> x-api-key.
+            vol.Required(CONF_AUTH_SCHEME, default=LANGGRAPH_AUTH_X_API_KEY): SelectSelector(
+                SelectSelectorConfig(
+                    options=[LANGGRAPH_AUTH_X_API_KEY, LANGGRAPH_AUTH_BEARER],
+                    translation_key="auth_scheme",
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
             vol.Required(CONF_ASSISTANT_ID, default="agent"): TextSelector(),
         }
     )
@@ -180,6 +237,56 @@ def _n8n_schema() -> vol.Schema:
     )
 
 
+def _dify_fields(options: Mapping[str, Any]) -> dict[Any, Any]:
+    """Dify-only agent options (LLMM-021): inputs mapping, HA context, end-user identity."""
+    return {
+        vol.Optional(
+            CONF_DIFY_INPUTS, description={"suggested_value": options.get(CONF_DIFY_INPUTS)}
+        ): ObjectSelector(),
+        vol.Optional(CONF_DIFY_HA_CONTEXT, default=bool(options.get(CONF_DIFY_HA_CONTEXT, False))): BooleanSelector(),
+        vol.Optional(
+            CONF_DIFY_USER_FROM_HA, default=bool(options.get(CONF_DIFY_USER_FROM_HA, False))
+        ): BooleanSelector(),
+    }
+
+
+def _valid_dify_inputs(value: object) -> bool:
+    """True for an unset mapping or a ``{variable: scalar}`` object (Dify ``inputs`` shape)."""
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    return all(
+        isinstance(key, str) and key and isinstance(item, str | int | float | bool)
+        for key, item in cast("dict[object, object]", value).items()
+    )
+
+
+def _reauth_schema(data: Mapping[str, Any]) -> vol.Schema | None:
+    """Credential-only schema for an entry's backend; ``None`` when it has no credential.
+
+    Mirrors each connection schema's secret field(s); n8n's depend on its auth type, and
+    an unauthenticated n8n webhook has nothing to re-enter.
+    """
+    backend_type = data[CONF_BACKEND_TYPE]
+    if backend_type == BACKEND_N8N:
+        auth_type = data.get(CONF_AUTH_TYPE, N8N_AUTH_NONE)
+        if auth_type == N8N_AUTH_BASIC:
+            return vol.Schema(
+                {vol.Required(CONF_USERNAME): TextSelector(), vol.Required(CONF_PASSWORD): _password_field()}
+            )
+        if auth_type == N8N_AUTH_HEADER:
+            return vol.Schema(
+                {vol.Required(CONF_HEADER_NAME): TextSelector(), vol.Required(CONF_HEADER_VALUE): _password_field()}
+            )
+        return None
+    if backend_type == BACKEND_CONVERSE:
+        return vol.Schema({vol.Optional(CONF_TOKEN): _password_field()})
+    if backend_type == BACKEND_DIFY:
+        return vol.Schema({vol.Required(CONF_API_KEY): _password_field()})
+    return vol.Schema({vol.Optional(CONF_API_KEY): _password_field()})
+
+
 class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for LLM Middleman."""
 
@@ -194,8 +301,13 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
     @classmethod
     @callback
     def async_get_supported_subentry_types(cls, config_entry: ConfigEntry) -> dict[str, type[ConfigSubentryFlow]]:
-        """Expose the conversation-agent subentry type for every backend (LLMM-007)."""
-        return {SUBENTRY_TYPE_CONVERSATION: ConversationSubentryFlowHandler}
+        """Expose conversation agents for every backend (LLMM-007), AI tasks where supported (LLMM-023)."""
+        types: dict[str, type[ConfigSubentryFlow]] = {SUBENTRY_TYPE_CONVERSATION: ConversationSubentryFlowHandler}
+        # HA asks for every stored entry, including a v0 one (no backend type) whose migration failed.
+        adapter_cls = BACKEND_TO_CLS.get(config_entry.data.get(CONF_BACKEND_TYPE, ""))
+        if adapter_cls is not None and adapter_cls.supports_ai_task:
+            types[SUBENTRY_TYPE_AI_TASK] = AITaskSubentryFlowHandler
+        return types
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Step 1: choose the backend type, then route to its connection step."""
@@ -220,6 +332,41 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
         """Reconfigure an existing entry: backend type is fixed, re-run its step."""
         self._backend_type = self._get_reconfigure_entry().data[CONF_BACKEND_TYPE]
         return await self._async_route_to_connection_step()
+
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
+        """Start reauth after the backend rejected the entry's credentials."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Re-ask only the credential field(s), validate them, then update the entry."""
+        entry = self._get_reauth_entry()
+        schema = _reauth_schema(entry.data)
+        if schema is None:
+            return self.async_abort(reason="reauth_not_supported")
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            fields = {str(marker.schema) for marker in schema.schema}
+            # Drop every credential field first so a blank (omitted) optional key is cleared.
+            data = {key: value for key, value in entry.data.items() if key not in fields} | user_input
+            backend_type = data[CONF_BACKEND_TYPE]
+            try:
+                await BACKEND_TO_CLS[backend_type].async_validate_connection(self.hass, data)
+            except BackendAuthError:
+                errors["base"] = "invalid_auth"
+            except BackendConnectionError:
+                errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected error validating the %s reauth", backend_type)
+                errors["base"] = "unknown"
+            else:
+                return self._async_update_entry_and_abort(entry, data)
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=self.add_suggested_values_to_schema(schema, user_input) if user_input else schema,
+            errors=errors,
+        )
 
     async def _async_route_to_connection_step(self) -> ConfigFlowResult:
         """Dispatch to the connection step for the selected backend type."""
@@ -310,12 +457,25 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
                 await adapter_cls.async_validate_connection(self.hass, data)
             except BackendAuthError:
                 errors["base"] = "invalid_auth"
+            except DifyAppError as err:
+                errors["base"] = err.error_key  # not_chat_app / agent_not_published
+            except N8nWebhookError as err:
+                errors["base"] = err.error_key  # webhook_not_registered / webhook_test_url
+            except AssistantNotFoundError:
+                errors[CONF_ASSISTANT_ID] = "assistant_not_found"
             except BackendConnectionError:
                 errors["base"] = "cannot_connect"
+            except Exception:
+                _LOGGER.exception("Unexpected error validating the %s connection", self._backend_type)
+                errors["base"] = "unknown"
             else:
                 entry_data = {CONF_BACKEND_TYPE: self._backend_type, **data}
+                if self.source != SOURCE_RECONFIGURE:
+                    # Only an identical connection is a duplicate: one URL can back distinct
+                    # connections (Dify Cloud apps differ only by key; LangGraph by assistant).
+                    self._async_abort_entries_match(entry_data)
                 if self.source == SOURCE_RECONFIGURE:
-                    return self.async_update_reload_and_abort(self._get_reconfigure_entry(), data=entry_data)
+                    return self._async_update_entry_and_abort(self._get_reconfigure_entry(), entry_data)
                 return self.async_create_entry(title=_BACKEND_TITLES[self._backend_type], data=entry_data)
 
         return self.async_show_form(
@@ -323,6 +483,17 @@ class LLMMiddlemanConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=self._prefilled(schema, user_input),
             errors=errors,
         )
+
+    def _async_update_entry_and_abort(self, entry: ConfigEntry, data: Mapping[str, Any]) -> ConfigFlowResult:
+        """Save ``data`` and finish the reconfigure/reauth flow, reloading the entry exactly once.
+
+        A loaded entry's update listener reloads it (a second reload alongside it is
+        deprecated, breaking in HA 2026.12); an entry whose setup failed never registered
+        the listener, so it is reloaded here.
+        """
+        if entry.update_listeners:
+            return self.async_update_and_abort(entry, data=data)
+        return self.async_update_reload_and_abort(entry, data=data)
 
     def _prefilled(self, schema: vol.Schema, user_input: Mapping[str, Any] | None) -> vol.Schema:
         """Prefill the schema: echo re-submitted input, else an entry on reconfigure."""
@@ -351,18 +522,31 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
     async def async_step_set_options(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
         """Show/handle the common agent options form (create vs reconfigure)."""
         entry = self._get_entry()
+        # Core openai/ollama pattern: agents are only managed under a loaded connection.
+        if entry.state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="entry_not_loaded")
         adapter_cls = BACKEND_TO_CLS[entry.data[CONF_BACKEND_TYPE]]
+        errors: dict[str, str] = {}
 
         if user_input is not None:
-            if self._is_new:
+            if not _valid_dify_inputs(user_input.get(CONF_DIFY_INPUTS)):
+                errors[CONF_DIFY_INPUTS] = "invalid_dify_inputs"
+            elif self._is_new:
                 # The name is the subentry title, not stored option data.
                 return self.async_create_entry(title=user_input.pop(CONF_NAME), data=user_input)
-            return self.async_update_and_abort(entry, self._get_reconfigure_subentry(), data=user_input)
+            else:
+                return self.async_update_and_abort(entry, self._get_reconfigure_subentry(), data=user_input)
 
-        options = {} if self._is_new else dict(self._get_reconfigure_subentry().data)
+        if user_input is not None:
+            options: Mapping[str, Any] = user_input  # re-show the rejected submission
+        else:
+            options = {} if self._is_new else dict(self._get_reconfigure_subentry().data)
+        placeholders = await self._dify_placeholders(entry) if entry.data[CONF_BACKEND_TYPE] == BACKEND_DIFY else None
         return self.async_show_form(
             step_id="set_options",
             data_schema=await self._build_schema(adapter_cls, entry, options),
+            errors=errors,
+            description_placeholders=placeholders,
         )
 
     async_step_user = async_step_set_options
@@ -387,7 +571,7 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
             schema[vol.Required(CONF_NAME, default=_DEFAULT_AGENT_NAME)] = TextSelector()
 
         # Per-agent system prompt (a Jinja template; converse/n8n also forward it,
-        # langgraph prepends it under MessagesState).
+        # langgraph sends it in the run context).
         schema[
             vol.Optional(
                 CONF_PROMPT,
@@ -438,19 +622,47 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         # list and pulls in the tools of every named API (device control + any HA
         # MCP-client entry). Unset/empty means "no tools" — no default is stored.
         if adapter_cls.supports_ha_tools:
+            apis = llm.async_get_apis(self.hass)
+            # Drop stored ids of APIs that no longer exist (e.g. a removed MCP server) so
+            # the form doesn't preselect an option it can't render (core openai pattern).
+            valid_ids = {api.id for api in apis}
+            suggested_apis = options.get(CONF_LLM_HASS_API)
+            if suggested_apis:
+                suggested_apis = [api_id for api_id in suggested_apis if api_id in valid_ids]
             schema[
                 vol.Optional(
                     CONF_LLM_HASS_API,
-                    description={"suggested_value": options.get(CONF_LLM_HASS_API)},
+                    description={"suggested_value": suggested_apis},
                 )
             ] = SelectSelector(
                 SelectSelectorConfig(
-                    options=[SelectOptionDict(value=api.id, label=api.name) for api in llm.async_get_apis(self.hass)],
+                    options=[SelectOptionDict(value=api.id, label=api.name) for api in apis],
                     multiple=True,
                 )
             )
 
+        if entry.data[CONF_BACKEND_TYPE] == BACKEND_DIFY:
+            schema.update(_dify_fields(options))
+        if adapter_cls.backend_type == BACKEND_LANGGRAPH:
+            _add_langgraph_fields(schema, options)
+        if adapter_cls.backend_type == BACKEND_OPENAI_COMPAT:
+            _add_openai_compat_fields(schema, options)
+        if adapter_cls.backend_type == BACKEND_OLLAMA:
+            _add_ollama_fields(schema, options)
+        if adapter_cls.backend_type == BACKEND_N8N:
+            _add_n8n_fields(schema, options)
+
         return vol.Schema(schema)
+
+    async def _dify_placeholders(self, entry: ConfigEntry) -> dict[str, str]:
+        """Describe the app's declared ``inputs`` (from ``GET /parameters``) for the form."""
+        try:
+            declared = await DifyAdapter.async_fetch_input_form(self.hass, entry.data)
+        except BackendConnectionError:
+            _LOGGER.debug("Dify parameters probe failed; input list unavailable in the agent form")
+            return {"dify_app_inputs": "unavailable (Dify could not be reached)"}
+        names = [f"{name} (required)" if control.get("required") else name for name, control in declared.items()]
+        return {"dify_app_inputs": ", ".join(names) or "none"}
 
     async def _model_selector(self, adapter_cls: type[BackendAdapter], entry: ConfigEntry) -> Any:
         """Return the model field selector, or ``None`` for catalog-less backends.
@@ -460,8 +672,10 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         field). Probe failure → a plain text field, so the form still renders.
         """
         try:
-            models = await adapter_cls.async_list_models(self.hass, entry.data)
-        except Exception:  # any probe failure must still render the form (free-text)
+            # Bounded well under the probe's own 60 s so a dead backend can't freeze the form.
+            async with asyncio.timeout(PROBE_TIMEOUT):
+                models = await adapter_cls.async_list_models(self.hass, entry.data)
+        except Exception:  # any probe failure (timeout included) must still render the form (free-text)
             _LOGGER.debug("Model probe failed for %s; falling back to free text", adapter_cls.backend_type)
             return TextSelector()  # pyright: ignore[reportUnknownVariableType]
         if models is None:
@@ -469,3 +683,116 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
         return SelectSelector(  # pyright: ignore[reportUnknownVariableType]
             SelectSelectorConfig(options=models, custom_value=True, mode=SelectSelectorMode.DROPDOWN)
         )
+
+
+class AITaskSubentryFlowHandler(ConversationSubentryFlowHandler):
+    """AI Task ``generate_data`` subentry flow (LLMM-023), for ``supports_ai_task`` adapters.
+
+    Same create/reconfigure steps as a conversation agent, with a narrower form: the
+    task supplies its own instructions and LLM API per call, and runs single-turn, so
+    there is no prompt, memory scope, tool API, or history depth — just the model, the
+    preset's sampling/runtime options, and the timeout.
+    """
+
+    async def _build_schema(
+        self,
+        adapter_cls: type[BackendAdapter],
+        entry: ConfigEntry,
+        options: Mapping[str, Any],
+    ) -> vol.Schema:
+        """Build the AI task schema; ``options`` prefills each field."""
+        schema: dict[Any, Any] = {}
+        if self._is_new:
+            schema[vol.Required(CONF_NAME, default=_DEFAULT_AI_TASK_NAME)] = TextSelector()
+        model_selector = await self._model_selector(adapter_cls, entry)
+        if model_selector is not None:
+            schema[vol.Optional(CONF_MODEL, description={"suggested_value": options.get(CONF_MODEL)})] = model_selector
+        schema[
+            vol.Optional(
+                CONF_TIMEOUT,
+                description={"suggested_value": options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)},
+            )
+        ] = NumberSelector(NumberSelectorConfig(min=10, max=300, step=1, mode=NumberSelectorMode.BOX))
+        if adapter_cls.backend_type == BACKEND_OPENAI_COMPAT:
+            _add_openai_compat_fields(schema, options)
+        if adapter_cls.backend_type == BACKEND_OLLAMA:
+            _add_ollama_fields(schema, options)
+        return vol.Schema(schema)
+
+
+def _add_langgraph_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
+    """Add the LangGraph-only agent options (graph wiring + double-text policy) to ``schema``."""
+    schema[
+        vol.Optional(
+            CONF_MULTITASK_STRATEGY,
+            description={"suggested_value": options.get(CONF_MULTITASK_STRATEGY, DEFAULT_MULTITASK_STRATEGY)},
+        )
+    ] = SelectSelector(
+        SelectSelectorConfig(
+            options=list(MULTITASK_STRATEGIES),
+            translation_key="multitask_strategy",
+            mode=SelectSelectorMode.DROPDOWN,
+        )
+    )
+    schema[
+        vol.Optional(
+            CONF_INPUT_MESSAGES_KEY,
+            description={"suggested_value": options.get(CONF_INPUT_MESSAGES_KEY, DEFAULT_INPUT_MESSAGES_KEY)},
+        )
+    ] = TextSelector()
+    schema[
+        vol.Optional(CONF_RESPONSE_NODE_FILTER, description={"suggested_value": options.get(CONF_RESPONSE_NODE_FILTER)})
+    ] = TextSelector()
+    schema[
+        vol.Optional(CONF_STATELESS_RUNS, description={"suggested_value": options.get(CONF_STATELESS_RUNS, False)})
+    ] = BooleanSelector()
+
+
+def _add_openai_compat_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
+    """Add the OpenAI-compatible sampling options; left empty, the server's default applies."""
+    schema[vol.Optional(CONF_TEMPERATURE, description={"suggested_value": options.get(CONF_TEMPERATURE)})] = (
+        NumberSelector(NumberSelectorConfig(min=0, max=2, step=0.05, mode=NumberSelectorMode.BOX))
+    )
+    schema[vol.Optional(CONF_TOP_P, description={"suggested_value": options.get(CONF_TOP_P)})] = NumberSelector(
+        NumberSelectorConfig(min=0, max=1, step=0.05, mode=NumberSelectorMode.BOX)
+    )
+    schema[vol.Optional(CONF_MAX_TOKENS, description={"suggested_value": options.get(CONF_MAX_TOKENS)})] = (
+        NumberSelector(NumberSelectorConfig(min=1, step=1, mode=NumberSelectorMode.BOX))
+    )
+    # Reasoning models only; custom_value lets a newer level through without a release.
+    schema[vol.Optional(CONF_REASONING_EFFORT, description={"suggested_value": options.get(CONF_REASONING_EFFORT)})] = (
+        SelectSelector(
+            SelectSelectorConfig(
+                options=list(REASONING_EFFORTS),
+                translation_key=CONF_REASONING_EFFORT,
+                custom_value=True,
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        )
+    )
+
+
+def _add_ollama_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
+    """Add the Ollama runtime options (core-ollama's set); left empty, the model's default applies."""
+    schema[vol.Optional(CONF_NUM_CTX, description={"suggested_value": options.get(CONF_NUM_CTX)})] = NumberSelector(
+        NumberSelectorConfig(min=MIN_NUM_CTX, step=1, mode=NumberSelectorMode.BOX)
+    )
+    schema[vol.Optional(CONF_KEEP_ALIVE, description={"suggested_value": options.get(CONF_KEEP_ALIVE)})] = (
+        NumberSelector(NumberSelectorConfig(min=KEEP_ALIVE_FOREVER, step=1, mode=NumberSelectorMode.BOX))
+    )
+    # Agents saved before think levels store a bool; show it as the matching on/off choice.
+    think = options.get(CONF_THINK)
+    suggested_think = (THINK_ON if think else THINK_OFF) if isinstance(think, bool) else think
+    schema[vol.Optional(CONF_THINK, description={"suggested_value": suggested_think})] = SelectSelector(
+        SelectSelectorConfig(options=list(THINK_OPTIONS), translation_key=CONF_THINK, mode=SelectSelectorMode.DROPDOWN)
+    )
+
+
+def _add_n8n_fields(schema: dict[Any, Any], options: Mapping[str, Any]) -> None:
+    """Add the n8n request/response field names (must match the workflow's nodes)."""
+    for key, default in (
+        (CONF_INPUT_FIELD, N8N_DEFAULT_INPUT_FIELD),
+        (CONF_OUTPUT_FIELD, N8N_DEFAULT_OUTPUT_FIELD),
+        (CONF_SESSION_FIELD, N8N_DEFAULT_SESSION_FIELD),
+    ):
+        schema[vol.Optional(key, description={"suggested_value": options.get(key, default)})] = TextSelector()

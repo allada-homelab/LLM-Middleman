@@ -1,0 +1,8 @@
+{
+  "description": "POST to an unregistered production path (inactive workflow / wrong URL)",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "POST /webhook/not-registered body={\"sessionId\": \"s1\", \"chatInput\": \"hi\"}",
+  "status": 404,
+  "content_type": "application/json; charset=utf-8",
+  "body": "{\"code\":404,\"message\":\"The requested webhook \\\"POST not-registered\\\" is not registered.\",\"hint\":\"The workflow must be active for a production URL to run successfully. You can activate the workflow using the toggle in the top-right of the editor. Note that unlike test URL calls, production URL calls aren't shown on the canvas (only in the executions list)\"}"
+}
