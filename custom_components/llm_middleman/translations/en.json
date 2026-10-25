@@ -124,7 +124,9 @@
             "not_chat_app": "This Dify API key belongs to a Workflow or Text Generator app. Use the key of a Chatbot, Agent, or Chatflow app.",
             "agent_not_published": "The Dify Agent has no published version yet. Publish it in Dify, then try again.",
             "unknown": "Unexpected error",
-            "assistant_not_found": "The deployment has no assistant or graph with this ID."
+            "assistant_not_found": "The deployment has no assistant or graph with this ID.",
+            "webhook_not_registered": "n8n has no active webhook at this URL. Activate the workflow in n8n (production URLs only answer while it is active) and check the URL, then try again.",
+            "webhook_test_url": "This is an n8n test URL (its path contains /webhook-test/), which only answers once after Execute workflow is clicked. Use the workflow's production URL instead."
         },
         "abort": {
             "already_configured": "Service is already configured",
@@ -161,6 +163,7 @@
                         "temperature": "Temperature (OpenAI-compatible)",
                         "top_p": "Top P (OpenAI-compatible)",
                         "max_tokens": "Maximum tokens (OpenAI-compatible)",
+                        "reasoning_effort": "Reasoning effort (OpenAI-compatible)",
                         "num_ctx": "Context window (Ollama)",
                         "keep_alive": "Keep alive (Ollama)",
                         "think": "Think before responding (Ollama)",
@@ -173,7 +176,7 @@
                         "prompt": "Instructions the agent is given (a template). Sent as the system prompt to backends that accept one.",
                         "model": "Model this agent uses. Pick one the backend offers, or type a name.",
                         "max_history": "How many past turns to replay to stateless backends. Higher costs more per turn; full-replay backends may ignore it.",
-                        "timeout": "How long to wait to reach the backend. A reply that keeps streaming is never cut off; a backend that goes silent for 30 seconds is dropped and the pipeline falls back.",
+                        "timeout": "How long to wait to reach the backend, and the longest it may stay silent before or while replying. A reply that keeps streaming is never cut off; a backend silent for longer is dropped and the pipeline falls back.",
                         "memory_scope": "Which conversations share memory on stateful backends: per conversation, per device, or one continuous thread for the agent.",
                         "llm_hass_api": "Home Assistant tool APIs the backend may call to control devices and query state. Leave empty to disable device control for this agent.",
                         "dify_inputs": "Values for the app's input variables, as a mapping of variable name to value (for example city: Berlin). Required variables must be set here. Variables this app declares: {dify_app_inputs}.",
@@ -186,9 +189,10 @@
                         "temperature": "Sampling temperature: higher is more varied, lower is more focused. Leave empty to use the server's default.",
                         "top_p": "Nucleus sampling cutoff. Leave empty to use the server's default.",
                         "max_tokens": "Longest reply the model may generate, in tokens. Leave empty to use the server's default.",
+                        "reasoning_effort": "How hard a reasoning model thinks before answering (for example OpenAI o-series or gpt-5). Leave empty to send nothing and use the server's default; other models may reject it.",
                         "num_ctx": "Maximum number of text tokens the model can process. Lower it to reduce Ollama RAM use, raise it for long conversations or many exposed entities. Leave empty to use the model's default.",
                         "keep_alive": "Seconds the model stays loaded in Ollama after a request. -1 keeps it loaded indefinitely, 0 unloads it right away. Leave empty to use Ollama's default.",
-                        "think": "Ask a thinking-capable model to reason before answering. The reasoning is shown in the chat log and never spoken. Leave unset to use the model's default.",
+                        "think": "Ask a thinking-capable model to reason before answering: on, off, or a level (low, medium, high, max) for models that support levels. The reasoning is shown in the chat log and never spoken. Leave unset to use the model's default.",
                         "input_field": "Request body field the user's message is sent in. Must match the Chat Trigger's chat input key (default: chatInput).",
                         "output_field": "Field of a non-streaming reply that holds the answer (default: output; text is also tried).",
                         "session_field": "Request body field carrying the session key that n8n memory nodes partition on (default: sessionId)."
@@ -219,6 +223,7 @@
                         "temperature": "Temperature (OpenAI-compatible)",
                         "top_p": "Top P (OpenAI-compatible)",
                         "max_tokens": "Maximum tokens (OpenAI-compatible)",
+                        "reasoning_effort": "Reasoning effort (OpenAI-compatible)",
                         "num_ctx": "Context window (Ollama)",
                         "keep_alive": "Keep alive (Ollama)",
                         "think": "Think before responding (Ollama)"
@@ -226,13 +231,14 @@
                     "data_description": {
                         "name": "Display name for this AI task entity.",
                         "model": "Model the AI tasks use. Pick one the backend offers, or type a name. Use a vision model for image attachments.",
-                        "timeout": "How long to wait to reach the backend. A reply that keeps streaming is never cut off; a backend that goes silent for 30 seconds fails the task.",
+                        "timeout": "How long to wait to reach the backend, and the longest it may stay silent before or while replying. A reply that keeps streaming is never cut off; a backend silent for longer fails the task.",
                         "temperature": "Sampling temperature: higher is more varied, lower is more focused. Leave empty to use the server's default.",
                         "top_p": "Nucleus sampling cutoff. Leave empty to use the server's default.",
                         "max_tokens": "Longest reply the model may generate, in tokens. Leave empty to use the server's default.",
+                        "reasoning_effort": "How hard a reasoning model thinks before answering (for example OpenAI o-series or gpt-5). Leave empty to send nothing and use the server's default; other models may reject it.",
                         "num_ctx": "Maximum number of text tokens the model can process. Leave empty to use the model's default.",
                         "keep_alive": "Seconds the model stays loaded in Ollama after a request. -1 keeps it loaded indefinitely, 0 unloads it right away. Leave empty to use Ollama's default.",
-                        "think": "Ask a thinking-capable model to reason before answering. Leave unset to use the model's default."
+                        "think": "Ask a thinking-capable model to reason before answering: on, off, or a level (low, medium, high, max). Leave unset to use the model's default."
                     }
                 }
             },
@@ -251,6 +257,9 @@
         },
         "backend_not_ready": {
             "message": "The backend is not reachable: {error}"
+        },
+        "backend_rate_limited": {
+            "message": "The backend refused the request because of a rate limit or an exhausted quota: {error}"
         },
         "unsupported_attachment_type": {
             "message": "Only image attachments are supported, not {mime_type}."
@@ -314,6 +323,27 @@
                 "interrupt": "Interrupt",
                 "enqueue": "Enqueue",
                 "reject": "Reject"
+            }
+        },
+        "reasoning_effort": {
+            "options": {
+                "none": "None",
+                "minimal": "Minimal",
+                "low": "Low",
+                "medium": "Medium",
+                "high": "High",
+                "xhigh": "Extra high",
+                "max": "Maximum"
+            }
+        },
+        "think": {
+            "options": {
+                "off": "Off",
+                "on": "On",
+                "low": "Low",
+                "medium": "Medium",
+                "high": "High",
+                "max": "Maximum"
             }
         }
     }

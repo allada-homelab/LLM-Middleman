@@ -9,7 +9,15 @@ Streaming is NDJSON ``StructuredChunk`` lines
 (``{"type":"begin"|"item"|"end"|"error","content":…}``, n8n 1.103.0) — NOT SSE; lines
 are framed by the shared, line-capped :func:`._sse.async_iter_lines`. ``item.content`` is accumulated and streamed
 delta-by-delta; **EOF (the stream closing) is the true done signal** — a run may emit
-several ``begin``/``end`` cycles, so ``end`` is never treated as terminal.
+several ``begin``/``end`` cycles, so ``end`` is never treated as terminal; consecutive
+segments are separated by a newline (n8n's own chat client shows one message per segment).
+
+Non-streamed replies come in the shapes n8n actually sends (LLMM-025, captured on 2.44.6):
+a JSON object, a JSON array ("All Entries" / "All Incoming Items" — every item's reply is
+joined), or a Respond-to-Webhook "Text" body (served as ``text/html``). A streamed item whose
+content is a JSON string (Respond "JSON" / "First Incoming Item" in streaming mode) is
+unwrapped the same way. AI Agent ``intermediateSteps`` in a blocking reply are surfaced as
+external tool calls.
 
 Stateful: the entity's ``ctx.memory_key`` is sent as the configured session field
 (default ``sessionId``), which n8n's memory nodes partition on.
@@ -26,6 +34,7 @@ from urllib.parse import urlparse
 import aiohttp
 from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from ..const import (  # noqa: TID252 — sibling package const module
     BACKEND_N8N,
@@ -39,6 +48,7 @@ from ..const import (  # noqa: TID252 — sibling package const module
     CONF_TARGET_TYPE,
     CONF_USERNAME,
     CONF_WEBHOOK_URL,
+    DEFAULT_TIMEOUT,
     N8N_AUTH_BASIC,
     N8N_AUTH_HEADER,
     N8N_AUTH_NONE,
@@ -49,14 +59,18 @@ from ..const import (  # noqa: TID252 — sibling package const module
     N8N_OUTPUT_FIELD_FALLBACK,
     N8N_TARGET_WEBHOOK,
 )
+from ._compat import AssistantDelta, external_tool_call_delta, external_tool_result_delta
 from ._sse import MAX_LINE_BYTES, async_iter_lines
 from .base import (
     BackendAdapter,
+    BackendAuthError,
     BackendConnectionError,
     BackendStreamError,
     DeltaStream,
     TurnContext,
     build_client_timeout,
+    json_list,
+    json_object,
     loads_json_object,
     rendered_system_prompt,
 )
@@ -66,31 +80,54 @@ _LOGGER = logging.getLogger(__name__)
 # The Chat Trigger node distinguishes turns by this action; plain Webhook omits it.
 _ACTION_SEND_MESSAGE = "sendMessage"
 # StructuredChunk envelope types (n8n 1.103.0). ``begin``/``end`` are segment markers,
-# not stream terminators — a single run may emit several begin/end cycles.
-_STRUCTURED_CHUNK_TYPES = frozenset({"begin", "item", "end", "error"})
+# not stream terminators — a single run may emit several begin/end cycles. n8n >= 2.4x
+# also heartbeats ``keepalive`` every 30 s, which may be the first line and carries no text.
+_STRUCTURED_CHUNK_TYPES = frozenset({"begin", "item", "end", "error", "keepalive"})
 # A blocking (non-streamed) reply is read whole before parsing, so it is capped: 1 MiB is
 # far beyond any spoken reply, and an over-cap body fails the turn instead of growing memory.
 _MAX_BLOCKING_BYTES = 1 << 20
+# Joins streamed segments and array items: each is a separate utterance (one chat message
+# per segment in n8n's own client); a newline keeps sentences apart for TTS and the chat log.
+_SEGMENT_SEPARATOR = "\n"
+# Only a real HTML *document* is an error page (a login portal / proxy page answering 200):
+# Respond-to-Webhook "Text" is also served as text/html, but its body is the bare reply.
+_HTML_DOCUMENT_PREFIXES = (b"<!doctype", b"<html")
+# n8n's test endpoint answers once per "Execute workflow" click — never a persistent agent URL.
+_TEST_WEBHOOK_SEGMENT = "/webhook-test/"
+# n8n's WebhookNotFoundError text for an unregistered path (inactive workflow / wrong URL).
+_NOT_REGISTERED_MARKER = "is not registered"
 
-_Mode = Literal["html", "ndjson", "blocking"]
+_Mode = Literal["html", "ndjson", "text", "blocking"]
+
+
+class N8nWebhookError(BackendConnectionError):
+    """The webhook URL is reachable but cannot serve turns; ``error_key`` names the form error."""
+
+    def __init__(self, error_key: str, message: str) -> None:
+        """Store the config-flow error key alongside the log message."""
+        super().__init__(message)
+        self.error_key = error_key
 
 
 def _sniff_mode(sample: bytes, content_type: str) -> _Mode:
     """Classify the real response from its first line and content-type.
 
-    ``sample`` is the first newline-terminated line (or the whole body at EOF). An
-    HTML body (proxy/gateway timeout) is detected first; a ``StructuredChunk`` first
-    line — or an NDJSON content-type — means streaming; anything else is a single
-    blocking JSON body. The ``streaming`` config toggle is deliberately ignored.
+    ``sample`` is the first newline-terminated line (or the whole body at EOF). An HTML
+    document (a 200 portal/proxy page; error statuses never get here) is detected first; a
+    ``StructuredChunk`` first line — or an NDJSON content-type — means streaming; any other
+    ``text/*`` body is a plain-text reply (Respond-to-Webhook "Text" is served as
+    ``text/html``); anything else is a single blocking JSON body. The ``streaming`` config
+    toggle is deliberately ignored.
     """
-    stripped = sample.lstrip()
-    if "html" in content_type or stripped[:1] == b"<":
+    if sample.lstrip()[:16].lower().startswith(_HTML_DOCUMENT_PREFIXES):
         return "html"
     obj = loads_json_object(sample)
     if obj is not None and obj.get("type") in _STRUCTURED_CHUNK_TYPES:
         return "ndjson"
     if any(hint in content_type for hint in ("ndjson", "json-lines", "jsonl")):
         return "ndjson"
+    if content_type.startswith("text/"):
+        return "text"
     return "blocking"
 
 
@@ -121,11 +158,16 @@ class N8nAdapter(BackendAdapter):
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
-        """Validate the webhook URL shape only — no live probe.
+        """Check the URL shape, reject test URLs, then probe registration without a run.
 
-        The webhook is opaque and a probing ``POST`` would fire the live workflow, so
-        there is no safe network check at config time (E2E is the real validation —
-        LLMM-018). We reject only a missing or non-absolute-http(s) URL.
+        ``POST`` is a turn and ``GET`` starts a run on a Chat Trigger (or on a Webhook that
+        also accepts GET), so the probe is ``OPTIONS`` with an ``Origin`` header: n8n resolves
+        the path's registered methods into ``Access-Control-Allow-Methods`` and returns before
+        executing anything (verified on 2.44.6 for both targets). An unregistered path
+        (inactive workflow, wrong URL) lists no ``POST`` — or, on other versions, 404s with
+        n8n's "is not registered" text. ``Access-Control-Request-Method`` is never sent: n8n
+        answers 500 for an unknown path with it. Any other answer (a reverse proxy handling
+        ``OPTIONS`` itself) is accepted — the turn surfaces a real failure.
         """
         url = data.get(CONF_WEBHOOK_URL)
         if not isinstance(url, str) or not url:
@@ -133,6 +175,26 @@ class N8nAdapter(BackendAdapter):
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise BackendConnectionError("n8n webhook URL must be an absolute http(s) URL")
+        if _TEST_WEBHOOK_SEGMENT in parsed.path:
+            raise N8nWebhookError("webhook_test_url", "n8n test URLs answer only once; use the production URL")
+
+        session = async_get_clientsession(hass)
+        # The configured auth rides along for proxies that guard OPTIONS with the same credential.
+        headers = {**cls(hass, session, data)._request_headers(), "Origin": f"{parsed.scheme}://{parsed.netloc}"}
+        try:
+            async with session.options(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
+            ) as response:
+                status = response.status
+                allowed = response.headers.get("Access-Control-Allow-Methods")
+                body = await response.text() if status == 404 else ""
+        except (TimeoutError, aiohttp.ClientError) as err:
+            raise BackendConnectionError(f"Cannot reach the n8n webhook: {err}") from err
+        if status in (401, 403):
+            raise BackendAuthError(f"n8n webhook rejected credentials (HTTP {status})")
+        lists_no_post = allowed is not None and "POST" not in {m.strip().upper() for m in allowed.split(",")}
+        if (status == 404 and _NOT_REGISTERED_MARKER in body) or (200 <= status < 300 and lists_no_post):
+            raise N8nWebhookError("webhook_not_registered", "n8n webhook is not registered (is the workflow active?)")
 
     async def stream_turn(
         self,
@@ -217,9 +279,9 @@ class N8nAdapter(BackendAdapter):
         mode = _sniff_mode(sample, content_type)
 
         if mode == "html":
-            raise BackendStreamError("n8n returned a non-JSON (HTML) body — likely a proxy/gateway timeout")
+            raise BackendStreamError("n8n returned an HTML document — likely a proxy/login page, not the workflow")
 
-        if mode == "blocking":
+        if mode in ("blocking", "text"):
             if not exhausted:
                 async for chunk in stream:
                     buffer += chunk
@@ -227,58 +289,163 @@ class N8nAdapter(BackendAdapter):
                         break
             if len(buffer) > _MAX_BLOCKING_BYTES:
                 raise BackendStreamError(f"n8n blocking reply exceeded {_MAX_BLOCKING_BYTES} bytes")
-            for delta in self._blocking_deltas(bytes(buffer), ctx):
+            deltas = _text_deltas(bytes(buffer)) if mode == "text" else _blocking_deltas(bytes(buffer), ctx)
+            for delta in deltas:
                 yield delta
             return
 
         # NDJSON streaming path: emit item content as it arrives; EOF is the true done
         # signal, and a final line with no trailing newline still counts.
         started = False
+        separate = False  # an ``end`` closed a segment that already spoke: separate the next one
         async for line in async_iter_lines(_prepend(bytes(buffer), stream)):
-            for content in _line_contents(line):
-                if not started:
-                    started = True
-                    yield {"role": "assistant"}
-                yield {"content": content}
+            chunk = _structured_chunk(line)
+            if chunk is None:
+                continue
+            chunk_type = chunk.get("type")
+            if chunk_type == "error":
+                raise BackendStreamError(_error_chunk_message(chunk))
+            if chunk_type == "end":
+                separate = started
+                continue
+            content = chunk.get("content")
+            if chunk_type != "item" or not isinstance(content, str) or not content:
+                continue
+            content = _unwrap_json_content(content, ctx)
+            if not started:
+                started = True
+                yield {"role": "assistant"}
+            elif separate:
+                content = _SEGMENT_SEPARATOR + content
+            separate = False
+            yield {"content": content}
 
         if not started:
             raise BackendStreamError("n8n stream closed without producing any content")
 
-    def _blocking_deltas(self, raw: bytes, ctx: TurnContext) -> Iterator[conversation.AssistantContentDeltaDict]:
-        """Parse a single blocking JSON body via the ``output_field`` → ``text`` fallback chain."""
-        obj = loads_json_object(raw)
-        if obj is None:
-            raise BackendStreamError("n8n blocking reply was not a JSON object")
+
+def _text_deltas(raw: bytes) -> Iterator[AssistantDelta]:
+    """Speak a plain-text body (Respond-to-Webhook "Text") as the reply."""
+    text = raw.decode(errors="replace")
+    if not text.strip():
+        raise BackendStreamError("n8n text reply was empty")
+    yield {"role": "assistant"}
+    yield {"content": text}
+
+
+def _blocking_deltas(raw: bytes, ctx: TurnContext) -> Iterator[AssistantDelta]:
+    """Parse a blocking JSON body (object or array): tool steps first, then the reply."""
+    try:
+        value: object = json.loads(raw)
+    except ValueError as err:
+        raise BackendStreamError("n8n blocking reply was not JSON") from err
+    reply = _reply_from_json(value, ctx)
+    if reply is None:
+        # Never json.dumps the whole body and speak it — surface the misconfig instead.
         output_field = ctx.options.get(CONF_OUTPUT_FIELD, N8N_DEFAULT_OUTPUT_FIELD)
+        raise BackendStreamError(f"n8n reply missing '{output_field}'/'{N8N_OUTPUT_FIELD_FALLBACK}' field")
+    # Tool deltas precede the reply block, so the stream never ends on a tool result
+    # (which would re-enter the entity's tool loop and re-send the turn).
+    yield from _intermediate_step_deltas(_json_items(value))
+    yield {"role": "assistant"}
+    yield {"content": reply}
+
+
+def _json_items(value: object) -> list[dict[str, Any]]:
+    """The reply objects of a JSON body: the object itself, or an array's object items."""
+    items = json_list(value)
+    if items is None:
+        obj = json_object(value)
+        return [] if obj is None else [obj]
+    return [obj for obj in map(json_object, items) if obj is not None]
+
+
+def _reply_from_json(value: object, ctx: TurnContext) -> str | None:
+    """Extract the reply via ``output_field`` → ``text``; an array's replies are joined in order.
+
+    n8n's own chat client has no array handling (it stringifies the body), so joining every
+    item's reply keeps all the text the workflow produced instead of dropping later items.
+    ``continueConversation`` on a contributing item requests follow-up listening.
+    """
+    output_field = ctx.options.get(CONF_OUTPUT_FIELD, N8N_DEFAULT_OUTPUT_FIELD)
+    replies: list[str] = []
+    for obj in _json_items(value):
         reply = obj.get(output_field)
         if reply is None:
             reply = obj.get(N8N_OUTPUT_FIELD_FALLBACK)
         if reply is None:
-            # Never json.dumps the whole object and speak it — surface the misconfig instead.
-            raise BackendStreamError(f"n8n reply missing '{output_field}'/'{N8N_OUTPUT_FIELD_FALLBACK}' field")
+            continue
         if obj.get("continueConversation"):
             ctx.continue_conversation = True
-        yield {"role": "assistant"}
-        yield {"content": reply if isinstance(reply, str) else str(reply)}
+        replies.append(reply if isinstance(reply, str) else str(reply))
+    return _SEGMENT_SEPARATOR.join(replies) if replies else None
 
 
-def _line_contents(line: bytes) -> Iterator[str]:
-    """Yield the ``item`` content of one NDJSON ``StructuredChunk`` line.
+def _unwrap_json_content(content: str, ctx: TurnContext) -> str:
+    """Unwrap a streamed item that is a whole JSON reply (Respond "JSON" in streaming mode).
 
-    Blank, malformed, and non-object lines are skipped (logged, tolerant). ``begin``,
-    ``end``, and unknown types yield nothing (``end`` is not terminal). An ``error``
-    chunk raises :class:`BackendStreamError`. Content whitespace is never stripped.
+    Only a complete JSON object/array carrying the reply field is unwrapped; LLM token
+    chunks and any other JSON are spoken verbatim.
     """
+    if content.lstrip()[:1] not in ("{", "["):
+        return content
+    try:
+        value: object = json.loads(content)
+    except ValueError:
+        return content
+    reply = _reply_from_json(value, ctx)
+    return content if reply is None else reply
+
+
+def _intermediate_step_deltas(items: list[dict[str, Any]]) -> Iterator[AssistantDelta]:
+    """Surface AI Agent ``intermediateSteps`` (Return Intermediate Steps) as external tool calls.
+
+    Shape per n8n 2.44.6 ``buildSteps``: ``{action: {tool, toolInput, toolCallId, …},
+    observation}`` where ``observation`` is a JSON string — the tool's items, or
+    ``{"error": …}`` on failure. Malformed steps are skipped.
+    """
+    count = 0
+    for item in items:
+        for raw_step in json_list(item.get("intermediateSteps")) or []:
+            step = json_object(raw_step) or {}
+            action = json_object(step.get("action")) or {}
+            name = action.get("tool")
+            if not isinstance(name, str) or not name:
+                continue
+            count += 1
+            call_id = action.get("toolCallId")
+            if not isinstance(call_id, str) or not call_id:
+                call_id = f"n8n-step-{count}"
+            result = _decode_observation(step.get("observation"))
+            error = (json_object(result) or {}).get("error") is not None
+            yield external_tool_call_delta(call_id, name, json_object(action.get("toolInput")) or {})
+            yield external_tool_result_delta(call_id, name, result, error=error)
+
+
+def _decode_observation(observation: object) -> object:
+    """Decode a step's JSON-string observation; a non-JSON string is kept as text."""
+    if not isinstance(observation, str):
+        return observation
+    try:
+        return json.loads(observation)
+    except ValueError:
+        return observation
+
+
+def _structured_chunk(line: bytes) -> dict[str, Any] | None:
+    """Parse one NDJSON ``StructuredChunk`` line; blank and malformed lines are skipped (logged)."""
     if not line.strip():
-        return
+        return None
     obj = loads_json_object(line)
     if obj is None:
         _LOGGER.warning("n8n: skipping malformed NDJSON line")
-        return
-    chunk_type = obj.get("type")
-    if chunk_type == "error":
-        raise BackendStreamError(f"n8n error chunk: {obj.get('content')!r}")
-    if chunk_type == "item":
-        content = obj.get("content")
-        if isinstance(content, str) and content:
-            yield content
+    return obj
+
+
+def _error_chunk_message(chunk: Mapping[str, Any]) -> str:
+    """Describe an ``error`` chunk; n8n 2.44.6 sends ``content: null``, so name the node instead."""
+    content = chunk.get("content")
+    node = (json_object(chunk.get("metadata")) or {}).get("nodeName")
+    where = f" in node {node!r}" if isinstance(node, str) and node else ""
+    detail = content if isinstance(content, str) and content else "no detail sent; see the execution in n8n"
+    return f"n8n workflow error{where}: {detail}"

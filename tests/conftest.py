@@ -12,6 +12,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -298,6 +299,20 @@ class FakeStreamResponse:
 
     async def __aexit__(self, *args: object) -> bool:
         return False
+
+
+_FIXTURES = Path(__file__).parent / "backends" / "fixtures"
+
+
+def capture_response(preset: str, name: str, *, chunk_size: int = 7) -> FakeStreamResponse:
+    """Replay ``fixtures/<preset>/<name>.json`` (status + exact body) as a fake response.
+
+    The body streams in ``chunk_size``-byte chunks so frame boundaries fall mid-line;
+    error statuses also expose it through ``text()``.
+    """
+    capture = json.loads((_FIXTURES / preset / f"{name}.json").read_text())
+    body: str = capture["body"]
+    return FakeStreamResponse(chunk_bytes(body.encode(), chunk_size), status=capture["status"], text=body)
 
 
 def fake_aiohttp_session(

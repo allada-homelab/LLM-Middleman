@@ -34,6 +34,7 @@ from custom_components.llm_middleman.backends.base import (
 )
 from custom_components.llm_middleman.backends.dify import DifyAppError
 from custom_components.llm_middleman.backends.langgraph import AssistantNotFoundError
+from custom_components.llm_middleman.backends.n8n import N8nWebhookError
 from custom_components.llm_middleman.config_flow import (
     ConversationSubentryFlowHandler,
     LLMMiddlemanConfigFlow,
@@ -67,6 +68,7 @@ from custom_components.llm_middleman.const import (
     CONF_NUM_CTX,
     CONF_OUTPUT_FIELD,
     CONF_PASSWORD,
+    CONF_REASONING_EFFORT,
     CONF_RESPONSE_NODE_FILTER,
     CONF_SESSION_FIELD,
     CONF_STATELESS_RUNS,
@@ -233,6 +235,18 @@ async def test_dify_app_error_shows_specific_error(hass: HomeAssistant, error_ke
     assert result["errors"] == {"base": error_key}
 
 
+@pytest.mark.parametrize("error_key", ["webhook_not_registered", "webhook_test_url"])
+async def test_n8n_webhook_error_shows_specific_error(hass: HomeAssistant, error_key: str) -> None:
+    """An inactive n8n workflow / test URL gets its own error, not cannot_connect."""
+    registry = {BACKEND_N8N: _fake_adapter(N8nWebhookError(error_key, "not usable"))}
+    with patch(_REGISTRY_PATH, registry):
+        form = await _init_backend_step(hass, BACKEND_N8N)
+        result = await _configure(hass, form["flow_id"], {CONF_WEBHOOK_URL: "https://n8n.local/webhook/abc/chat"})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": error_key}
+
+
 async def test_unexpected_probe_error_shows_unknown(hass: HomeAssistant) -> None:
     """An unexpected probe exception re-shows the form with ``unknown`` instead of crashing the flow."""
     registry = {BACKEND_OPENAI_COMPAT: _fake_adapter(RuntimeError("bug"))}
@@ -312,6 +326,28 @@ async def test_n8n_webhook_not_normalized(hass: HomeAssistant) -> None:
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_WEBHOOK_URL] == webhook
+
+
+@pytest.mark.parametrize(
+    ("backend_type", "secret_key"), [(BACKEND_OLLAMA, CONF_API_KEY), (BACKEND_CONVERSE, CONF_TOKEN)]
+)
+async def test_connection_step_creates_entry_with_trailing_slash_trimmed(
+    hass: HomeAssistant, backend_type: str, secret_key: str
+) -> None:
+    """The Ollama and converse steps store the base URL minus its trailing slash, no /v1 handling."""
+    with patch(_REGISTRY_PATH, {backend_type: _fake_adapter()}):
+        form = await _init_backend_step(hass, backend_type)
+        assert form["step_id"] == backend_type
+        result = await _configure(
+            hass, form["flow_id"], {CONF_BASE_URL: "http://backend.local:8000/v1/", secret_key: "s"}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        CONF_BACKEND_TYPE: backend_type,
+        CONF_BASE_URL: "http://backend.local:8000/v1",
+        secret_key: "s",
+    }
 
 
 async def test_reconfigure_updates_connection(hass: HomeAssistant) -> None:
@@ -954,7 +990,7 @@ async def test_langgraph_agent_options_are_stored(hass: HomeAssistant) -> None:
 # --- preset-specific agent options read by the adapters ----------------------------
 
 _PRESET_AGENT_KEYS = {
-    BACKEND_OPENAI_COMPAT: {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS},
+    BACKEND_OPENAI_COMPAT: {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS, CONF_REASONING_EFFORT},
     BACKEND_OLLAMA: {CONF_NUM_CTX, CONF_KEEP_ALIVE, CONF_THINK},
     BACKEND_N8N: {CONF_INPUT_FIELD, CONF_OUTPUT_FIELD, CONF_SESSION_FIELD},
     BACKEND_CONVERSE: set[str](),
@@ -974,8 +1010,11 @@ async def test_preset_agent_options_offered_only_for_their_preset(hass: HomeAssi
 @pytest.mark.parametrize(
     ("backend_type", "submitted"),
     [
-        (BACKEND_OPENAI_COMPAT, {CONF_TEMPERATURE: 0.7, CONF_TOP_P: 0.9, CONF_MAX_TOKENS: 256}),
-        (BACKEND_OLLAMA, {CONF_NUM_CTX: 4096, CONF_KEEP_ALIVE: -1, CONF_THINK: True}),
+        (
+            BACKEND_OPENAI_COMPAT,
+            {CONF_TEMPERATURE: 0.7, CONF_TOP_P: 0.9, CONF_MAX_TOKENS: 256, CONF_REASONING_EFFORT: "low"},
+        ),
+        (BACKEND_OLLAMA, {CONF_NUM_CTX: 4096, CONF_KEEP_ALIVE: -1, CONF_THINK: "high"}),
         (BACKEND_N8N, {CONF_INPUT_FIELD: "q", CONF_OUTPUT_FIELD: "answer", CONF_SESSION_FIELD: "sid"}),
     ],
 )
@@ -998,9 +1037,24 @@ async def test_preset_agent_options_unset_by_default(hass: HomeAssistant, backen
         form = await _init_subentry(hass, entry)
         result = await _configure_subentry(hass, form["flow_id"], {CONF_NAME: "Agent"})
 
-    assert not {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS, CONF_NUM_CTX, CONF_KEEP_ALIVE, CONF_THINK} & set(
-        result["data"]
+    sampling_keys = {CONF_TEMPERATURE, CONF_TOP_P, CONF_MAX_TOKENS, CONF_REASONING_EFFORT}
+    assert not (sampling_keys | {CONF_NUM_CTX, CONF_KEEP_ALIVE, CONF_THINK}) & set(result["data"])
+
+
+@pytest.mark.parametrize(("stored", "shown"), [(True, "on"), (False, "off"), ("medium", "medium")])
+async def test_stored_think_prefills_its_choice(hass: HomeAssistant, stored: bool | str, shown: str) -> None:
+    # Agents saved before think levels hold a bool; the select shows the matching on/off.
+    entry = _parent_entry(
+        hass,
+        BACKEND_OLLAMA,
+        subentries_data=[
+            {"subentry_type": SUBENTRY_TYPE_CONVERSATION, "data": {CONF_THINK: stored}, "title": "A", "unique_id": None}
+        ],
     )
+    with patch(_REGISTRY_PATH, {BACKEND_OLLAMA: _sub_adapter(backend_type=BACKEND_OLLAMA)}):
+        form: dict[str, Any] = dict(await entry.start_subentry_reconfigure_flow(hass, next(iter(entry.subentries))))
+
+    assert _suggested_values(form["data_schema"])[CONF_THINK] == shown
 
 
 _STRINGS = json.loads((Path(__file__).parents[1] / "custom_components/llm_middleman/strings.json").read_text())

@@ -30,7 +30,6 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.llm_middleman.const import (
     CONF_TIMEOUT,
     DEFAULT_TIMEOUT,
-    IDLE_TIMEOUT,
 )
 
 from ._sse import BackendStreamError
@@ -51,6 +50,7 @@ __all__ = [
     "build_client_timeout",
     "loads_json_object",
     "probe_json",
+    "record_truncation",
     "rendered_system_prompt",
     "trace_token_stats",
 ]
@@ -61,17 +61,15 @@ def build_client_timeout(options: Mapping[str, Any], default: float = DEFAULT_TI
 
     There is deliberately no ``total`` deadline: aiohttp's ``total`` bounds the whole
     request *including* the streamed body, so it would cut off a reply that is still
-    producing tokens (the v0 60 s bug). Instead ``sock_connect`` is the per-agent
-    ``CONF_TIMEOUT`` (how long to wait to reach the backend) and ``sock_read`` is the
-    idle deadline (:data:`IDLE_TIMEOUT`), which fails a stalled backend fast while a
-    live stream runs as long as frames keep arriving. Lives on ``base`` — not the
+    producing tokens (the v0 60 s bug). Instead the per-agent ``CONF_TIMEOUT`` (or the
+    preset ``default``) is both ``sock_connect`` and ``sock_read``: how long to wait to
+    reach the backend, and the longest it may stay silent — before the reply starts
+    (a blocking reply, prompt processing, a model load) or between streamed frames — so
+    a live stream runs as long as frames keep arriving. Lives on ``base`` — not the
     entity module — so adapters import it without a cycle back through ``conversation``.
     """
-    return aiohttp.ClientTimeout(
-        total=None,
-        sock_connect=options.get(CONF_TIMEOUT, default),
-        sock_read=IDLE_TIMEOUT,
-    )
+    timeout = options.get(CONF_TIMEOUT, default)
+    return aiohttp.ClientTimeout(total=None, sock_connect=timeout, sock_read=timeout)
 
 
 def rendered_system_prompt(chat_log: conversation.ChatLog) -> str | None:
@@ -93,17 +91,31 @@ def trace_token_stats(
     input_tokens: int,
     output_tokens: int,
     cached_input_tokens: int | None = None,
+    reasoning_tokens: int | None = None,
 ) -> None:
     """Record one round-trip's token usage on the conversation trace.
 
     Same ``{"stats": {...}}`` agent-detail shape HA core's anthropic/openai/cloud
-    entities trace; ``cached_input_tokens`` only when the backend reports a cache.
+    entities trace; ``cached_input_tokens`` / ``reasoning_tokens`` only when the backend
+    reports them (reasoning tokens are part of ``output_tokens``, not added to them).
     """
     stats: dict[str, int] = {"input_tokens": input_tokens}
     if cached_input_tokens is not None:
         stats["cached_input_tokens"] = cached_input_tokens
     stats["output_tokens"] = output_tokens
+    if reasoning_tokens is not None:
+        stats["reasoning_tokens"] = reasoning_tokens
     chat_log.async_trace({"stats": stats})
+
+
+def record_truncation(chat_log: conversation.ChatLog, label: str, reason: str) -> None:
+    """Log and trace a reply the backend cut short (``length`` / ``content_filter``).
+
+    The streamed text is kept: a cut-off spoken answer beats the fallback, and text already
+    streamed can't be taken back. The trace record makes the cut visible in the debug view.
+    """
+    _LOGGER.warning("%s reply was cut short (finish_reason=%s); keeping the partial text", label, reason)
+    chat_log.async_trace({"finish_reason": reason})
 
 
 def bearer_headers(token: str | None) -> dict[str, str]:
@@ -242,6 +254,8 @@ class TurnContext:
     fallback: bool = False  # entity-owned: the last round-trip ended in the fallback message
     # AI Task structured output; only adapters with ``supports_ai_task`` read it.
     output_schema: OutputSchema | None = None
+    # The agent / AI task subentry id: stable per agent across conversations (prompt-cache key).
+    subentry_id: str | None = None
 
 
 class BackendAdapter(ABC):
@@ -292,6 +306,9 @@ class BackendAdapter(ABC):
         self.hass = hass
         self.session = session
         self.connection_data = connection_data
+        # Consecutive round-trips that never reached the backend, owned by the entities.
+        # Lives here because this instance is the one per-connection object they share.
+        self.unreachable_turns = 0
 
     @classmethod
     def store_keys(cls, entry_key: str) -> tuple[str, ...]:

@@ -1,0 +1,8 @@
+{
+  "description": "STUB-DERIVED (scripts/e2e/converse_sse_stub.py): continue_conversation",
+  "server": "scripts/e2e/converse_sse_stub.py (LLMM-025), captured 2026-10-25",
+  "request": "POST /v1/converse body={\"conversation_id\": \"k\", \"text\": \"[2026-10-25 05:00:00 UTC] follow me\", \"language\": \"en\"}",
+  "status": 200,
+  "content_type": "text/event-stream",
+  "body": "event: text_delta\ndata: {\"delta\": \"Sure \"}\n\nevent: text_delta\ndata: {\"delta\": \"\\u2014 \"}\n\nevent: text_delta\ndata: {\"delta\": \"should \"}\n\nevent: text_delta\ndata: {\"delta\": \"I \"}\n\nevent: text_delta\ndata: {\"delta\": \"turn \"}\n\nevent: text_delta\ndata: {\"delta\": \"on \"}\n\nevent: text_delta\ndata: {\"delta\": \"the \"}\n\nevent: text_delta\ndata: {\"delta\": \"lights \"}\n\nevent: text_delta\ndata: {\"delta\": \"as \"}\n\nevent: text_delta\ndata: {\"delta\": \"well? \"}\n\nevent: done\ndata: {\"text\": \"Sure \\u2014 should I turn on the lights as well?\", \"continue_conversation\": true}\n\n"
+}

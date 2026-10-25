@@ -19,11 +19,10 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_PROMPT, Platform
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.storage import Store
 
@@ -40,11 +39,11 @@ from .const import (
     CONF_URL,
     DEFAULT_TIMEOUT,
     DOMAIN,
-    ISSUE_BACKEND_UNREACHABLE,
     PROBE_TIMEOUT,
     STORAGE_VERSION,
     SUBENTRY_TYPE_CONVERSATION,
 )
+from .helpers import async_delete_unreachable_issue, async_record_backend_reached
 
 PLATFORMS = (Platform.AI_TASK, Platform.CONVERSATION)
 
@@ -73,12 +72,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry)
             translation_key="backend_not_ready",
             translation_placeholders={"error": str(err) or type(err).__name__},
         ) from err
-    # The probe reached the backend, so any outstanding unreachable issue is resolved.
-    async_delete_unreachable_issue(hass, entry.entry_id)
     # entry_id rides along so adapters needing a per-entry discriminator (the
     # langgraph thread-map Store) never fall back to a shareable base_url slug.
     connection_data = {**entry.data, "entry_id": entry.entry_id}
     entry.runtime_data = adapter_cls(hass, async_create_clientsession(hass), connection_data)
+    # The probe reached the backend, so an outstanding unreachable issue is resolved (and logged).
+    async_record_backend_reached(hass, entry, entry.runtime_data)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload on any entry/subentry change so an agent added or reconfigured at runtime
     # takes effect live — without this listener the conversation platform's
@@ -88,31 +87,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry)
     # async_add_subentry → _async_save_and_notify).
     entry.async_on_unload(entry.add_update_listener(async_update_options))
     return True
-
-
-def _unreachable_issue_id(entry_id: str) -> str:
-    return f"{ISSUE_BACKEND_UNREACHABLE}_{entry_id}"
-
-
-@callback
-def async_create_unreachable_issue(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> None:
-    """Raise the repair issue telling the user this connection's backend can't be reached."""
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        _unreachable_issue_id(entry.entry_id),
-        is_fixable=False,
-        severity=ir.IssueSeverity.WARNING,
-        translation_key=ISSUE_BACKEND_UNREACHABLE,
-        translation_placeholders={"title": entry.title},
-        learn_more_url="https://github.com/allada-homelab/LLM-Middleman",
-    )
-
-
-@callback
-def async_delete_unreachable_issue(hass: HomeAssistant, entry_id: str) -> None:
-    """Clear the unreachable repair issue (a no-op when none is raised)."""
-    ir.async_delete_issue(hass, DOMAIN, _unreachable_issue_id(entry_id))
 
 
 async def async_update_options(hass: HomeAssistant, entry: LLMMiddlemanConfigEntry) -> None:

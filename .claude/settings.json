@@ -20,7 +20,10 @@
       "Bash(git status *)",
       "Bash(git diff *)",
       "Bash(git log *)",
-      "Bash(git show *)"
+      "Bash(git show *)",
+      "Bash(git fetch origin)",
+      "Bash(git tag v*)",
+      "Bash(git push origin v*)"
     ],
     "deny": [
       "Read(./.env*)",

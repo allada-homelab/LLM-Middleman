@@ -47,6 +47,9 @@ DEFAULT_MAX_HISTORY = 20
 CONF_TEMPERATURE = "temperature"
 CONF_TOP_P = "top_p"
 CONF_MAX_TOKENS = "max_tokens"
+CONF_REASONING_EFFORT = "reasoning_effort"
+# Dropdown values (the union core openai offers across models); custom values are allowed.
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # The streaming converse endpoint appended to the configured base URL.
 CONVERSE_PATH = "/v1/converse"
@@ -86,10 +89,6 @@ UNREACHABLE_ISSUE_THRESHOLD = 3
 # Repair-issue translation key; the issue id appends the parent entry_id.
 ISSUE_BACKEND_UNREACHABLE = "backend_unreachable"
 
-# sock_read idle timeout: kill only a truly stalled stream, not a slow-but-alive
-# one (the v0 single-total-deadline bug). Paired with CONF_TIMEOUT as the connect bound.
-IDLE_TIMEOUT = 30
-
 # Shown to the user (and spoken via TTS) when the external agent is unreachable
 # or errors mid-turn, so the Assist pipeline never hangs.
 ERROR_MESSAGE = "Sorry, I could not reach the assistant right now. Please try again."
@@ -100,6 +99,10 @@ CONF_KEEP_ALIVE = "keep_alive"
 CONF_THINK = "think"
 # Smallest context window the agent form accepts (core ollama's MIN_NUM_CTX).
 MIN_NUM_CTX = 2048
+# think: off/on, or a level for models that support one (Ollama 0.40 also accepts "max").
+THINK_OFF = "off"
+THINK_ON = "on"
+THINK_OPTIONS = (THINK_OFF, THINK_ON, "low", "medium", "high", "max")
 
 # keep_alive sentinel: -1 means "keep the model loaded forever" and must be sent as
 # the integer -1, not a duration string ("-1s" is an invalid negative duration).

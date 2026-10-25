@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -50,6 +51,7 @@ from .conftest import build_config_entry
 from .test_conversation import FakeAdapter
 
 _PATCH_FACTORY = "custom_components.llm_middleman.backends.BACKEND_TO_CLS"
+_HELPERS_LOGGER = "custom_components.llm_middleman.helpers"
 
 _V0_DATA = {
     CONF_URL: "http://middleman.local:8000",
@@ -187,6 +189,36 @@ async def test_successful_setup_clears_the_unreachable_issue(hass: HomeAssistant
         await hass.async_block_till_done()
 
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+def _availability_infos(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == _HELPERS_LOGGER and r.levelno == logging.INFO]
+
+
+async def test_setup_with_open_unreachable_issue_logs_recovery(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reload whose probe reaches a backend reported down logs it back once (the fresh adapter's count is 0)."""
+    entry = build_config_entry(hass, backend_type="fake")
+    _create_unreachable_issue(hass, entry)
+    caplog.set_level(logging.INFO, _HELPERS_LOGGER)
+
+    with patch.dict(_PATCH_FACTORY, {"fake": FakeAdapter}):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert _availability_infos(caplog) == ["Backend of connection Test Middleman is reachable again"]
+
+
+async def test_setup_without_unreachable_issue_logs_no_recovery(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An ordinary setup is not a recovery, so it logs no availability change."""
+    caplog.set_level(logging.INFO, _HELPERS_LOGGER)
+
+    await _setup_with(hass, FakeAdapter)
+
+    assert _availability_infos(caplog) == []
 
 
 async def test_removing_entry_clears_its_unreachable_issue(hass: HomeAssistant) -> None:

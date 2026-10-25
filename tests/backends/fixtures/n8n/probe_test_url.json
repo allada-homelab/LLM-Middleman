@@ -1,0 +1,9 @@
+{
+  "description": "OPTIONS + Origin on an unarmed /webhook-test/ URL",
+  "server": "n8nio/n8n:2.44.6 (Docker), captured 2026-10-25 (LLMM-025)",
+  "request": "OPTIONS /webhook-test/stream-text headers={\"Origin\": \"http://homeassistant.local:8123\"}",
+  "status": 404,
+  "content_type": "application/json; charset=utf-8",
+  "access_control_allow_methods": null,
+  "body": "{\"code\":404,\"message\":\"The requested webhook \\\"stream-text\\\" is not registered.\",\"hint\":\"Click the 'Execute workflow' button on the canvas, then try again. (In test mode, the webhook only works for one call after you click this button)\"}"
+}

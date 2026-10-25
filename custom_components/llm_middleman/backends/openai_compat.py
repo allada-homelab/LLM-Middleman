@@ -16,14 +16,21 @@ and replays prior tool calls/results back into ``messages[]`` on the next iterat
 The entity's bounded tool loop drives the re-entry; this adapter stays stateless.
 
 Token stats: requests ``stream_options.include_usage`` and traces the terminal ``usage``
-chunk as HA's ``{"stats": …}`` agent detail. Servers that reject ``stream_options`` get
-one retry without it, and the connection stops sending it. Streamed
-``delta.reasoning_content`` / ``delta.reasoning`` map to HA ``thinking_content`` (never
-spoken).
+chunk as HA's ``{"stats": …}`` agent detail. Streamed ``delta.reasoning_content`` /
+``delta.reasoning`` map to HA ``thinking_content`` (never spoken); ``delta.refusal`` is
+spoken like content.
+
+Terminal states (LLMM-024): an in-stream ``error`` object (vLLM, OpenRouter) or
+``finish_reason: "error"`` raises :class:`BackendStreamError`; ``length`` /
+``content_filter`` keep the text and are logged + traced. Request fields some servers
+refuse are retried: ``stream_options`` / ``prompt_cache_key`` are dropped for the
+connection, and ``max_tokens`` becomes ``max_completion_tokens`` for a model that rejects
+it (OpenAI reasoning models). HTTP 429 raises the translated ``backend_rate_limited`` error.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from collections.abc import AsyncGenerator, Mapping, Sequence
@@ -33,6 +40,7 @@ from typing import Any, ClassVar
 import aiohttp
 from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -43,8 +51,10 @@ from custom_components.llm_middleman.const import (
     CONF_MAX_HISTORY,
     CONF_MAX_TOKENS,
     CONF_MODEL,
+    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
+    DOMAIN,
 )
 
 from ._history import trim_history
@@ -60,6 +70,7 @@ from .base import (
     json_object,
     loads_json_object,
     probe_json,
+    record_truncation,
     trace_token_stats,
 )
 
@@ -76,18 +87,67 @@ _OPTION_KEYS: tuple[tuple[str, type[float] | type[int]], ...] = (
     (CONF_MAX_TOKENS, int),
 )
 
+_LABEL = "OpenAI-compatible backend"
+
 # Asks OpenAI-style servers for a terminal ``usage`` chunk on streamed responses.
 _STREAM_OPTIONS = {"include_usage": True}
 
+# Optional request fields a strict server may refuse by name (old Azure, Groq, Mistral…);
+# once refused, a field is dropped for the connection.
+_DROPPABLE_FIELDS = ("stream_options", "prompt_cache_key")
 
-class _StreamOptionsRejectedError(Exception):
-    """The server refused the request because of the ``stream_options`` field."""
+# finish_reason values that cut the reply short but leave usable text.
+_TRUNCATED = ("length", "content_filter")
 
 
-async def _raise_if_stream_options_rejected(response: aiohttp.ClientResponse) -> None:
-    """Flag a 400/422 whose error body names ``stream_options`` (strict servers / old Azure)."""
-    if response.status in (400, 422) and "stream_options" in await response.text():
-        raise _StreamOptionsRejectedError
+class _FieldsRejectedError(Exception):
+    """The server refused the request because of the named retryable fields."""
+
+    def __init__(self, fields: frozenset[str]) -> None:
+        super().__init__(", ".join(sorted(fields)))
+        self.fields = fields
+
+
+def _rejected_fields(request: Mapping[str, Any], status: int, text: str) -> frozenset[str]:
+    """Return the retryable request fields a 400/422 error body names (empty: not retryable)."""
+    if status not in (400, 422):
+        return frozenset()
+    fields = {name for name in _DROPPABLE_FIELDS if name in request and name in text}
+    # Reasoning models refuse max_tokens as an "unsupported parameter"; vLLM also names it in
+    # "max_tokens is too large", which a retry with max_completion_tokens would not fix.
+    if "max_tokens" in request and "max_tokens" in text and "support" in text.lower():
+        fields.add("max_tokens")
+    return frozenset(fields)
+
+
+def _error_message(error: object, fallback: str) -> str:
+    """The ``message`` of an OpenAI-style error object, a bare error string, or ``fallback``."""
+    if isinstance(error, str) and error:
+        return error
+    message = (json_object(error) or {}).get("message")
+    return str(message) if message else fallback
+
+
+async def _check_error_status(request: Mapping[str, Any], response: aiohttp.ClientResponse) -> None:
+    """``_post_checked`` hook: 429 → translated rate-limit error; a refused field → retry."""
+    text = await response.text()
+    if response.status == 429:
+        message = _error_message((loads_json_object(text) or {}).get("error"), text[:200])
+        _LOGGER.error("%s returned HTTP 429: %s", _LABEL, message)
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="backend_rate_limited",
+            translation_placeholders={"error": message},
+        )
+    if fields := _rejected_fields(request, response.status, text):
+        raise _FieldsRejectedError(fields)
+
+
+def _raise_stream_error(error: object) -> None:
+    """Raise for a backend-sent in-stream error (vLLM ``{"error": …}`` frame, OpenRouter)."""
+    message = _error_message(error, str(error)[:200])
+    _LOGGER.error("%s stream error: %s", _LABEL, message)
+    raise BackendStreamError(f"{_LABEL} stream error: {message}")
 
 
 def _base_url(data: Mapping[str, Any]) -> str:
@@ -186,9 +246,11 @@ class OpenAICompatAdapter(BackendAdapter):
     wants_time_prefix: ClassVar[bool] = False
     # Sends TurnContext.output_schema as response_format and images as content parts (LLMM-023).
     supports_ai_task: ClassVar[bool] = True
-    # Connection capability, not per-turn state: flipped once when the server rejects
-    # stream_options so later turns skip the doomed attempt (a concurrent flip is benign).
-    _stream_options_supported: bool = True
+    # Connection capabilities, not per-turn state: learned from a refused request so later
+    # turns skip the doomed attempt. Reassigned (never mutated), so a concurrent update is benign.
+    _dropped_fields: frozenset[str] = frozenset()
+    # Models that rejected max_tokens (OpenAI reasoning models): sent max_completion_tokens.
+    _max_completion_models: frozenset[str] = frozenset()
 
     @classmethod
     async def async_validate_connection(cls, hass: HomeAssistant, data: Mapping[str, Any]) -> None:
@@ -240,6 +302,13 @@ class OpenAICompatAdapter(BackendAdapter):
         for key, convert in _OPTION_KEYS:
             if (value := ctx.options.get(key)) is not None:
                 body[key] = convert(value)
+        if effort := ctx.options.get(CONF_REASONING_EFFORT):
+            body["reasoning_effort"] = effort
+        body["stream_options"] = _STREAM_OPTIONS
+        # Per agent, like core openai: the system prompt + tools prefix is shared across
+        # the agent's conversations, so they hit the same provider prompt cache.
+        if ctx.subentry_id is not None:
+            body["prompt_cache_key"] = ctx.subentry_id
         # HA tool schemas, only when an LLM API is configured for this agent.
         if chat_log.llm_api is not None and chat_log.llm_api.tools:
             body["tools"] = [
@@ -255,28 +324,42 @@ class OpenAICompatAdapter(BackendAdapter):
             }
         return body
 
+    def _request(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply what the connection learned (dropped fields, max_completion_tokens) to ``body``."""
+        request = {key: value for key, value in body.items() if key not in self._dropped_fields}
+        if "max_tokens" in request and str(body.get("model") or "") in self._max_completion_models:
+            request["max_completion_tokens"] = request.pop("max_tokens")
+        return request
+
+    def _learn(self, fields: frozenset[str], body: Mapping[str, Any]) -> None:
+        """Remember refused fields so this and later requests leave them out."""
+        _LOGGER.debug("%s refused %s; retrying without", _LABEL, ", ".join(sorted(fields)))
+        self._dropped_fields |= fields & frozenset(_DROPPABLE_FIELDS)
+        if "max_tokens" in fields:
+            self._max_completion_models |= {str(body.get("model") or "")}
+
     @asynccontextmanager
     async def _open_stream(
         self, url: str, body: dict[str, Any], headers: dict[str, str], timeout: aiohttp.ClientTimeout
     ) -> AsyncGenerator[aiohttp.ClientResponse]:
-        """POST the turn, asking for usage; retry once without ``stream_options`` if refused."""
-        label = "OpenAI-compatible backend"
-        if self._stream_options_supported:
+        """POST the turn, re-POSTing without each field the server refuses by name."""
+        # Bounded: a rejection only names fields present in the request, and _learn
+        # removes (or renames) each of them, so every retry sends fewer refusable fields.
+        while True:
+            request = self._request(body)
             try:
                 async with self._post_checked(
                     url,
-                    label=label,
-                    json={**body, "stream_options": _STREAM_OPTIONS},
+                    label=_LABEL,
+                    json=request,
                     headers=headers,
                     timeout=timeout,
-                    on_error_status=_raise_if_stream_options_rejected,
+                    on_error_status=functools.partial(_check_error_status, request),
                 ) as response:
                     yield response
                 return
-            except _StreamOptionsRejectedError:
-                self._stream_options_supported = False
-        async with self._post_checked(url, label=label, json=body, headers=headers, timeout=timeout) as response:
-            yield response
+            except _FieldsRejectedError as err:
+                self._learn(err.fields, body)
 
     async def stream_turn(
         self,
@@ -295,7 +378,9 @@ class OpenAICompatAdapter(BackendAdapter):
         the entity's loop re-enters. ``[DONE]`` ends the stream; EOF without it also
         ends it (the entity guard supplies the fallback when nothing streamed).
         Reasoning deltas stream as ``{"thinking_content": …}``; the last ``usage`` seen
-        is traced once as ``stats`` after the stream ends.
+        is traced once as ``stats`` after the stream ends. An ``error`` object or
+        ``finish_reason: "error"`` raises after any text already streamed (the entity
+        guard appends the fallback); a ``length`` / ``content_filter`` finish is recorded.
         """
         headers = {"Accept": "text/event-stream", **bearer_headers(self.connection_data.get(CONF_API_KEY))}
         url = f"{_base_url(self.connection_data)}/v1/chat/completions"
@@ -304,6 +389,7 @@ class OpenAICompatAdapter(BackendAdapter):
         # as a string concatenated across fragments (chat/completions delta.tool_calls).
         tool_calls: dict[int, dict[str, str]] = {}
         usage: dict[str, Any] | None = None
+        truncated: str | None = None
         async with self._open_stream(
             url, await self._build_body(chat_log, ctx), headers, build_client_timeout(ctx.options)
         ) as response:
@@ -313,6 +399,9 @@ class OpenAICompatAdapter(BackendAdapter):
                 # A non-object chunk/delta reads as empty; a non-conforming ``choices``
                 # raises here and the entity's _guarded wrapper maps it to the fallback.
                 chunk = json_object(json.loads(event.data)) or {}
+                # vLLM sends a bare {"error": …} frame; OpenRouter puts it beside choices.
+                if (error := chunk.get("error")) is not None:
+                    _raise_stream_error(error)
                 # include_usage puts usage on a terminal choices-less chunk; some servers
                 # repeat it on every chunk, so keep the last one seen.
                 if (chunk_usage := json_object(chunk.get("usage"))) is not None:
@@ -320,7 +409,8 @@ class OpenAICompatAdapter(BackendAdapter):
                 choices: Any = chunk.get("choices")
                 if not choices:
                     continue
-                delta = json_object(choices[0].get("delta")) or {}
+                choice: dict[str, Any] = choices[0]
+                delta = json_object(choice.get("delta")) or {}
                 fragments: Any = delta.get("tool_calls")
                 if fragments:
                     for fragment in fragments:
@@ -333,20 +423,30 @@ class OpenAICompatAdapter(BackendAdapter):
                         yield {"role": "assistant"}
                         role_sent = True
                     yield {"thinking_content": reasoning}
-                content = delta.get("content")
-                if content is None:
-                    continue
-                if not role_sent:
-                    yield {"role": "assistant"}
-                    role_sent = True
-                yield {"content": content}
+                # A refusal is the model's answer (content stays null), so it is spoken.
+                refusal = delta.get("refusal")
+                content = refusal if refusal and isinstance(refusal, str) else delta.get("content")
+                if content is not None:
+                    if not role_sent:
+                        yield {"role": "assistant"}
+                        role_sent = True
+                    yield {"content": content}
+                finish_reason = choice.get("finish_reason")
+                if finish_reason == "error":
+                    raise BackendStreamError(f"{_LABEL} stream ended with finish_reason error")
+                if finish_reason in _TRUNCATED:
+                    truncated = finish_reason
+        if truncated is not None:
+            record_truncation(chat_log, _LABEL, truncated)
         if usage is not None:
             details = json_object(usage.get("prompt_tokens_details")) or {}
+            reasoning_tokens = (json_object(usage.get("completion_tokens_details")) or {}).get("reasoning_tokens")
             trace_token_stats(
                 chat_log,
                 input_tokens=int(usage.get("prompt_tokens") or 0),
                 cached_input_tokens=int(details.get("cached_tokens") or 0),
                 output_tokens=int(usage.get("completion_tokens") or 0),
+                reasoning_tokens=reasoning_tokens if isinstance(reasoning_tokens, int) else None,
             )
         # Flush accumulated tool calls once, after [DONE]/EOF (some servers omit the id
         # on later fragments and/or the finish_reason, so index-keyed accumulation +

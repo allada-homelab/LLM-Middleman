@@ -4,10 +4,10 @@ A **self-contained** pack for building the *external agent service* (the "brain"
 own repository. Everything you need is in these four files — you do **not** need the `LLM-Middleman`
 or `LLM-Home-Controller` repositories on disk (they're named only as prior art).
 
-> **Scope note (v1).** `LLM-Middleman` now supports **five backend presets** (OpenAI-compatible,
-> Ollama, LangGraph, custom `/v1/converse`, n8n). Building a bespoke external agent as described here is
+> **Scope note (v1).** `LLM-Middleman` now supports **six backend presets** (OpenAI-compatible,
+> Ollama, LangGraph, custom `/v1/converse`, n8n, Dify). Building a bespoke external agent as described here is
 > **one option** — the `/v1/converse` preset. If a self-hosted OpenAI-compatible server, Ollama, a
-> LangGraph deployment, or an n8n workflow already covers your needs, you may not need to build this at
+> LangGraph deployment, an n8n workflow, or a Dify app already covers your needs, you may not need to build this at
 > all. Build this when you want a custom agent that owns its own model, memory, and tools behind the
 > `/v1/converse` contract.
 
@@ -43,7 +43,7 @@ latency.
 ## The one hard rule
 
 **Match the `/v1/converse` preset's wire shape (brief §4).** `LLM-Middleman`'s `converse` adapter is
-the consumer, and it is one preset among five — the contract is a **stable preset interface**, not the
+the consumer, and it is one preset among six — the contract is a **stable preset interface**, not the
 system-wide boundary it was in v0. Still, if you build against this preset, implement its endpoint,
 request shape, and SSE event names as documented (`text_delta` / `done` / `error`) or the adapter
 won't understand you. One correction from v0: the request body carries `conversation_id`, `text`,

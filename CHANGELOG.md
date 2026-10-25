@@ -6,6 +6,73 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-25
+
+### Added
+
+- **n8n setup checks the webhook (LLMM-025, #112).** Saving an n8n connection now refuses an
+  inactive workflow's URL and `/webhook-test/` URLs with their own messages. The check
+  cannot start a workflow run, Chat Triggers included.
+- **The custom `/v1/converse` setup check rejects a wrong bearer token (LLMM-025, #112)** as
+  invalid authentication; before, any answer passed.
+- **Backend tool activity in the Assist chat for n8n and custom `/v1/converse`
+  (LLMM-025, #112):** an n8n AI Agent's intermediate steps (non-streaming replies with *Return
+  Intermediate Steps* on) and converse `tool_activity` events sent before the reply text.
+  The converse contract documents an optional `: keepalive` comment, the time prefix on
+  `text`, and the optional `tool_activity` `id`. Existing backends need no changes.
+- **OpenAI-compatible and Ollama tier-1 (LLMM-024, #113).**
+  - New **Reasoning effort** option for OpenAI-compatible agents and AI tasks
+    (`reasoning_effort`, sent only when set).
+  - Requests now carry `prompt_cache_key` set to the agent's id, so an agent's conversations
+    share the provider's prompt cache. A server that rejects the field gets the request again
+    without it.
+  - Ollama's **Think before responding** offers levels (low, medium, high, maximum) as well as
+    on/off. Existing agents keep their setting.
+  - Reasoning tokens (OpenAI) and cached prompt tokens (Ollama) are added to the conversation
+    trace.
+
+### Changed
+
+- **OpenAI-compatible rate limits are named.** HTTP 429 (rate limit or exhausted quota)
+  raises an error with the server's reason; AI tasks show it, conversations still speak the
+  fallback. (#113)
+
+### Fixed
+
+- **Mid-reply errors are no longer swallowed** (OpenAI-compatible, Ollama). An error the
+  server sends after the reply started (vLLM, OpenRouter, Ollama's final error line) ended
+  the turn as if it had finished. The text already spoken is kept, the fallback is added,
+  and the turn is marked failed. (#113)
+- **Cut-off replies are recorded.** A reply stopped by the token limit or a content filter
+  keeps its text and now logs a warning and writes `finish_reason` to the trace. (#113)
+- **OpenAI reasoning models work with Maximum tokens set.** They reject `max_tokens`; the
+  request is retried once with `max_completion_tokens`, and that model keeps using it. (#113)
+- **OpenAI-compatible refusals are spoken.** A refusal-only reply used to speak the fallback
+  message. (#113)
+- **Ollama tool calls keep their ids.** Tool results now go back with the tool name and call
+  id, so a model that calls several tools at once can match each result. (#113)
+- **The Timeout setting again bounds how long a backend may stay silent.** Since 1.1.4 any
+  backend that sent nothing for 30 seconds failed, whatever its Timeout said: a blocking
+  n8n reply, a slow model still processing the prompt, a reasoning model, or an Ollama model
+  load. Timeout now covers both reaching the backend and every silence before or during
+  the reply; a reply that keeps streaming is still never cut off. (#110)
+- **n8n keepalive frames no longer break streaming.** n8n 2.4x sends a keepalive line
+  every 30 seconds while a streamed reply is in progress; when one came first the reply
+  failed as "not a JSON object". Keepalives are now ignored. (#110)
+- **n8n replies in every shape n8n sends are spoken (LLMM-025, #112).** A *Respond to Webhook* →
+  Text reply was mistaken for a proxy error page and always fell back; *All Entries* /
+  *All Incoming Items* array replies were rejected; a JSON reply sent with streaming on was
+  read out as raw JSON; and several streamed segments ran together ("First part.Second
+  part."). Text replies and arrays are now spoken, streamed JSON is unwrapped to its reply
+  field, and segments are separated. A failing n8n node is now named in the log instead of
+  "None".
+- **The custom `/v1/converse` preset no longer passes off a cut-off reply as complete
+  (LLMM-025, #112).** A stream that ends without `done` keeps what was said, adds the fallback
+  message and marks the turn failed. An empty `done` now gives the translated fallback,
+  also marked failed.
+
+## [1.3.0] - 2026-10-25
+
 ### Added
 
 - **AI Task `generate_data` (LLMM-023).** OpenAI-compatible and Ollama connections offer
@@ -14,6 +81,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `format`. It accepts image attachments and runs the Home Assistant tool loop when the
   task passes an LLM API. Failures raise errors instead of returning fallback text; a
   rejected API key starts reauthentication. (#106)
+- **README reference tables** for every preset's connection fields and every agent and
+  AI task option, with defaults. (#108)
+
+### Changed
+
+- **Quieter logs while a backend is down.** A connection now logs one info line when its
+  backend becomes unreachable and one when it answers again, shared by all of its agents
+  and AI tasks. AI tasks that cannot reach the backend now also count toward the
+  "Backend unreachable" repair issue.
+  Turns that cannot reach the backend log at debug instead of an error with a traceback
+  each time; failures after reaching the backend still log as errors. (#108)
 
 ## [1.2.0] - 2026-10-25
 

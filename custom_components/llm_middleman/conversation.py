@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-import aiohttp
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntityFeature
 from homeassistant.config_entries import ConfigSubentry
@@ -29,7 +28,7 @@ from homeassistant.helpers import intent, translation
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from . import LLMMiddlemanConfigEntry, async_create_unreachable_issue, async_delete_unreachable_issue
+from . import LLMMiddlemanConfigEntry
 from .backends.base import BackendAdapter, DeltaStream, TurnContext
 from .const import (
     CONF_MEMORY_SCOPE,
@@ -40,9 +39,13 @@ from .const import (
     MEMORY_SCOPE_CONVERSATION,
     MEMORY_SCOPE_DEVICE,
     SUBENTRY_TYPE_CONVERSATION,
-    UNREACHABLE_ISSUE_THRESHOLD,
 )
-from .helpers import async_run_tool_loop, async_start_reauth_on_auth_error
+from .helpers import (
+    async_record_backend_failure,
+    async_record_backend_reached,
+    async_run_tool_loop,
+    is_unreachable,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -87,8 +90,6 @@ class LLMMiddlemanConversationEntity(
         self.subentry = subentry
         self.adapter: BackendAdapter = entry.runtime_data
         self._attr_unique_id = subentry.subentry_id
-        # Consecutive round-trips that never reached the backend (repair-issue trigger).
-        self._unreachable_turns = 0
         self._attr_device_info = dr.DeviceInfo(
             identifiers={(DOMAIN, subentry.subentry_id)},
             name=subentry.title,
@@ -212,7 +213,7 @@ class LLMMiddlemanConversationEntity(
         * Deltas pass through untrimmed (empty-string ``content`` included).
         * ``except Exception`` broadly (the v0 holes were ``ValueError`` from aiohttp's
           64 KB readline limit and ``UnicodeDecodeError``, plus ``TimeoutError``);
-          logs with ``_LOGGER.exception`` and appends the fallback message, opening a
+          logs via :meth:`_record_backend_failure` and appends the fallback message, opening a
           role first only if nothing was emitted yet, and separating it from any
           partial reply with a newline.
         * A silent end (stream yields nothing) emits role + fallback.
@@ -232,7 +233,6 @@ class LLMMiddlemanConversationEntity(
                     has_text = True
                 yield delta
         except Exception as err:
-            _LOGGER.exception("Backend stream failed; returning fallback message")
             self._record_backend_failure(err)
             ctx.fallback = True
             if not started:
@@ -241,26 +241,24 @@ class LLMMiddlemanConversationEntity(
             yield {"content": f"\n{message}" if has_text else message}
             return
 
-        self._record_backend_reached()
+        async_record_backend_reached(self.hass, self.entry, self.adapter)
         if not started:
             ctx.fallback = True
             yield {"role": "assistant"}
             yield {"content": await self._async_fallback_message(language)}
 
     def _record_backend_failure(self, err: Exception) -> None:
-        """Start reauth on a credential rejection; count turns that never reached the backend."""
-        async_start_reauth_on_auth_error(self.hass, self.entry, err)
-        if not _is_unreachable(err):
-            self._record_backend_reached()
-            return
-        self._unreachable_turns += 1
-        if self._unreachable_turns >= UNREACHABLE_ISSUE_THRESHOLD:
-            async_create_unreachable_issue(self.hass, self.entry)
+        """Log the swallowed failure, then record it on the connection's reachability state.
 
-    def _record_backend_reached(self) -> None:
-        """The backend answered (even with an error): reset the run and clear the issue."""
-        self._unreachable_turns = 0
-        async_delete_unreachable_issue(self.hass, self.entry.entry_id)
+        A failure that reached the backend is unexpected, so it keeps an error with traceback.
+        An unreachable backend is the outage the one-time info line reports, so each such turn
+        logs only at debug (quality-scale log-when-unavailable).
+        """
+        if is_unreachable(err):
+            _LOGGER.debug("Backend unreachable; returning fallback message", exc_info=err)
+        else:
+            _LOGGER.exception("Backend stream failed; returning fallback message")
+        async_record_backend_failure(self.hass, self.entry, self.adapter, err)
 
     async def _async_fallback_message(self, language: str) -> str:
         """Return the translated fallback text (English constant when untranslated)."""
@@ -282,22 +280,16 @@ class LLMMiddlemanConversationEntity(
         """
         scope = self.subentry.data.get(CONF_MEMORY_SCOPE, MEMORY_SCOPE_CONVERSATION)
         if scope == MEMORY_SCOPE_AGENT:
-            return TurnContext(options=self.subentry.data, memory_key=self.subentry.subentry_id)
+            return TurnContext(
+                options=self.subentry.data, memory_key=self.subentry.subentry_id, subentry_id=self.subentry.subentry_id
+            )
         if scope == MEMORY_SCOPE_DEVICE and user_input.device_id:
             return TurnContext(
                 options=self.subentry.data,
                 memory_key=f"{self.subentry.subentry_id}:{user_input.device_id}",
                 legacy_memory_key=user_input.device_id,
+                subentry_id=self.subentry.subentry_id,
             )
-        return TurnContext(options=self.subentry.data, memory_key=chat_log.conversation_id)
-
-
-def _is_unreachable(err: BaseException) -> bool:
-    """True when ``err`` (or what it wraps) is a transport failure: refused, dropped, timed out."""
-    current: BaseException | None = err
-    while current is not None:
-        # ServerTimeoutError (connect/read timeouts) is a ClientConnectionError too.
-        if isinstance(current, aiohttp.ClientConnectionError):
-            return True
-        current = current.__cause__
-    return False
+        return TurnContext(
+            options=self.subentry.data, memory_key=chat_log.conversation_id, subentry_id=self.subentry.subentry_id
+        )

@@ -1,0 +1,7 @@
+{
+  "description": "OpenAI reasoning model rejecting max_tokens",
+  "source": "spec-derived",
+  "spec": "https://platform.openai.com/docs/api-reference/chat/create (max_tokens: not compatible with o-series models)",
+  "status": 400,
+  "body": "{\"error\":{\"message\":\"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.\",\"type\":\"invalid_request_error\",\"param\":\"max_tokens\",\"code\":\"unsupported_parameter\"}}"
+}
