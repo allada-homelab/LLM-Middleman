@@ -14,6 +14,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `format`. It accepts image attachments and runs the Home Assistant tool loop when the
   task passes an LLM API. Failures raise errors instead of returning fallback text; a
   rejected API key starts reauthentication. (#106)
+- **README reference tables** for every preset's connection fields and every agent and
+  AI task option, with defaults.
 
 ### Changed
 
