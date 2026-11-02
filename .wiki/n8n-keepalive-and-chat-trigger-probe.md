@@ -6,6 +6,7 @@ tags: [adapters, conversation]
 generated: {by: okf-wiki/haiku, at: 2026-10-25T04:42:30Z}
 verified:
   - {by: okf-wiki/haiku, at: 2026-10-25T04:42:30Z, commit: 16dde55938d9}
+  - {by: okf-wiki/deepseek, at: 2026-10-25T07:14:05Z, commit: e2b31f41a3ed}
 sources:
   - {id: s1, resource: "PR 110 hotfix, verified live against n8nio/n8n:2.44.6 (released 2026-10-22)", title: keepalive-first stream failed as not a JSON object before the fix}
   - {id: s2, resource: "n8n packages/cli streaming-webhook-response-heartbeat.ts (n8n PR #39948, 2026-10-02)", title: keepalive heartbeat source}
