@@ -27,8 +27,6 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          enable-cache: true
       - name: Verify lockfile is current
         run: uv lock --check
       - run: uv sync --locked --dev
@@ -66,8 +64,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0  # the history scan below reads every commit
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          enable-cache: true
       - run: uv sync --locked --dev
       - run: uv run pre-commit run --all-files
       # The commit-time gitleaks hook scans only staged changes, so on a clean
