@@ -7,6 +7,7 @@ generated: {by: okf-wiki/opus, at: 2026-09-26T14:46:55Z}
 verified:
   - {by: okf-wiki/opus, at: 2026-09-26T14:46:55Z, commit: 0c763fbee1c0}
   - {by: okf-wiki/deepseek, at: 2026-10-25T07:10:57Z, commit: e2b31f41a3ed}
+  - {by: okf-wiki/unknown, at: 2026-11-10T14:24:23Z, commit: 0d0722253f00}
 sources:
   - {id: s1, resource: https://github.com/allada-homelab/LLM-Middleman/pull/8, title: "LLMM-006 fix: hassfest-invalid angle brackets in n8n webhook_url description"}
   - {id: s2, resource: https://github.com/allada-homelab/LLM-Middleman/pull/40, title: "fix(strings): drop URL from dify base_url description"}
@@ -53,4 +54,4 @@ rule drift, not a regression you caused.
 - `custom_components/llm_middleman/strings.json` :: /https?://[A-Za-z0-9-]+\.[A-Za-z]/ => 0
 - `custom_components/llm_middleman/translations/en.json` :: /https?://[A-Za-z0-9-]+\.[A-Za-z]/ => 0
 - `custom_components/llm_middleman/strings.json` :: `a trailing slash is stripped`
-- `.github/workflows/validate.yml` :: `home-assistant/actions/hassfest`
+- `.github/workflows/validate.yml` :: `home-assistant/actions/hassfest@86d4564712fa02543c808e3a693dd04f9d3f8361`
