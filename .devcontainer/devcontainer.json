@@ -54,6 +54,8 @@
   ],
 
   "features": {
+    // The host's Docker socket is root on the host for anything in here, agents
+    // included. Accepted risk: see "Docker socket" in docs/devcontainer.md.
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false },
     // Pinned: the option defaults to `latest`. Same uv as the template's service
     // Dockerfile; nothing bumps it automatically.

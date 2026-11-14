@@ -78,6 +78,23 @@ updates:
     groups:
       pre-commit-minor-and-patch:
         update-types: ["minor", "patch"]
+
+  # Images CI runs but never builds, each pinned in a .github/*.Dockerfile.
+  # Bumps each tag and its digest together.
+  - package-ecosystem: "docker"
+    directory: "/.github"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    cooldown:  # gives a compromised release time to be yanked before we adopt it
+      default-days: 7
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    labels:
+      - "deps"
+      - "needs-review"
   # Devcontainer base image + features.
   - package-ecosystem: "devcontainers"
     directory: "/"
