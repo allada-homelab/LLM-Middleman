@@ -37,7 +37,7 @@ repos:
   # Audits .github/workflows and dependabot.yml. Gated at medium, the same bar the
   # template's own CI holds rendered workflows to, so known low findings don't block.
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: c92afdf2c6ca336aaa8f39e2bd8d48f62dbd8e1f  # frozen: v1.31.1
+    rev: 06a39750ec31860bb44f2acf67182c40016cd1e7  # frozen: v1.32.0
     hooks:
       - id: zizmor
         args: [--no-progress, --min-severity=medium]
