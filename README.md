@@ -463,5 +463,4 @@ just test        # run tests
 just lint        # ruff check
 just fmt-check   # ruff format --check
 just typecheck   # basedpyright
-just check       # full CI gate (lockfile + lint + format + tests)
 ```
