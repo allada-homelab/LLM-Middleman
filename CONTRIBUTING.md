@@ -9,7 +9,7 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management and
 [just](https://just.systems/) as the task runner.
 
 ```bash
-just install     # uv sync --all-groups --all-extras + install git hooks (pre-commit)
+just install     # uv sync --locked --all-groups --all-extras + install git hooks (pre-commit, post-checkout, post-merge)
 ```
 
 If you don't have `just`, the underlying commands are visible with `just --list`
