@@ -9,7 +9,7 @@ This project uses [uv](https://docs.astral.sh/uv/) for dependency management and
 [just](https://just.systems/) as the task runner.
 
 ```bash
-just install     # uv sync --all-groups --all-extras + install git hooks (pre-commit)
+just install     # uv sync --locked --all-groups --all-extras + install git hooks (pre-commit, post-checkout, post-merge)
 ```
 
 If you don't have `just`, the underlying commands are visible with `just --list`
@@ -72,18 +72,23 @@ just pre-commit  # pre-commit run --all-files
 
 ## Releasing
 
+This is a HACS custom integration — there is no build backend and no PyPI
+publish. Releases are SemVer and tag-based (HACS surfaces GitHub tags/releases
+as installable versions).
+
 1. In a PR, bump `version` in `custom_components/llm_middleman/manifest.json` and
    `pyproject.toml` together (`tests/test_versions.py` fails if they differ), and add a
-   matching `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`; merge it.
-2. Tag the merge commit and push the tag:
+   matching `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md`; merge the PR to land it
+   on the default branch.
+2. Tag the release commit with a matching `vX.Y.Z` tag and push it:
 
    ```bash
    git tag vX.Y.Z && git push origin vX.Y.Z
    ```
 
-The `Release` workflow checks the tag against `manifest.json` and `CHANGELOG.md`, then
-creates the GitHub release with that changelog section as the notes (skipped if the
-release already exists).
+Keep the tag in sync with the `manifest.json` version. The `Release` workflow checks the
+tag against `manifest.json` and `CHANGELOG.md`, then creates the GitHub release with that
+changelog section as the notes (skipped if the release already exists).
 
 ## Tests
 
@@ -98,24 +103,6 @@ and untyped defs will fail the gate.
 - PR titles follow [Conventional Commits](https://www.conventionalcommits.org/)
   (`type(scope): summary`).
 - The full gate (lint, format, typecheck, test) must pass before merge.
-
-## Release process
-
-This is a HACS custom integration — there is no build backend and no PyPI
-publish. Releases are SemVer and tag-based (HACS surfaces GitHub tags/releases
-as installable versions). To cut a release:
-
-1. Bump `"version"` in `custom_components/llm_middleman/manifest.json` and `pyproject.toml`.
-2. Update `CHANGELOG.md`.
-3. Land both on the default branch.
-4. Tag the release commit with a matching `vX.Y.Z` tag and push it:
-
-   ```bash
-   git tag v1.2.3
-   git push origin v1.2.3
-   ```
-
-Keep the tag in sync with the `manifest.json` version.
 
 ## Architecture Decision Records (ADRs)
 

@@ -458,10 +458,9 @@ Requires Home Assistant **2026.7.0** or newer.
 This project uses [uv](https://docs.astral.sh/uv/) and [just](https://just.systems/).
 
 ```bash
-just sync        # uv sync --locked --dev
+just sync        # uv sync --locked --all-groups --all-extras
 just test        # run tests
 just lint        # ruff check
 just fmt-check   # ruff format --check
 just typecheck   # basedpyright
-just check       # full CI gate (lockfile + lint + format + tests)
 ```
