@@ -1,4 +1,5 @@
-set dotenv-load := true
+# No `set dotenv-load`: pydantic-settings and compose read .env themselves, and just
+# also loads an ancestor's .env, so a nested worktree inherited its parent checkout's.
 
 # List available recipes.
 default:
