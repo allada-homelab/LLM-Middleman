@@ -30,8 +30,15 @@
     // with no user.email. .devcontainer/initialize writes a flattened copy of the
     // host's effective global config to this path first — see that script.
     "source=${localWorkspaceFolder}/.devcontainer/.gitconfig.host,target=/home/vscode/.gitconfig.host,type=bind,readonly",
-    // Shared uv cache (cross-worktree reuse) — survives rebuilds.
-    "source=llm-middleman-uv-cache,target=/home/vscode/.cache/uv,type=volume",
+    // One uv cache volume shared by every project's container: uv supports concurrent
+    // readers/writers and mixed uv versions on one cache (uv docs, "Cache safety").
+    "source=uv-cache,target=/home/vscode/.cache/uv,type=volume",
+    // One pre-commit store shared the same way. pre-commit flocks $PRE_COMMIT_HOME/.lock
+    // around clones and env installs, and keys Python hook envs by interpreter, so
+    // concurrent containers and mixed Pythons are safe. NEVER run `pre-commit gc` or
+    // `pre-commit clean` in a container: gc deletes repos whose configs it cannot see
+    // (other projects' workspaces) and clean wipes the whole store, unlocked.
+    "source=pre-commit-cache,target=/home/vscode/.cache/pre-commit,type=volume",
     // Per-worktree named volumes for agentic CLI state. Survives rebuilds,
     // isolated per worktree, no host↔container token / transcript leak.
     // Volume names are scoped with ${devcontainerId} so sibling worktrees
@@ -92,7 +99,7 @@
     "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
   },
 
-  "onCreateCommand": "sudo chown vscode:vscode /workspaces /home/vscode/.claude /home/vscode/.codex /home/vscode/.ssh /home/vscode/.cache /home/vscode/.cache/uv ${containerWorkspaceFolder}/.venv && .devcontainer/post-create.sh",
+  "onCreateCommand": "sudo chown vscode:vscode /workspaces /home/vscode/.claude /home/vscode/.codex /home/vscode/.ssh /home/vscode/.cache /home/vscode/.cache/uv /home/vscode/.cache/pre-commit ${containerWorkspaceFolder}/.venv && .devcontainer/post-create.sh",
   // Mirrors post-create.sh and CI: --all-extras, or optional-extra imports resolve
   // in CI and not in here.
   "updateContentCommand": "uv sync --locked --all-groups --all-extras",

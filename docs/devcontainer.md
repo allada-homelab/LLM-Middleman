@@ -33,9 +33,15 @@ Git over SSH works from both, through your host's SSH agent — see [SSH](#ssh).
    deletes and rebuilds it for host Python, container `uv` then does the same in
    reverse, and you pay a full resync on every switch. The agentic-CLI state
    directories and `~/.ssh` are per-worktree named volumes too — no token or
-   transcript leaks back onto the host — and the uv cache is one volume shared by
-   every worktree. Two writes do reach the host on purpose: `.devcontainer/initialize`
-   (which runs *on* the host) writes git-ignored files under `.devcontainer/`, and in a
+   transcript leaks back onto the host — and the uv cache is one `uv-cache` volume
+   shared by every worktree of every project (uv supports concurrent access), as is
+   the pre-commit store, one `pre-commit-cache` volume at `~/.cache/pre-commit`
+   (pre-commit locks the store while it clones repos and builds hook envs). Never run
+   `pre-commit gc` or `pre-commit clean` in a container: `gc` deletes the hook repos
+   of every config it cannot see, which is every other project's, and `clean` deletes
+   the whole store without taking the lock. Two
+   writes do reach the host on purpose: `.devcontainer/initialize` (which runs *on*
+   the host) writes git-ignored files under `.devcontainer/`, and in a
    normal checkout `post-create.sh` installs the pre-commit hooks into `.git/hooks`.
 3. **Git works from a linked worktree**, not just the main checkout — see below.
 4. **`remoteUser` is non-root** (`vscode`) with `"updateRemoteUserUID": true`, so files
