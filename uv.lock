@@ -1390,7 +1390,7 @@ dev = [
     { name = "home-assistant-intents", specifier = ">=2026.2.3" },
     { name = "pre-commit", specifier = ">=4.6.1" },
     { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "pytest-asyncio", specifier = ">=0.23,<1.5" },
     { name = "pytest-homeassistant-custom-component" },
     { name = "pyturbojpeg", specifier = "==1.8.3" },
     { name = "ruff", specifier = ">=0.16.1" },
